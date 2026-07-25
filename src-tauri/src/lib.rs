@@ -13,7 +13,11 @@ pub fn run() {
             commands::targets::list_targets,
             commands::targets::apply_target,
             commands::targets::apply_all_targets,
+            commands::targets::check_drift_cmd,
+            commands::targets::check_all_drift,
+            commands::targets::resolve_model_cmd,
             commands::diagnostics::ping,
+            commands::diagnostics::verify_targets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

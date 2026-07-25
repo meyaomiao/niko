@@ -311,3 +311,116 @@ pub fn all_targets() -> Vec<Box<dyn Target>> {
         Box::new(ClaudeCodeTarget),
     ]
 }
+
+// ─── E5-4: 配置漂移检测 ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct DriftReport {
+    pub target_id: String,
+    pub drifted: bool,
+    pub mismatched_keys: Vec<String>,
+}
+
+/// 检测某个 target 当前配置是否与期望 plan 一致
+pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, String> {
+    let h = home_dir();
+    let mut mismatched = Vec::new();
+
+    match target_id {
+        "codex" => {
+            let auth_path = h.join(".codex").join("auth.json");
+            if auth_path.exists() {
+                let raw = fs::read_to_string(&auth_path).unwrap_or_default();
+                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                if v.get("token").and_then(Value::as_str) != Some(&plan.api_key) {
+                    mismatched.push("auth.json:token".to_owned());
+                }
+                if v.get("baseUrl").and_then(Value::as_str) != Some(&plan.base_url) {
+                    mismatched.push("auth.json:baseUrl".to_owned());
+                }
+            } else {
+                mismatched.push("auth.json:missing".to_owned());
+            }
+            let config_path = h.join(".codex").join("config.toml");
+            if config_path.exists() {
+                let raw = fs::read_to_string(&config_path).unwrap_or_default();
+                let doc: toml::Table = raw.parse().unwrap_or_default();
+                let openai = doc.get("openai").and_then(|v| v.as_table());
+                if openai.and_then(|t| t.get("api_key")).and_then(|v| v.as_str())
+                    != Some(&plan.api_key)
+                {
+                    mismatched.push("config.toml:[openai].api_key".to_owned());
+                }
+                if openai.and_then(|t| t.get("base_url")).and_then(|v| v.as_str())
+                    != Some(&plan.base_url)
+                {
+                    mismatched.push("config.toml:[openai].base_url".to_owned());
+                }
+            }
+        }
+        "claude-desktop" => {
+            let path = ClaudeDesktopTarget::config_path();
+            if path.exists() {
+                let raw = fs::read_to_string(&path).unwrap_or_default();
+                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                let entry = v
+                    .get("mcpServers")
+                    .and_then(|s| s.get("momotoken"));
+                if entry.and_then(|e| e.get("apiKey")).and_then(Value::as_str)
+                    != Some(&plan.api_key)
+                {
+                    mismatched.push("mcpServers.momotoken.apiKey".to_owned());
+                }
+                if entry.and_then(|e| e.get("baseUrl")).and_then(Value::as_str)
+                    != Some(&plan.base_url)
+                {
+                    mismatched.push("mcpServers.momotoken.baseUrl".to_owned());
+                }
+            } else {
+                mismatched.push("claude_desktop_config.json:missing".to_owned());
+            }
+        }
+        "claude-code" => {
+            let settings = h.join(".claude").join("settings.json");
+            if settings.exists() {
+                let raw = fs::read_to_string(&settings).unwrap_or_default();
+                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                if v.get("apiKey").and_then(Value::as_str) != Some(&plan.api_key) {
+                    mismatched.push("settings.json:apiKey".to_owned());
+                }
+                if v.get("baseUrl").and_then(Value::as_str) != Some(&plan.base_url) {
+                    mismatched.push("settings.json:baseUrl".to_owned());
+                }
+            } else {
+                mismatched.push("settings.json:missing".to_owned());
+            }
+        }
+        other => return Err(format!("未知目标: {other}")),
+    }
+
+    Ok(DriftReport {
+        target_id: target_id.to_owned(),
+        drifted: !mismatched.is_empty(),
+        mismatched_keys: mismatched,
+    })
+}
+
+// ─── E6-4: 角色映射与兜底 ───────────────────────────────────────────────────
+
+/// 将用户选择的 "角色" 映射为实际模型名（momotoken 分组可用时优先）
+pub fn resolve_model(role: &str, group: Option<&str>) -> String {
+    let group = group.unwrap_or("default");
+    // 标准角色 → 推荐模型（按优先级排列，第一个是兜底）
+    let candidates: &[&str] = match role {
+        "fast" | "haiku" => &["claude-haiku-3-5", "claude-haiku-3", "gpt-4o-mini"],
+        "balanced" | "sonnet" => &["claude-sonnet-4-5", "claude-sonnet-4", "claude-sonnet-3-5", "gpt-4o"],
+        "best" | "opus" => &["claude-opus-4-5", "claude-opus-4", "claude-opus-3", "gpt-4o"],
+        "code" => &["claude-sonnet-4-5", "gpt-4o", "claude-sonnet-3-5"],
+        other => return other.to_owned(),
+    };
+
+    // 分组名透传作为 model 前缀提示（简单策略：直接返回第一个候选）
+    // 后续 E7-1 连通性检测后可优化为选第一个可用的
+    let _ = group;
+    candidates.first().copied().unwrap_or(role).to_owned()
+}

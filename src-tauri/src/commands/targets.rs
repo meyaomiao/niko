@@ -75,3 +75,45 @@ pub async fn apply_all_targets(
     }
     Ok(results)
 }
+
+use crate::targets::{check_drift, resolve_model, DriftReport};
+
+#[tauri::command]
+pub async fn check_drift_cmd(
+    target_id: String,
+    base_url: String,
+    api_key: String,
+    model_group: Option<String>,
+) -> Result<DriftReport, String> {
+    let plan = ApplyPlan { base_url, api_key, model_group };
+    check_drift(&target_id, &plan)
+}
+
+#[tauri::command]
+pub async fn check_all_drift(
+    base_url: String,
+    api_key: String,
+    model_group: Option<String>,
+) -> Result<Vec<DriftReport>, String> {
+    let plan = ApplyPlan { base_url, api_key, model_group };
+    let targets = all_targets();
+    let mut reports = Vec::new();
+    for t in &targets {
+        if t.is_installed() {
+            match check_drift(t.id(), &plan) {
+                Ok(r) => reports.push(r),
+                Err(e) => reports.push(DriftReport {
+                    target_id: t.id().to_owned(),
+                    drifted: true,
+                    mismatched_keys: vec![format!("error: {e}")],
+                }),
+            }
+        }
+    }
+    Ok(reports)
+}
+
+#[tauri::command]
+pub async fn resolve_model_cmd(role: String, group: Option<String>) -> String {
+    resolve_model(&role, group.as_deref())
+}
