@@ -1,9 +1,257 @@
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, type SiteConfig } from "../api/client";
+import { saveAuth } from "../store/auth";
+
+// Cloudflare Turnstile 全局类型
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: string | HTMLElement, opts: TurnstileOptions) => string;
+      reset: (widgetId: string) => void;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
+interface TurnstileOptions {
+  sitekey: string;
+  callback: (token: string) => void;
+  "error-callback"?: () => void;
+  "expired-callback"?: () => void;
+  theme?: "light" | "dark" | "auto";
+  size?: "normal" | "compact";
+}
+
+// 设备信息
+function getDeviceId(): string {
+  let id = localStorage.getItem("momo_device_id");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("momo_device_id", id);
+  }
+  return id;
+}
+function getDeviceName(): string {
+  const ua = navigator.userAgent;
+  if (ua.includes("Mac")) return "macOS";
+  if (ua.includes("Win")) return "Windows";
+  if (ua.includes("Linux")) return "Linux";
+  return "Unknown";
+}
+
+type Stage = "login" | "2fa";
+
 export default function Login() {
+  const navigate = useNavigate();
+  const [site, setSite] = useState<SiteConfig | null>(null);
+  const [stage, setStage] = useState<Stage>("login");
+  const [pendingToken, setPendingToken] = useState("");
+
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string>("");
+
+  // 加载站点配置
+  useEffect(() => {
+    api.getSite().then(setSite).catch(() => setSite({ system_name: "momo·摸摸", turnstile_site_key: "", turnstile_enabled: false, server_version: "" }));
+  }, []);
+
+  // 注入 Turnstile 脚本
+  useEffect(() => {
+    if (!site?.turnstile_enabled || !site.turnstile_site_key) return;
+    if (document.getElementById("cf-turnstile-script")) return;
+    const script = document.createElement("script");
+    script.id = "cf-turnstile-script";
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+  }, [site]);
+
+  // 渲染 Turnstile widget
+  useEffect(() => {
+    if (!site?.turnstile_enabled || !site.turnstile_site_key || !turnstileRef.current) return;
+
+    function tryRender() {
+      if (!window.turnstile || !turnstileRef.current) return;
+      if (widgetIdRef.current) return;
+      widgetIdRef.current = window.turnstile.render(turnstileRef.current, {
+        sitekey: site!.turnstile_site_key,
+        theme: "dark",
+        callback: (token) => setTurnstileToken(token),
+        "expired-callback": () => setTurnstileToken(""),
+        "error-callback": () => setError("人机验证失败，请刷新重试"),
+      });
+    }
+
+    const t = setInterval(() => {
+      if (window.turnstile) { tryRender(); clearInterval(t); }
+    }, 200);
+    return () => { clearInterval(t); };
+  }, [site]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password.trim()) { setError("请填写账号和密码"); return; }
+    if (site?.turnstile_enabled && !turnstileToken) { setError("请完成人机验证"); return; }
+    setError(""); setLoading(true);
+    try {
+      const result = await api.login({
+        username: username.trim(),
+        password,
+        deviceId: getDeviceId(),
+        deviceName: getDeviceName(),
+        platform: getDeviceName(),
+        turnstile: turnstileToken,
+      });
+      if (result.require_2fa && result.pending_token) {
+        setPendingToken(result.pending_token);
+        setStage("2fa");
+        return;
+      }
+      await finishLogin(result.access_token!, result.username ?? username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登录失败");
+      if (widgetIdRef.current) { window.turnstile?.reset(widgetIdRef.current); setTurnstileToken(""); }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handle2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!code.trim()) { setError("请输入验证码"); return; }
+    setError(""); setLoading(true);
+    try {
+      const result = await api.login2fa(pendingToken, code.trim());
+      await finishLogin(result.access_token!, result.username ?? username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "验证失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const finishLogin = async (token: string, uname: string) => {
+    try {
+      const bootstrap = await api.bootstrap(token);
+      const provision = await api.provision(token, bootstrap.user.group);
+      saveAuth({
+        accessToken: token,
+        username: uname,
+        userId: bootstrap.user.id,
+        quota: bootstrap.user.quota,
+        group: bootstrap.user.group,
+        apiKey: provision.api_key,
+      });
+      navigate("/home");
+    } catch {
+      // bootstrap/provision 失败不阻断登录，仍跳首页
+      saveAuth({ accessToken: token, username: uname, userId: 0, quota: 0, group: "", apiKey: "" });
+      navigate("/home");
+    }
+  };
+
   return (
     <div className="flex h-screen items-center justify-center bg-gray-950">
       <div className="w-full max-w-sm rounded-2xl bg-gray-900 p-8 shadow-xl">
-        <h1 className="mb-6 text-center text-2xl font-bold text-white">momo·摸摸</h1>
-        <p className="text-center text-gray-400">登录页占位 — E3-1/E3-2 实现</p>
+        <div className="mb-8 text-center">
+          <div className="mb-2 text-4xl">🐾</div>
+          <h1 className="text-2xl font-bold text-white">
+            {site?.system_name ?? "momo·摸摸"}
+          </h1>
+          <p className="mt-1 text-sm text-gray-400">
+            {stage === "login" ? "登录账号以使用 API 服务" : "请输入两步验证码"}
+          </p>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-lg bg-red-900/40 px-4 py-2 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        {stage === "login" ? (
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">账号</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="用户名或邮箱"
+                autoComplete="username"
+                disabled={loading}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">密码</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="••••••••"
+                autoComplete="current-password"
+                disabled={loading}
+              />
+            </div>
+
+            {site?.turnstile_enabled && site.turnstile_site_key && (
+              <div className="flex justify-center">
+                <div ref={turnstileRef} />
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {loading ? "登录中…" : "登录"}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handle2FA} className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">6 位验证码</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-center text-lg tracking-widest text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="000000"
+                autoFocus
+                disabled={loading}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {loading ? "验证中…" : "确认"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setStage("login"); setCode(""); setError(""); }}
+              className="w-full text-sm text-gray-400 hover:text-gray-200"
+            >
+              ← 返回登录
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
