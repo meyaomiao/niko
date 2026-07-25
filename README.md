@@ -30,7 +30,7 @@ npm run tauri build
 launcher/
 ├── src/                   # React 前端
 │   ├── pages/             # 页面组件
-│   ├── store/             # 状态管理（Zustand，E3-x 实现）
+│   ├── store/             # 状态管理（E3-x 实现）
 │   ├── api/               # HTTP 客户端封装
 │   └── i18n/              # 前端国际化
 └── src-tauri/             # Tauri / Rust 后端

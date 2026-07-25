@@ -1,14 +1,9 @@
-# Node
 node_modules/
 dist/
 .env
 .env.*
-
-# Tauri / Rust
 src-tauri/target/
 src-tauri/WixTools/
 src-tauri/gen/
-
-# macOS
 .DS_Store
 *.swp

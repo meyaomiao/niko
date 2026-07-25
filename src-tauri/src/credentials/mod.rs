@@ -1,26 +1,31 @@
-/// Keychain / secret-service 封装占位。
-/// E2-5 中用 `keyring` crate 实现跨平台凭证存储，此处为 stub。
-pub struct CredentialStore {
-    service: String,
-}
+use keyring::Entry;
+
+const SERVICE: &str = "win.momotoken.launcher";
+
+pub struct CredentialStore;
 
 impl CredentialStore {
-    pub fn new(service: impl Into<String>) -> Self {
-        Self { service: service.into() }
+    pub fn set(account: &str, secret: &str) -> Result<(), String> {
+        Entry::new(SERVICE, account)
+            .map_err(|e| e.to_string())?
+            .set_password(secret)
+            .map_err(|e| e.to_string())
     }
 
-    pub fn set(&self, account: &str, secret: &str) -> Result<(), String> {
-        let _ = (account, secret, &self.service);
-        Err("not implemented — E2-5".into())
+    pub fn get(account: &str) -> Result<String, String> {
+        Entry::new(SERVICE, account)
+            .map_err(|e| e.to_string())?
+            .get_password()
+            .map_err(|e| e.to_string())
     }
 
-    pub fn get(&self, account: &str) -> Result<String, String> {
-        let _ = (account, &self.service);
-        Err("not implemented — E2-5".into())
-    }
-
-    pub fn delete(&self, account: &str) -> Result<(), String> {
-        let _ = (account, &self.service);
-        Err("not implemented — E2-5".into())
+    pub fn delete(account: &str) -> Result<(), String> {
+        let entry = Entry::new(SERVICE, account).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            // 不存在视为删除成功
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }

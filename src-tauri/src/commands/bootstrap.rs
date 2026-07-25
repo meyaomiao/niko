@@ -8,6 +8,6 @@ pub struct BootstrapInfo {
 
 #[tauri::command]
 pub async fn get_bootstrap() -> Result<BootstrapInfo, String> {
-    // E2-4 / E3-1 实现
+    // E3-1 实现
     Err("not implemented".into())
 }
