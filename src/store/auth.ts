@@ -1,5 +1,3 @@
-// 轻量级认证状态管理（无第三方状态库，用 Context + localStorage）
-
 export interface AuthState {
   accessToken: string;
   username: string;
@@ -27,4 +25,11 @@ export function saveAuth(state: AuthState) {
 
 export function clearAuth() {
   localStorage.removeItem(KEY);
+}
+
+/** 以新 bootstrap 数据刷新存储的用量/分组，不改变 token 和 apiKey */
+export function refreshAuthMeta(patch: Partial<Pick<AuthState, "quota" | "group">>) {
+  const cur = loadAuth();
+  if (!cur) return;
+  saveAuth({ ...cur, ...patch });
 }
