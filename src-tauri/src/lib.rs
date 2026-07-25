@@ -12,6 +12,7 @@ pub fn run() {
             commands::bootstrap::get_bootstrap,
             commands::targets::list_targets,
             commands::targets::apply_target,
+            commands::targets::apply_all_targets,
             commands::diagnostics::ping,
         ])
         .run(tauri::generate_context!())
