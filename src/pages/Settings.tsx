@@ -189,7 +189,13 @@ export default function Settings() {
 
   return (
     <div className="flex h-screen flex-col bg-gray-950">
-      <header className="flex items-center border-b border-gray-800 px-6 py-4">
+      <header className="flex items-center gap-3 border-b border-gray-800 px-6 py-4">
+        <button
+          onClick={() => navigate("/home")}
+          className="text-gray-500 transition hover:text-white"
+        >
+          ←
+        </button>
         <h1 className="text-sm font-semibold text-white">设置</h1>
       </header>
 

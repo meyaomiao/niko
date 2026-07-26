@@ -114,6 +114,12 @@ export const api = {
   listDevices(token: string): Promise<DeviceItem[]> {
     return get<DeviceItem[]>("/client/devices", token);
   },
+  usage(token: string, pageSize = 20): Promise<{ items: UsageLogItem[] | null }> {
+    return get<{ items: UsageLogItem[] | null }>(
+      `/client/usage?p=1&page_size=${pageSize}&type=2`,
+      token
+    );
+  },
   revokeDevice(token: string, id: number): Promise<void> {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
     return fetch(`${BASE_URL}/api/client/devices/${id}`, {
@@ -145,4 +151,13 @@ export interface DeviceItem {
   created_time: number;
   accessed_time: number;
   is_current: boolean;
+}
+
+export interface UsageLogItem {
+  id: number;
+  created_at: number;
+  model_name: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  quota: number;
 }

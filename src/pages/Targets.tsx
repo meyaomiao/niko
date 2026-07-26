@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
 import {
   baselineFor,
@@ -64,6 +65,7 @@ function CompatBadge({
 
 export default function Targets() {
   const auth = loadAuth();
+  const navigate = useNavigate();
   const [targets, setTargets] = useState<TargetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState<string | null>(null);
@@ -170,11 +172,19 @@ export default function Targets() {
   return (
     <div className="flex h-screen flex-col bg-gray-950">
       <header className="flex items-center justify-between border-b border-gray-800 px-6 py-4">
-        <div>
-          <h1 className="text-sm font-semibold text-white">接入目标</h1>
-          <p className="text-xs text-gray-500">
-            检测到 {installedCount}/{targets.length} 个应用已安装
-          </p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/home")}
+            className="text-gray-500 transition hover:text-white"
+          >
+            ←
+          </button>
+          <div>
+            <h1 className="text-sm font-semibold text-white">接入目标</h1>
+            <p className="text-xs text-gray-500">
+              检测到 {installedCount}/{targets.length} 个应用已安装
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button

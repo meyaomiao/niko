@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-
-interface LogEntry {
-  id: number;
-  created_at: number;
-  model: string;
-  prompt_tokens: number;
-  completion_tokens: number;
-  quota: number;
-}
+import { api, type UsageLogItem } from "../api/client";
 
 function quotaToUSD(q: number) {
   return (q / 1_000_000).toFixed(6);
@@ -16,27 +9,29 @@ function quotaToUSD(q: number) {
 
 export default function Usage() {
   const auth = loadAuth();
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const navigate = useNavigate();
+  const [logs, setLogs] = useState<UsageLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!auth?.accessToken) return;
-    fetch("https://momotoken.win/api/user/logs?p=0&page_size=20", {
-      headers: { Authorization: `Bearer ${auth.accessToken}` },
-    })
-      .then((r) => r.json())
-      .then((json) => {
-        if (json.success) setLogs(json.data?.logs ?? []);
-        else setError(json.message ?? "加载失败");
-      })
-      .catch((e) => setError(String(e)))
+    api
+      .usage(auth.accessToken)
+      .then((data) => setLogs(data.items ?? []))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex h-screen flex-col bg-gray-950">
-      <header className="flex items-center border-b border-gray-800 px-6 py-4">
+      <header className="flex items-center gap-3 border-b border-gray-800 px-6 py-4">
+        <button
+          onClick={() => navigate("/home")}
+          className="text-gray-500 transition hover:text-white"
+        >
+          ←
+        </button>
         <h1 className="text-sm font-semibold text-white">用量明细</h1>
       </header>
 
@@ -73,7 +68,7 @@ export default function Usage() {
                         minute: "2-digit",
                       })}
                     </td>
-                    <td className="py-2 pr-4 font-mono">{l.model}</td>
+                    <td className="py-2 pr-4 font-mono">{l.model_name}</td>
                     <td className="py-2 pr-4 text-right">{l.prompt_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{l.completion_tokens.toLocaleString()}</td>
                     <td className="py-2 text-right text-indigo-400">${quotaToUSD(l.quota)}</td>

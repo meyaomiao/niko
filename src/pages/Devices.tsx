@@ -1,46 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-
-interface DeviceItem {
-  id: number;
-  device_id: string;
-  device_name: string;
-  platform: string;
-  app_version: string;
-  created_time: number;
-  accessed_time: number;
-  is_current: boolean;
-}
-
-const BASE_URL = "https://momotoken.win";
-
-async function fetchDevices(token: string): Promise<DeviceItem[]> {
-  const r = await fetch(`${BASE_URL}/api/client/devices`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const json = await r.json() as { success: boolean; data?: DeviceItem[]; message?: string };
-  if (!json.success) throw new Error(json.message ?? "加载失败");
-  return json.data ?? [];
-}
-
-async function revokeDevice(token: string, id: number): Promise<void> {
-  const r = await fetch(`${BASE_URL}/api/client/devices/${id}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const json = await r.json() as { success: boolean; message?: string };
-  if (!json.success) throw new Error(json.message ?? "撤销失败");
-}
-
-async function revokeOthers(token: string): Promise<void> {
-  const r = await fetch(`${BASE_URL}/api/client/devices`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const json = await r.json() as { success: boolean; message?: string };
-  if (!json.success) throw new Error(json.message ?? "操作失败");
-}
+import { api, type DeviceItem } from "../api/client";
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString("zh-CN", {
@@ -71,7 +32,8 @@ export default function Devices() {
     if (!auth?.accessToken) return;
     setLoading(true);
     setError(null);
-    fetchDevices(auth.accessToken)
+    api
+      .listDevices(auth.accessToken)
       .then(setDevices)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -83,7 +45,7 @@ export default function Devices() {
     if (!auth?.accessToken) return;
     setRevoking(id);
     try {
-      await revokeDevice(auth.accessToken, id);
+      await api.revokeDevice(auth.accessToken, id);
       setDevices((d) => d.filter((x) => x.id !== id));
     } catch (e) {
       setError(String(e));
@@ -96,7 +58,7 @@ export default function Devices() {
     if (!auth?.accessToken) return;
     setRevoking("others");
     try {
-      await revokeOthers(auth.accessToken);
+      await api.revokeOtherDevices(auth.accessToken);
       setDevices((d) => d.filter((x) => x.is_current));
     } catch (e) {
       setError(String(e));
