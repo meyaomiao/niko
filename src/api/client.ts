@@ -2,10 +2,11 @@
 
 const BASE_URL = "https://momotoken.win";
 
+/** 网页端注册页，登录器无注册功能，引导用户去官网注册 */
+export const REGISTER_URL = `${BASE_URL}/register`;
+
 export interface SiteConfig {
   system_name: string;
-  turnstile_site_key: string;
-  turnstile_enabled: boolean;
   server_version: string;
 }
 
@@ -82,10 +83,9 @@ export const api = {
     deviceId: string;
     deviceName: string;
     platform: string;
-    turnstile: string;
   }): Promise<LoginResult> {
     return post<RawLoginResponse>(
-      `/client/login?turnstile=${encodeURIComponent(params.turnstile)}`,
+      "/client/login",
       {
         username: params.username,
         password: params.password,

@@ -1,26 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type SiteConfig } from "../api/client";
+import { open } from "@tauri-apps/plugin-shell";
+import { api, REGISTER_URL, type SiteConfig } from "../api/client";
 import { saveAuth } from "../store/auth";
-
-// Cloudflare Turnstile 全局类型
-declare global {
-  interface Window {
-    turnstile?: {
-      render: (container: string | HTMLElement, opts: TurnstileOptions) => string;
-      reset: (widgetId: string) => void;
-      remove: (widgetId: string) => void;
-    };
-  }
-}
-interface TurnstileOptions {
-  sitekey: string;
-  callback: (token: string) => void;
-  "error-callback"?: () => void;
-  "expired-callback"?: () => void;
-  theme?: "light" | "dark" | "auto";
-  size?: "normal" | "compact";
-}
 
 // 设备信息
 function getDeviceId(): string {
@@ -50,57 +32,18 @@ export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [turnstileToken, setTurnstileToken] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const turnstileRef = useRef<HTMLDivElement>(null);
-  const widgetIdRef = useRef<string>("");
-
   // 加载站点配置
   useEffect(() => {
-    api.getSite().then(setSite).catch(() => setSite({ system_name: "momo·摸摸", turnstile_site_key: "", turnstile_enabled: false, server_version: "" }));
+    api.getSite().then(setSite).catch(() => setSite({ system_name: "momo·摸摸", server_version: "" }));
   }, []);
-
-  // 注入 Turnstile 脚本
-  useEffect(() => {
-    if (!site?.turnstile_enabled || !site.turnstile_site_key) return;
-    if (document.getElementById("cf-turnstile-script")) return;
-    const script = document.createElement("script");
-    script.id = "cf-turnstile-script";
-    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-    script.async = true;
-    script.defer = true;
-    document.head.appendChild(script);
-  }, [site]);
-
-  // 渲染 Turnstile widget
-  useEffect(() => {
-    if (!site?.turnstile_enabled || !site.turnstile_site_key || !turnstileRef.current) return;
-
-    function tryRender() {
-      if (!window.turnstile || !turnstileRef.current) return;
-      if (widgetIdRef.current) return;
-      widgetIdRef.current = window.turnstile.render(turnstileRef.current, {
-        sitekey: site!.turnstile_site_key,
-        theme: "dark",
-        callback: (token) => setTurnstileToken(token),
-        "expired-callback": () => setTurnstileToken(""),
-        "error-callback": () => setError("人机验证失败，请刷新重试"),
-      });
-    }
-
-    const t = setInterval(() => {
-      if (window.turnstile) { tryRender(); clearInterval(t); }
-    }, 200);
-    return () => { clearInterval(t); };
-  }, [site]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) { setError("请填写账号和密码"); return; }
-    if (site?.turnstile_enabled && !turnstileToken) { setError("请完成人机验证"); return; }
     setError(""); setLoading(true);
     try {
       const result = await api.login({
@@ -109,7 +52,6 @@ export default function Login() {
         deviceId: getDeviceId(),
         deviceName: getDeviceName(),
         platform: getDeviceName(),
-        turnstile: turnstileToken,
       });
       if (result.require_2fa && result.pending_token) {
         setPendingToken(result.pending_token);
@@ -119,7 +61,6 @@ export default function Login() {
       await finishLogin(result.access_token!, result.username ?? username);
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
-      if (widgetIdRef.current) { window.turnstile?.reset(widgetIdRef.current); setTurnstileToken(""); }
     } finally {
       setLoading(false);
     }
@@ -205,18 +146,21 @@ export default function Login() {
               />
             </div>
 
-            {site?.turnstile_enabled && site.turnstile_site_key && (
-              <div className="flex justify-center">
-                <div ref={turnstileRef} />
-              </div>
-            )}
-
             <button
               type="submit"
               disabled={loading}
               className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
             >
               {loading ? "登录中…" : "登录"}
+            </button>
+
+            {/* 登录器不提供注册，引导到官网注册页 */}
+            <button
+              type="button"
+              onClick={() => open(REGISTER_URL)}
+              className="w-full text-center text-xs text-gray-400 transition hover:text-gray-200"
+            >
+              还没有账号？前往官网注册
             </button>
           </form>
         ) : (
