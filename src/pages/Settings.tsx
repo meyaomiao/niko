@@ -188,48 +188,48 @@ export default function Settings() {
   const hasAnySnapshot = Object.keys(snapshots).length > 0;
 
   return (
-    <div className="flex h-screen flex-col bg-gray-950">
-      <header className="flex items-center gap-3 border-b border-gray-800 px-6 py-4">
+    <div className="flex h-screen flex-col bg-transparent">
+      <header className="flex items-center gap-3 border-b border-black/5 dark:border-white/10 px-6 py-4">
         <button
           onClick={() => navigate("/home")}
-          className="text-gray-500 transition hover:text-white"
+          className="text-gray-500 dark:text-gray-400 transition hover:text-gray-900 dark:text-white"
         >
           ←
         </button>
-        <h1 className="text-sm font-semibold text-white">设置</h1>
+        <h1 className="text-sm font-semibold text-gray-900 dark:text-white">设置</h1>
       </header>
 
       <main className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-lg space-y-6">
 
           {/* 当前账户 */}
-          <section className="rounded-2xl bg-gray-900 p-5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">当前账户</h2>
-            <div className="space-y-2 text-sm text-gray-300">
-              <p>用户名：<span className="text-white">{auth?.username ?? "—"}</span></p>
-              <p>分组：<span className="text-white">{auth?.group ?? "—"}</span></p>
+          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">当前账户</h2>
+            <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
+              <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
+              <p>分组：<span className="text-gray-900 dark:text-white">{auth?.group ?? "—"}</span></p>
             </div>
             <button
               onClick={logout}
-              className="mt-4 rounded-lg bg-red-900/40 px-4 py-2 text-xs text-red-400 transition hover:bg-red-900/60"
+              className="mt-4 rounded-lg bg-red-500/10 px-4 py-2 text-xs text-red-600 dark:text-red-400 transition hover:bg-red-500/20"
             >
               退出登录
             </button>
           </section>
 
           {/* 开机自启 */}
-          <section className="rounded-2xl bg-gray-900 p-5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">启动设置</h2>
+          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">启动设置</h2>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-200">开机自启</p>
-                <p className="mt-0.5 text-xs text-gray-500">登录时自动启动 momo·摸摸</p>
+                <p className="text-sm text-gray-800 dark:text-gray-200">开机自启</p>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">登录时自动启动 momo·摸摸</p>
               </div>
               <button
                 onClick={toggleAutostart}
                 disabled={autostartBusy || autostart === null}
                 className={`relative h-6 w-11 rounded-full transition-colors disabled:opacity-40 ${
-                  autostart ? "bg-indigo-600" : "bg-gray-700"
+                  autostart ? "bg-indigo-600" : "bg-black/[0.06] dark:bg-white/10"
                 }`}
                 role="switch"
                 aria-checked={autostart ?? false}
@@ -244,13 +244,13 @@ export default function Settings() {
           </section>
 
           {/* E5-5: 快照恢复 */}
-          <section className="rounded-2xl bg-gray-900 p-5">
+          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">配置快照恢复</h2>
+              <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">配置快照恢复</h2>
               <button
                 onClick={loadSnapshots}
                 disabled={snapshotLoading}
-                className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
+                className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
               >
                 {snapshotLoading ? "刷新中…" : "刷新"}
               </button>
@@ -258,14 +258,14 @@ export default function Settings() {
 
             {restoreMsg && (
               <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${
-                restoreMsg.ok ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"
+                restoreMsg.ok ? "bg-green-500/10 text-green-600 dark:text-green-400" : "bg-red-500/10 text-red-600 dark:text-red-400"
               }`}>
                 {restoreMsg.text}
               </div>
             )}
 
             {!hasAnySnapshot && !snapshotLoading && (
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
                 暂无备份。首次配置接入目标后会自动创建快照。
               </p>
             )}
@@ -276,7 +276,7 @@ export default function Settings() {
               const latest = list.slice(0, 3);
               return (
                 <div key={targetId} className="mb-4 last:mb-0">
-                  <p className="mb-2 text-xs font-medium text-gray-300">
+                  <p className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
                     {TARGET_LABELS[targetId] ?? targetId}
                   </p>
                   <div className="space-y-1.5">
@@ -286,16 +286,16 @@ export default function Settings() {
                       return (
                         <div
                           key={snap.filename}
-                          className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2"
+                          className="flex items-center justify-between rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2"
                         >
                           <div>
-                            <p className="text-xs text-gray-200">{snap.original_name}</p>
-                            <p className="text-xs text-gray-500">{formatTime(snap.timestamp)}</p>
+                            <p className="text-xs text-gray-800 dark:text-gray-200">{snap.original_name}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">{formatTime(snap.timestamp)}</p>
                           </div>
                           <button
                             onClick={() => restoreSnapshot(targetId, snap.filename)}
                             disabled={isRestoring || restoring !== null}
-                            className="rounded-md bg-gray-700 px-3 py-1 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+                            className="rounded-md bg-black/[0.06] dark:bg-white/10 px-3 py-1 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
                           >
                             {isRestoring ? "恢复中…" : "恢复"}
                           </button>
@@ -309,72 +309,72 @@ export default function Settings() {
           </section>
 
           {/* 连通性检测 */}
-          <section className="rounded-2xl bg-gray-900 p-5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">连通性自检</h2>
+          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">连通性自检</h2>
             <div className="flex gap-2">
               <input
                 value={pingUrl}
                 onChange={(e) => setPingUrl(e.target.value)}
-                className="flex-1 rounded-lg bg-gray-800 px-3 py-2 text-xs text-white outline-none focus:ring-1 focus:ring-indigo-500"
+                className="flex-1 rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-xs text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500"
                 placeholder="https://..."
               />
               <button
                 onClick={doPing}
                 disabled={pinging}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs text-white transition hover:bg-indigo-500 disabled:opacity-40"
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-40"
               >
                 {pinging ? "检测中…" : "检测"}
               </button>
             </div>
             {pingResult && (
               pingResult.reachable ? (
-                <div className="mt-3 rounded-lg bg-green-900/30 px-3 py-2 text-xs text-green-400">
+                <div className="mt-3 rounded-lg bg-green-500/10 px-3 py-2 text-xs text-green-600 dark:text-green-400">
                   ✓ 可达，延迟 {pingResult.latency_ms ?? "?"}ms
                 </div>
               ) : (
-                <div className="mt-3 space-y-1.5 rounded-lg bg-red-900/30 px-3 py-2 text-xs text-red-300">
-                  <p className="font-medium text-red-400">
+                <div className="mt-3 space-y-1.5 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
+                  <p className="font-medium text-red-600 dark:text-red-400">
                     ✗ {ERROR_KIND_LABELS[pingResult.error_kind ?? "unknown"]}
                   </p>
                   {pingResult.error_detail && (
-                    <p className="text-red-300/80">详情：{pingResult.error_detail}</p>
+                    <p className="text-red-600/80 dark:text-red-300/80">详情：{pingResult.error_detail}</p>
                   )}
                   {pingResult.suggestion && (
-                    <p className="text-gray-300">建议：{pingResult.suggestion}</p>
+                    <p className="text-gray-700 dark:text-gray-300">建议：{pingResult.suggestion}</p>
                   )}
                 </div>
               )
             )}
 
-            <div className="mt-4 border-t border-gray-800 pt-4">
-              <p className="mb-2 text-xs text-gray-500">
+            <div className="mt-4 border-t border-black/5 dark:border-white/10 pt-4">
+              <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
                 导出的日志已对 API Key 做脱敏处理，不含完整密钥。
               </p>
               <button
                 onClick={exportLog}
                 disabled={exporting}
-                className="rounded-lg bg-gray-700 px-4 py-2 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+                className="rounded-lg bg-black/[0.06] dark:bg-white/10 px-4 py-2 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
               >
                 {exporting ? "导出中…" : "导出日志"}
               </button>
-              {exportMsg && <p className="mt-2 break-all text-xs text-gray-400">{exportMsg}</p>}
+              {exportMsg && <p className="mt-2 break-all text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">{exportMsg}</p>}
             </div>
           </section>
 
           {/* 版本与更新 */}
-          <section className="rounded-2xl bg-gray-900 p-5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">关于 / 更新</h2>
-            <p className="text-xs text-gray-400">momo·摸摸登录器 v0.1.0</p>
-            <p className="mt-0.5 text-xs text-gray-600">momotoken.win</p>
+          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">关于 / 更新</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">momo·摸摸登录器 v0.1.0</p>
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-500">momotoken.win</p>
             <button
               onClick={checkUpdate}
               disabled={checkingUpdate}
-              className="mt-4 rounded-lg bg-gray-700 px-4 py-2 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+              className="mt-4 rounded-lg bg-black/[0.06] dark:bg-white/10 px-4 py-2 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
             >
               {checkingUpdate ? "检查中…" : "检查更新"}
             </button>
             {updateStatus && (
-              <p className="mt-2 text-xs text-gray-400">{updateStatus}</p>
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">{updateStatus}</p>
             )}
           </section>
 

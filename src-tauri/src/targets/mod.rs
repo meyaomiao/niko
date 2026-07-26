@@ -16,6 +16,8 @@ pub struct ApplyPlan {
     pub base_url: String,
     pub api_key: String,
     pub model_group: Option<String>,
+    /// 用户在登录器里选中的模型，写入目标配置的默认模型字段
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,7 +37,12 @@ pub trait Target: Send + Sync {
 //
 // 策略：只改 [openai] 下的 base_url / api_key，其余 key 原封不动。
 
-fn merge_toml_openai(path: &Path, base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+fn merge_toml_openai(
+    path: &Path,
+    base_url: &str,
+    api_key: &str,
+    model: Option<&str>,
+) -> Result<Vec<String>, String> {
     let raw = if path.exists() {
         fs::read_to_string(path).map_err(|e| e.to_string())?
     } else {
@@ -64,6 +71,14 @@ fn merge_toml_openai(path: &Path, base_url: &str, api_key: &str) -> Result<Vec<S
     if tbl.get("api_key") != Some(&new_key) {
         tbl.insert("api_key".to_owned(), new_key);
         changed.push("openai.api_key".to_owned());
+    }
+
+    if let Some(model) = model {
+        let new_model = toml::Value::String(model.to_owned());
+        if doc.get("model") != Some(&new_model) {
+            doc.insert("model".to_owned(), new_model);
+            changed.push("model".to_owned());
+        }
     }
 
     if !changed.is_empty() {
@@ -178,7 +193,7 @@ impl Target for CodexTarget {
         // 保守合并 config.toml
         let config_path = codex_dir.join("config.toml");
         let _ = save_backup(self.id(), &config_path);
-        let mut toml_changed = merge_toml_openai(&config_path, &plan.base_url, &plan.api_key)?;
+        let mut toml_changed = merge_toml_openai(&config_path, &plan.base_url, &plan.api_key, plan.model.as_deref())?;
         changed.append(&mut toml_changed);
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
@@ -262,7 +277,8 @@ impl Target for ClaudeDesktopTarget {
             serde_json::json!({
                 "type": "openai-compatible",
                 "baseUrl": plan.base_url,
-                "apiKey": plan.api_key
+                "apiKey": plan.api_key,
+                "model": plan.model
             }),
         );
 
@@ -298,13 +314,14 @@ impl Target for ClaudeCodeTarget {
         // E5-5: 写入前留存备份
         let _ = save_backup(self.id(), &settings_path);
 
-        let changed = merge_json_keys(
-            &settings_path,
-            &[
-                ("apiKey", Value::String(plan.api_key.clone())),
-                ("baseUrl", Value::String(plan.base_url.clone())),
-            ],
-        )?;
+        let mut updates = vec![
+            ("apiKey", Value::String(plan.api_key.clone())),
+            ("baseUrl", Value::String(plan.base_url.clone())),
+        ];
+        if let Some(model) = &plan.model {
+            updates.push(("model", Value::String(model.clone())));
+        }
+        let changed = merge_json_keys(&settings_path, &updates)?;
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
     }

@@ -40,10 +40,18 @@ function toLoginResult(raw: RawLoginResponse): LoginResult {
   };
 }
 
+export interface GroupOption {
+  name: string;
+  desc: string;
+  ratio: number;
+  models: string[];
+}
+
 export interface BootstrapData {
   site: { base_url: string; system_name: string; server_version: string };
   user: { id: number; quota: number; group: string };
   models: string[];
+  groups?: GroupOption[];
   pricing: Record<string, unknown>;
   min_supported_version?: string;
   latest_version?: string;

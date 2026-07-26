@@ -101,20 +101,20 @@ export default function Login() {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-950">
-      <div className="w-full max-w-sm rounded-2xl bg-gray-900 p-8 shadow-xl">
+    <div className="flex h-screen items-center justify-center bg-transparent">
+      <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-white/5 p-8 shadow-xl">
         <div className="mb-8 text-center">
           <div className="mb-2 text-4xl">🐾</div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             {site?.system_name ?? "momo·摸摸"}
           </h1>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400">
             {stage === "login" ? "登录账号以使用 API 服务" : "请输入两步验证码"}
           </p>
         </div>
 
         {error && (
-          <div className="mb-4 rounded-lg bg-red-900/40 px-4 py-2 text-sm text-red-300">
+          <div className="mb-4 rounded-lg bg-red-500/10 px-4 py-2 text-sm text-red-600 dark:text-red-300">
             {error}
           </div>
         )}
@@ -122,24 +122,24 @@ export default function Login() {
         {stage === "login" ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-400">账号</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">账号</label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="用户名或邮箱"
                 autoComplete="username"
                 disabled={loading}
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-400">密码</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">密码</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="••••••••"
                 autoComplete="current-password"
                 disabled={loading}
@@ -149,7 +149,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-50"
             >
               {loading ? "登录中…" : "登录"}
             </button>
@@ -158,7 +158,7 @@ export default function Login() {
             <button
               type="button"
               onClick={() => open(REGISTER_URL)}
-              className="w-full text-center text-xs text-gray-400 transition hover:text-gray-200"
+              className="w-full text-center text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400 transition hover:text-gray-800 dark:text-gray-200"
             >
               还没有账号？前往官网注册
             </button>
@@ -166,7 +166,7 @@ export default function Login() {
         ) : (
           <form onSubmit={handle2FA} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-400">6 位验证码</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">6 位验证码</label>
               <input
                 type="text"
                 inputMode="numeric"
@@ -174,7 +174,7 @@ export default function Login() {
                 maxLength={6}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                className="w-full rounded-lg bg-gray-800 px-3 py-2 text-center text-lg tracking-widest text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-center text-lg tracking-widest text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="000000"
                 autoFocus
                 disabled={loading}
@@ -183,14 +183,14 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-50"
             >
               {loading ? "验证中…" : "确认"}
             </button>
             <button
               type="button"
               onClick={() => { setStage("login"); setCode(""); setError(""); }}
-              className="w-full text-sm text-gray-400 hover:text-gray-200"
+              className="w-full text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400 hover:text-gray-800 dark:text-gray-200"
             >
               ← 返回登录
             </button>

@@ -2,13 +2,15 @@ import { useEffect, useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
-import Targets from "./pages/Targets";
 import Usage from "./pages/Usage";
 import Settings from "./pages/Settings";
-import Devices from "./pages/Devices";
 import ForceUpgrade from "./pages/ForceUpgrade";
+import InstallGuide from "./pages/InstallGuide";
 import { loadAuth, saveAuth } from "./store/auth";
 import { api } from "./api/client";
+import { initTheme } from "./hooks/useTheme";
+
+initTheme();
 
 const APP_VERSION = "0.1.0";
 
@@ -62,8 +64,8 @@ function VersionGate({ children }: { children: React.ReactNode }) {
 
   if (!checked) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-950">
-        <span className="text-sm text-gray-400">加载中…</span>
+      <div className="flex h-screen items-center justify-center">
+        <span className="text-sm text-gray-500 dark:text-gray-400">加载中…</span>
       </div>
     );
   }
@@ -94,10 +96,9 @@ export default function App() {
             <VersionGate>
               <Routes>
                 <Route path="/home" element={<Home />} />
-                <Route path="/targets" element={<Targets />} />
                 <Route path="/usage" element={<Usage />} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/devices" element={<Devices />} />
+                <Route path="/install-guide" element={<InstallGuide />} />
                 <Route path="*" element={<Navigate to="/home" replace />} />
               </Routes>
             </VersionGate>

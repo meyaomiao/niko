@@ -14,6 +14,7 @@ pub struct ApplyRequest {
     pub base_url: String,
     pub api_key: String,
     pub model_group: Option<String>,
+    pub model: Option<String>,
 }
 
 #[tauri::command]
@@ -35,6 +36,7 @@ pub async fn apply_target(req: ApplyRequest) -> Result<Vec<String>, String> {
         base_url: req.base_url,
         api_key: req.api_key,
         model_group: req.model_group,
+        model: req.model,
     };
 
     let targets = all_targets();
@@ -57,8 +59,9 @@ pub async fn apply_all_targets(
     base_url: String,
     api_key: String,
     model_group: Option<String>,
+    model: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let plan = ApplyPlan { base_url, api_key, model_group };
+    let plan = ApplyPlan { base_url, api_key, model_group, model };
     let targets = all_targets();
     let mut results = Vec::new();
     for t in &targets {
@@ -89,7 +92,7 @@ pub async fn check_drift_cmd(
     api_key: String,
     model_group: Option<String>,
 ) -> Result<DriftReport, String> {
-    let plan = ApplyPlan { base_url, api_key, model_group };
+    let plan = ApplyPlan { base_url, api_key, model_group, model: None };
     check_drift(&target_id, &plan)
 }
 
@@ -99,7 +102,7 @@ pub async fn check_all_drift(
     api_key: String,
     model_group: Option<String>,
 ) -> Result<Vec<DriftReport>, String> {
-    let plan = ApplyPlan { base_url, api_key, model_group };
+    let plan = ApplyPlan { base_url, api_key, model_group, model: None };
     let targets = all_targets();
     let mut reports = Vec::new();
     for t in &targets {

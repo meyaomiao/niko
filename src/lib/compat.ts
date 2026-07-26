@@ -11,10 +11,10 @@ export const COMPAT_LABEL: Record<CompatLevel, string> = {
 };
 
 export const COMPAT_STYLE: Record<CompatLevel, string> = {
-  native: "bg-green-900/30 text-green-400",
-  good: "bg-blue-900/30 text-blue-400",
-  limited: "bg-yellow-900/30 text-yellow-400",
-  unsupported: "bg-gray-800 text-gray-500",
+  native: "bg-green-500/10 text-green-700 dark:text-green-400",
+  good: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  limited: "bg-yellow-500/10 text-yellow-700 dark:text-yellow-500",
+  unsupported: "bg-black/5 text-gray-500 dark:bg-white/10 dark:text-gray-400",
 };
 
 type Family = "claude" | "gpt" | "gemini" | "other";
