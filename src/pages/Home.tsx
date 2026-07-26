@@ -7,6 +7,7 @@ import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE } from "../lib/compat";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
+import { vendorOfGroup } from "../lib/vendor";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 
@@ -107,11 +108,7 @@ export default function Home() {
   const vendorSections = useMemo(() => {
     const buckets: Record<string, GroupOption[]> = { OpenAI: [], Anthropic: [], Google: [], 其他: [] };
     for (const g of groups) {
-      const n = g.name.toLowerCase();
-      if (n.startsWith("gpt") || n.includes("openai") || n.startsWith("codex")) buckets.OpenAI.push(g);
-      else if (n.startsWith("claude") || n.includes("kiro") || n.includes("cursor") || n.includes("copilot") || n.startsWith("cc")) buckets.Anthropic.push(g);
-      else if (n.startsWith("gemini") || n.includes("google")) buckets.Google.push(g);
-      else buckets.其他.push(g);
+      buckets[vendorOfGroup(g.name)].push(g);
     }
     return Object.entries(buckets).filter(([, list]) => list.length > 0);
   }, [groups]);

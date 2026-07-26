@@ -92,6 +92,29 @@ async function get<T>(path: string, token?: string): Promise<T> {
   return (json.data ?? json) as T;
 }
 
+export interface UsageQuery {
+  page?: number;
+  pageSize?: number;
+  startTimestamp?: number;
+  endTimestamp?: number;
+  group?: string;
+  /** 按厂商筛选时传入该厂商的模型名列表，日志列表侧只取第一个模型精确匹配 */
+  models?: string[];
+  modelName?: string;
+}
+
+function usageQueryString(params: UsageQuery): string {
+  const q = new URLSearchParams();
+  q.set("p", String(params.page ?? 1));
+  if (params.pageSize) q.set("page_size", String(params.pageSize));
+  if (params.startTimestamp) q.set("start_timestamp", String(params.startTimestamp));
+  if (params.endTimestamp) q.set("end_timestamp", String(params.endTimestamp));
+  if (params.group) q.set("group", params.group);
+  if (params.modelName) q.set("model_name", params.modelName);
+  if (params.models?.length) q.set("models", params.models.join(","));
+  return q.toString();
+}
+
 export const api = {
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");
@@ -133,11 +156,17 @@ export const api = {
   listDevices(token: string): Promise<DeviceItem[]> {
     return get<DeviceItem[]>("/client/devices", token);
   },
-  usage(token: string, pageSize = 20): Promise<{ items: UsageLogItem[] | null }> {
-    return get<{ items: UsageLogItem[] | null }>(
-      `/client/usage?p=1&page_size=${pageSize}&type=2`,
+  usage(
+    token: string,
+    params: UsageQuery = {}
+  ): Promise<{ items: UsageLogItem[] | null; total?: number }> {
+    return get<{ items: UsageLogItem[] | null; total?: number }>(
+      `/client/usage?type=2&${usageQueryString(params)}`,
       token
     );
+  },
+  usageSummary(token: string, params: UsageQuery = {}): Promise<UsageSummary> {
+    return get<UsageSummary>(`/client/usage/summary?${usageQueryString(params)}`, token);
   },
   revokeDevice(token: string, id: number): Promise<void> {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
@@ -179,4 +208,34 @@ export interface UsageLogItem {
   prompt_tokens: number;
   completion_tokens: number;
   quota: number;
+  group?: string;
+  use_time?: number;
+  is_stream?: boolean;
+}
+
+export interface UsageDimension {
+  name: string;
+  quota: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  requests: number;
+}
+
+export interface UsageDayBucket {
+  date: string;
+  quota: number;
+  tokens: number;
+  requests: number;
+}
+
+export interface UsageSummary {
+  quota: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  requests: number;
+  stream_requests: number;
+  total_use_time: number;
+  by_model: UsageDimension[] | null;
+  by_group: UsageDimension[] | null;
+  by_day: UsageDayBucket[] | null;
 }
