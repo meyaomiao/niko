@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 export default function Settings() {
   const auth = loadAuth();
   const navigate = useNavigate();
+
   const [pingUrl, setPingUrl] = useState("https://momotoken.win");
   const [pingResult, setPingResult] = useState<{
     reachable: boolean;
@@ -13,6 +14,58 @@ export default function Settings() {
     error?: string;
   } | null>(null);
   const [pinging, setPinging] = useState(false);
+
+  // E8-1: 开机自启
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("autostart_is_enabled")
+      .then(setAutostart)
+      .catch(() => setAutostart(null));
+  }, []);
+
+  const toggleAutostart = async () => {
+    if (autostart === null) return;
+    setAutostartBusy(true);
+    try {
+      if (autostart) {
+        await invoke("autostart_disable");
+        setAutostart(false);
+      } else {
+        await invoke("autostart_enable");
+        setAutostart(true);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
+
+  // E9-4: 检查更新
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const checkUpdate = async () => {
+    setCheckingUpdate(true);
+    setUpdateStatus(null);
+    try {
+      // tauri-plugin-updater 暴露为 JS API，通过 shell 调用 check
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update?.available) {
+        setUpdateStatus(`发现新版本 ${update.version}，正在下载安装…`);
+        await update.downloadAndInstall();
+      } else {
+        setUpdateStatus("已是最新版本");
+      }
+    } catch (e) {
+      setUpdateStatus(`检查失败：${String(e)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   const doPing = async () => {
     setPinging(true);
@@ -59,6 +112,32 @@ export default function Settings() {
             </button>
           </section>
 
+          {/* E8-1: 开机自启 */}
+          <section className="rounded-2xl bg-gray-900 p-5">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">启动设置</h2>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-200">开机自启</p>
+                <p className="mt-0.5 text-xs text-gray-500">登录时自动启动 momo·摸摸</p>
+              </div>
+              <button
+                onClick={toggleAutostart}
+                disabled={autostartBusy || autostart === null}
+                className={`relative h-6 w-11 rounded-full transition-colors disabled:opacity-40 ${
+                  autostart ? "bg-indigo-600" : "bg-gray-700"
+                }`}
+                role="switch"
+                aria-checked={autostart ?? false}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                    autostart ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+          </section>
+
           {/* 连通性检测 */}
           <section className="rounded-2xl bg-gray-900 p-5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">连通性自检</h2>
@@ -92,11 +171,21 @@ export default function Settings() {
             )}
           </section>
 
-          {/* 版本 */}
+          {/* E9-4: 版本与更新 */}
           <section className="rounded-2xl bg-gray-900 p-5">
-            <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">关于</h2>
-            <p className="text-xs text-gray-500">momo·摸摸登录器 v0.1.0</p>
-            <p className="mt-1 text-xs text-gray-600">momotoken.win</p>
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">关于 / 更新</h2>
+            <p className="text-xs text-gray-400">momo·摸摸登录器 v0.1.0</p>
+            <p className="mt-0.5 text-xs text-gray-600">momotoken.win</p>
+            <button
+              onClick={checkUpdate}
+              disabled={checkingUpdate}
+              className="mt-4 rounded-lg bg-gray-700 px-4 py-2 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+            >
+              {checkingUpdate ? "检查中…" : "检查更新"}
+            </button>
+            {updateStatus && (
+              <p className="mt-2 text-xs text-gray-400">{updateStatus}</p>
+            )}
           </section>
 
         </div>

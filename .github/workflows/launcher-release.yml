@@ -20,6 +20,10 @@ jobs:
   build-macos:
     name: macOS (signed + notarized)
     runs-on: macos-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.version }}
+      macos_sig: ${{ steps.sig.outputs.signature }}
+      macos_url: ${{ steps.url.outputs.url }}
     defaults:
       run:
         working-directory: launcher
@@ -43,7 +47,12 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # 将证书导入 keychain
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Import Apple Developer Certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -63,7 +72,6 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm /tmp/certificate.p12
 
-      # Tauri 构建 universal binary（arm64 + x86_64）+ 公证
       - name: Build (universal) & Notarize
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -72,16 +80,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          npx tauri build --target universal-apple-darwin \
-            -- --features ""
+          npx tauri build --target universal-apple-darwin
 
-      - name: Compute SHA256
+      - name: Compute SHA256 & extract updater sig
+        id: sig
         run: |
           cd src-tauri/target/universal-apple-darwin/release/bundle
           find . -name "*.dmg" -o -name "*.app.tar.gz" | while read f; do
             shasum -a 256 "$f"
           done > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          # 提取 .app.tar.gz.sig（tauri updater 签名）
+          SIG=$(cat macos/*.app.tar.gz.sig 2>/dev/null || echo "")
+          echo "signature=$SIG" >> "$GITHUB_OUTPUT"
+
+      - name: Set macOS download URL
+        id: url
+        run: |
+          TAG=${{ github.ref_name || inputs.tag }}
+          VER=${{ steps.version.outputs.version }}
+          echo "url=https://github.com/meyaomiao/momotoken-new-api/releases/download/${TAG}/momo-摸摸_${VER}_universal.app.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -90,6 +108,7 @@ jobs:
           path: |
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
+            launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz.sig
             launcher/src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
 
   # ──────────────────────────────────────────────────────────────
@@ -98,6 +117,9 @@ jobs:
   build-windows:
     name: Windows (unsigned + SHA256)
     runs-on: windows-latest
+    outputs:
+      win_sig: ${{ steps.sig.outputs.signature }}
+      win_url: ${{ steps.url.outputs.url }}
     defaults:
       run:
         working-directory: launcher
@@ -125,7 +147,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
-      - name: Compute SHA256
+      - name: Compute SHA256 & extract updater sig
+        id: sig
         shell: pwsh
         run: |
           $bundles = Get-ChildItem `
@@ -140,6 +163,17 @@ jobs:
           }
           $out | Out-File -FilePath SHA256SUMS_win.txt -Encoding utf8
           Get-Content SHA256SUMS_win.txt
+          $sigFile = Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.msi.zip.sig" | Select-Object -First 1
+          $sig = if ($sigFile) { Get-Content $sigFile.FullName -Raw } else { "" }
+          echo "signature=$($sig.Trim())" >> $env:GITHUB_OUTPUT
+
+      - name: Set Windows download URL
+        id: url
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name || inputs.tag }}"
+          $ver = node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)"
+          echo "url=https://github.com/meyaomiao/momotoken-new-api/releases/download/$tag/momo-摸摸_${ver}_x64_en-US.msi.zip" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -147,11 +181,13 @@ jobs:
           name: windows-unsigned
           path: |
             launcher/src-tauri/target/release/bundle/**/*.msi
+            launcher/src-tauri/target/release/bundle/**/*.msi.zip
+            launcher/src-tauri/target/release/bundle/**/*.msi.zip.sig
             launcher/src-tauri/target/release/bundle/**/*.exe
             launcher/SHA256SUMS_win.txt
 
   # ──────────────────────────────────────────────────────────────
-  # 创建 GitHub Release
+  # E9-4: 生成 latest.json（Tauri updater 所需）
   # ──────────────────────────────────────────────────────────────
   release:
     name: Create Release
@@ -167,6 +203,34 @@ jobs:
 
       - name: List artifacts
         run: find release-artifacts -type f | sort
+
+      - name: Generate latest.json
+        run: |
+          TAG=${{ github.ref_name || inputs.tag }}
+          VER=${{ needs.build-macos.outputs.app_version }}
+          MACOS_SIG='${{ needs.build-macos.outputs.macos_sig }}'
+          MACOS_URL='${{ needs.build-macos.outputs.macos_url }}'
+          WIN_SIG='${{ needs.build-windows.outputs.win_sig }}'
+          WIN_URL='${{ needs.build-windows.outputs.win_url }}'
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          cat > latest.json << JSON
+          {
+            "version": "$VER",
+            "notes": "查看 Release Notes：https://github.com/meyaomiao/momotoken-new-api/releases/tag/$TAG",
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "darwin-universal": {
+                "signature": "$MACOS_SIG",
+                "url": "$MACOS_URL"
+              },
+              "windows-x86_64": {
+                "signature": "$WIN_SIG",
+                "url": "$WIN_URL"
+              }
+            }
+          }
+          JSON
+          cat latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -189,6 +253,9 @@ jobs:
             ## Windows SmartScreen 说明 {#windows-smartscreen}
 
             首次运行安装包时，Windows SmartScreen 会提示"Windows 已保护你的电脑"。
-            点击"更多信息" → "仍要运行"即可继续安装。
+            点击 **更多信息** → **仍要运行** 即可继续安装。
             这是因为当前版本尚未购买代码签名证书，程序本身是安全的。
-          files: release-artifacts/**/*
+            SHA256 校验和已公示，可自行核验。
+          files: |
+            release-artifacts/**/*
+            latest.json

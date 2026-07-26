@@ -15,6 +15,22 @@ interface ApplyResult {
   error?: string;
 }
 
+// E8-2: 进程状态
+interface ProcessStatus {
+  target_id: string;
+  running: boolean;
+  pid?: number;
+}
+
+// E4-3: 兼容等级
+type CompatLevel = "full" | "partial" | "none";
+
+const TARGET_COMPAT: Record<string, { level: CompatLevel; note: string }> = {
+  "codex": { level: "full", note: "完整支持：API Key、Base URL、模型选择" },
+  "claude-desktop": { level: "partial", note: "部分支持：通过 MCP 代理，原生工具调用不可用" },
+  "claude-code": { level: "full", note: "完整支持：API Key、Base URL 均可覆盖" },
+};
+
 const TARGET_ICONS: Record<string, string> = {
   "codex": "⌨️",
   "claude-desktop": "🖥️",
@@ -27,18 +43,45 @@ const TARGET_DESC: Record<string, string> = {
   "claude-code": "写入 ~/.claude/settings.json",
 };
 
+function CompatBadge({ level, note }: { level: CompatLevel; note: string }) {
+  const styles: Record<CompatLevel, string> = {
+    full: "bg-green-900/30 text-green-400",
+    partial: "bg-yellow-900/30 text-yellow-400",
+    none: "bg-gray-800 text-gray-500",
+  };
+  const labels: Record<CompatLevel, string> = {
+    full: "完整兼容",
+    partial: "部分兼容",
+    none: "不支持",
+  };
+  return (
+    <span title={note} className={`inline-block rounded-full px-2 py-0.5 text-xs ${styles[level]}`}>
+      {labels[level]}
+    </span>
+  );
+}
+
 export default function Targets() {
   const auth = loadAuth();
   const [targets, setTargets] = useState<TargetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
+  const [procs, setProcs] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     invoke<TargetInfo[]>("list_targets")
       .then(setTargets)
       .catch(console.error)
       .finally(() => setLoading(false));
+    // E8-2: 同步获取进程状态
+    invoke<ProcessStatus[]>("check_all_processes")
+      .then((list) => {
+        const m: Record<string, boolean> = {};
+        list.forEach((p) => { m[p.target_id] = p.running; });
+        setProcs(m);
+      })
+      .catch(() => {});
   }, []);
 
   const applyOne = async (targetId: string) => {
@@ -53,15 +96,9 @@ export default function Targets() {
           model_group: auth.group || null,
         },
       });
-      setResults((r) => ({
-        ...r,
-        [targetId]: { id: targetId, ok: true, changed },
-      }));
+      setResults((r) => ({ ...r, [targetId]: { id: targetId, ok: true, changed } }));
     } catch (e) {
-      setResults((r) => ({
-        ...r,
-        [targetId]: { id: targetId, ok: false, error: String(e) },
-      }));
+      setResults((r) => ({ ...r, [targetId]: { id: targetId, ok: false, error: String(e) } }));
     } finally {
       setApplying(null);
     }
@@ -98,7 +135,6 @@ export default function Targets() {
 
   return (
     <div className="flex h-screen flex-col bg-gray-950">
-      {/* 顶部 */}
       <header className="flex items-center justify-between border-b border-gray-800 px-6 py-4">
         <div>
           <h1 className="text-sm font-semibold text-white">接入目标</h1>
@@ -115,26 +151,36 @@ export default function Targets() {
         </button>
       </header>
 
-      {/* 目标列表 */}
       <main className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-lg space-y-3">
           {targets.map((t) => {
             const result = results[t.id];
             const isBusy = applying === t.id || applying === "__all__";
+            const compat = TARGET_COMPAT[t.id] ?? { level: "none" as CompatLevel, note: "未知兼容性" };
+            const isRunning = procs[t.id] ?? false;
+
             return (
               <div
                 key={t.id}
                 className={`rounded-2xl border p-5 transition ${
-                  t.installed
-                    ? "border-gray-700 bg-gray-900"
-                    : "border-gray-800 bg-gray-900/50 opacity-60"
+                  t.installed ? "border-gray-700 bg-gray-900" : "border-gray-800 bg-gray-900/50 opacity-60"
                 }`}
               >
                 <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 text-xl">{TARGET_ICONS[t.id] ?? "🔧"}</span>
-                    <div>
-                      <p className="text-sm font-medium text-white">{t.name}</p>
+                  <div className="flex items-start gap-3 min-w-0">
+                    <span className="mt-0.5 text-xl shrink-0">{TARGET_ICONS[t.id] ?? "🔧"}</span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-white">{t.name}</p>
+                        <CompatBadge level={compat.level} note={compat.note} />
+                        {t.installed && (
+                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                            isRunning ? "bg-green-900/30 text-green-400" : "bg-gray-800 text-gray-500"
+                          }`}>
+                            {isRunning ? "● 运行中" : "○ 未运行"}
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-0.5 text-xs text-gray-500">{TARGET_DESC[t.id]}</p>
                       {!t.installed && (
                         <p className="mt-1 text-xs text-yellow-600">未检测到安装</p>
@@ -150,21 +196,14 @@ export default function Targets() {
                   </button>
                 </div>
 
-                {/* 结果反馈 */}
                 {result && (
-                  <div
-                    className={`mt-3 rounded-lg px-3 py-2 text-xs ${
-                      result.ok
-                        ? "bg-green-900/30 text-green-400"
-                        : "bg-red-900/30 text-red-400"
-                    }`}
-                  >
+                  <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${
+                    result.ok ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"
+                  }`}>
                     {result.ok ? (
-                      result.changed && result.changed.length > 0 ? (
-                        <>✓ 已更新：{result.changed.join("、")}</>
-                      ) : (
-                        <>✓ 配置已是最新，无需变更</>
-                      )
+                      result.changed && result.changed.length > 0
+                        ? <>✓ 已更新：{result.changed.join("、")}</>
+                        : <>✓ 配置已是最新，无需变更</>
                     ) : (
                       <>✗ {result.error}</>
                     )}

@@ -7,3 +7,5 @@ src-tauri/WixTools/
 src-tauri/gen/
 .DS_Store
 *.swp
+src-tauri/icons/android/
+src-tauri/icons/ios/
