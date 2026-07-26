@@ -18,6 +18,27 @@ export interface LoginResult {
   email?: string;
 }
 
+// 后端 /api/client/login 的原始返回：成功时是 session_token + 嵌套 user，
+// 需要 2FA 时是 require_2fa + pending_token。
+interface RawLoginResponse {
+  require_2fa?: boolean;
+  pending_token?: string;
+  expires_in?: number;
+  session_token?: string;
+  user?: { username?: string; email?: string };
+}
+
+function toLoginResult(raw: RawLoginResponse): LoginResult {
+  return {
+    require_2fa: raw.require_2fa === true,
+    pending_token: raw.pending_token,
+    expires_in: raw.expires_in,
+    access_token: raw.session_token,
+    username: raw.user?.username,
+    email: raw.user?.email,
+  };
+}
+
 export interface BootstrapData {
   site: { base_url: string; system_name: string; server_version: string };
   user: { id: number; quota: number; group: string };
@@ -63,7 +84,7 @@ export const api = {
     platform: string;
     turnstile: string;
   }): Promise<LoginResult> {
-    return post<LoginResult>(
+    return post<RawLoginResponse>(
       `/client/login?turnstile=${encodeURIComponent(params.turnstile)}`,
       {
         username: params.username,
@@ -73,13 +94,13 @@ export const api = {
         platform: params.platform,
         app_version: "0.1.0",
       }
-    );
+    ).then(toLoginResult);
   },
   login2fa(pendingToken: string, code: string): Promise<LoginResult> {
-    return post<LoginResult>("/client/login/2fa", {
+    return post<RawLoginResponse>("/client/login/2fa", {
       pending_token: pendingToken,
       code,
-    });
+    }).then(toLoginResult);
   },
   logout(token: string): Promise<void> {
     return post<void>("/client/logout", {}, token);
