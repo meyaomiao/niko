@@ -6,6 +6,7 @@ import { api, type BootstrapData, type GroupOption, type DeviceItem } from "../a
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE } from "../lib/compat";
+import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 
@@ -102,12 +103,36 @@ export default function Home() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: GroupOption[] = bootstrap?.groups ?? [];
+  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」
+  const vendorSections = useMemo(() => {
+    const buckets: Record<string, GroupOption[]> = { OpenAI: [], Anthropic: [], Google: [], 其他: [] };
+    for (const g of groups) {
+      const n = g.name.toLowerCase();
+      if (n.startsWith("gpt") || n.includes("openai") || n.startsWith("codex")) buckets.OpenAI.push(g);
+      else if (n.startsWith("claude") || n.includes("kiro") || n.includes("cursor") || n.includes("copilot") || n.startsWith("cc")) buckets.Anthropic.push(g);
+      else if (n.startsWith("gemini") || n.includes("google")) buckets.Google.push(g);
+      else buckets.其他.push(g);
+    }
+    return Object.entries(buckets).filter(([, list]) => list.length > 0);
+  }, [groups]);
   const currentGroup = groups.find((g) => g.name === group);
+  const groupRatio = currentGroup?.ratio ?? 1;
+  const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
   const models = useMemo(() => {
     const list = currentGroup?.models ?? bootstrap?.models ?? [];
     const kw = modelFilter.trim().toLowerCase();
     return kw ? list.filter((m) => m.toLowerCase().includes(kw)) : list;
   }, [currentGroup, bootstrap, modelFilter]);
+
+  // 列表内联价格：按次计费显示单次价格，否则显示「输入 / 输出」
+  const priceLabel = (name: string) => {
+    const p = priceOf(pricingIndex.get(name), groupRatio);
+    if (!p) return "";
+    if (p.perRequest) return `${fmtUSD(p.input)}/次`;
+    return `${fmtUSD(p.input)} / ${fmtUSD(p.output)}`;
+  };
+
+  const selectedPrice = priceOf(pricingIndex.get(model), groupRatio);
 
   const pickGroup = (name: string) => {
     setGroup(name);
@@ -262,7 +287,7 @@ export default function Home() {
             <div className="mb-3 flex items-center justify-between">
               <h2 className={TITLE}>选择模型</h2>
               {currentGroup && (
-                <span className={SUBTLE}>倍率 {currentGroup.ratio}x</span>
+                <span className={SUBTLE}>价格按每百万 token</span>
               )}
             </div>
 
@@ -271,21 +296,30 @@ export default function Home() {
             ) : (
               <>
                 <p className={LABEL}>套餐分组</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {groups.map((g) => (
-                    <button
-                      key={g.name}
-                      onClick={() => pickGroup(g.name)}
-                      title={g.desc}
-                      className={`rounded-full px-3 py-1.5 text-xs transition ${
-                        g.name === group
-                          ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                          : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
-                      }`}
-                    >
-                      {g.name}
-                      <span className="ml-1 opacity-60">{g.models.length}</span>
-                    </button>
+                <div className="mt-2 space-y-3">
+                  {vendorSections.map(([vendor, list]) => (
+                    <div key={vendor}>
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                        {vendor}
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-2">
+                        {list.map((g) => (
+                          <button
+                            key={g.name}
+                            onClick={() => pickGroup(g.name)}
+                            title={g.desc}
+                            className={`rounded-full px-3 py-1.5 text-xs transition ${
+                              g.name === group
+                                ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                                : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
+                            }`}
+                          >
+                            {g.name}
+                            <span className="ml-1.5 opacity-60">{g.ratio}x</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
                 {currentGroup?.desc && (
@@ -293,7 +327,10 @@ export default function Home() {
                 )}
 
                 <div className="mt-4 flex items-center justify-between gap-3">
-                  <p className={LABEL}>模型</p>
+                  <p className={LABEL}>
+                    模型
+                    <span className="ml-1.5 opacity-70">{models.length}</span>
+                  </p>
                   <input
                     value={modelFilter}
                     onChange={(e) => setModelFilter(e.target.value)}
@@ -314,10 +351,47 @@ export default function Home() {
                       }`}
                     >
                       <span className="truncate font-mono">{m}</span>
-                      {m === model && <span className="ml-2 shrink-0">✓</span>}
+                      <span className="ml-2 flex shrink-0 items-center gap-2">
+                        <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
+                          {priceLabel(m)}
+                        </span>
+                        {m === model && <span>✓</span>}
+                      </span>
                     </button>
                   ))}
                 </div>
+
+                {selectedPrice && (
+                  <div className="mt-3 rounded-xl bg-black/[0.03] px-3 py-2.5 dark:bg-white/5">
+                    <p className={LABEL}>
+                      {model} 价格（已含 {groupRatio}x 分组倍率）
+                    </p>
+                    {selectedPrice.perRequest ? (
+                      <p className="mt-1.5 text-xs text-gray-700 dark:text-gray-200">
+                        按次计费 {fmtUSD(selectedPrice.input)} / 次
+                      </p>
+                    ) : (
+                      <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-700 dark:text-gray-200">
+                        <span>
+                          输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
+                        </span>
+                        <span>
+                          输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
+                        </span>
+                        {selectedPrice.cache !== undefined && (
+                          <span>
+                            读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
+                          </span>
+                        )}
+                        {selectedPrice.createCache !== undefined && (
+                          <span>
+                            写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <button
                   onClick={enable}

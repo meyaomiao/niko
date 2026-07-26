@@ -47,12 +47,23 @@ export interface GroupOption {
   models: string[];
 }
 
+export interface PricingItem {
+  model_name: string;
+  quota_type: number;
+  model_ratio: number;
+  model_price: number;
+  completion_ratio: number;
+  cache_ratio?: number | null;
+  create_cache_ratio?: number | null;
+  enable_groups?: string[];
+}
+
 export interface BootstrapData {
   site: { base_url: string; system_name: string; server_version: string };
   user: { id: number; quota: number; group: string };
   models: string[];
   groups?: GroupOption[];
-  pricing: Record<string, unknown>;
+  pricing: PricingItem[];
   min_supported_version?: string;
   latest_version?: string;
   download_url?: string;
