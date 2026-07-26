@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth } from "../store/auth";
+import {
+  baselineFor,
+  COMPAT_LABEL,
+  COMPAT_STYLE,
+  formatCheckedAt,
+  type CompatLevel,
+  type CompatProbe,
+} from "../lib/compat";
+
+const BASE_URL = "https://momotoken.win/v1";
 
 interface TargetInfo {
   id: string;
@@ -22,15 +32,6 @@ interface ProcessStatus {
   pid?: number;
 }
 
-// E4-3: 兼容等级
-type CompatLevel = "full" | "partial" | "none";
-
-const TARGET_COMPAT: Record<string, { level: CompatLevel; note: string }> = {
-  "codex": { level: "full", note: "完整支持：API Key、Base URL、模型选择" },
-  "claude-desktop": { level: "partial", note: "部分支持：通过 MCP 代理，原生工具调用不可用" },
-  "claude-code": { level: "full", note: "完整支持：API Key、Base URL 均可覆盖" },
-};
-
 const TARGET_ICONS: Record<string, string> = {
   "codex": "⌨️",
   "claude-desktop": "🖥️",
@@ -43,20 +44,20 @@ const TARGET_DESC: Record<string, string> = {
   "claude-code": "写入 ~/.claude/settings.json",
 };
 
-function CompatBadge({ level, note }: { level: CompatLevel; note: string }) {
-  const styles: Record<CompatLevel, string> = {
-    full: "bg-green-900/30 text-green-400",
-    partial: "bg-yellow-900/30 text-yellow-400",
-    none: "bg-gray-800 text-gray-500",
-  };
-  const labels: Record<CompatLevel, string> = {
-    full: "完整兼容",
-    partial: "部分兼容",
-    none: "不支持",
-  };
+// E7-2: 兼容等级 badge，实测过的会带 ✓/! 标记
+function CompatBadge({
+  level,
+  note,
+  measured,
+}: {
+  level: CompatLevel;
+  note: string;
+  measured?: "ok" | "fail";
+}) {
+  const mark = measured === "ok" ? "✓ " : measured === "fail" ? "! " : "";
   return (
-    <span title={note} className={`inline-block rounded-full px-2 py-0.5 text-xs ${styles[level]}`}>
-      {labels[level]}
+    <span title={note} className={`inline-block rounded-full px-2 py-0.5 text-xs ${COMPAT_STYLE[level]}`}>
+      {mark}{COMPAT_LABEL[level]}
     </span>
   );
 }
@@ -68,6 +69,10 @@ export default function Targets() {
   const [applying, setApplying] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
   const [procs, setProcs] = useState<Record<string, boolean>>({});
+  // E7-2: 实测结果
+  const [probes, setProbes] = useState<Record<string, CompatProbe>>({});
+  const [probing, setProbing] = useState(false);
+  const probeModel = auth?.group ? `${auth.group} 分组默认模型` : "";
 
   useEffect(() => {
     invoke<TargetInfo[]>("list_targets")
@@ -84,6 +89,35 @@ export default function Targets() {
       .catch(() => {});
   }, []);
 
+  // E7-2: 用当前分组的默认模型实测每个目标，实测结果只降级不升级
+  const runProbe = async () => {
+    if (!auth?.apiKey) return;
+    setProbing(true);
+    try {
+      const model = await invoke<string>("resolve_model_cmd", {
+        role: "balanced",
+        group: auth.group || null,
+      });
+      const baselines: Record<string, string> = {};
+      targets.forEach((t) => {
+        baselines[t.id] = baselineFor(t.id, model).level;
+      });
+      const list = await invoke<CompatProbe[]>("probe_compat", {
+        baseUrl: BASE_URL,
+        apiKey: auth.apiKey,
+        model,
+        baselines,
+      });
+      const map: Record<string, CompatProbe> = {};
+      list.forEach((p) => { map[p.target_id] = p; });
+      setProbes(map);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const applyOne = async (targetId: string) => {
     if (!auth) return;
     setApplying(targetId);
@@ -91,7 +125,7 @@ export default function Targets() {
       const changed = await invoke<string[]>("apply_target", {
         req: {
           target_id: targetId,
-          base_url: "https://momotoken.win/v1",
+          base_url: BASE_URL,
           api_key: auth.apiKey,
           model_group: auth.group || null,
         },
@@ -109,7 +143,7 @@ export default function Targets() {
     setApplying("__all__");
     try {
       const res = await invoke<ApplyResult[]>("apply_all_targets", {
-        baseUrl: "https://momotoken.win/v1",
+        baseUrl: BASE_URL,
         apiKey: auth.apiKey,
         modelGroup: auth.group || null,
       });
@@ -142,13 +176,22 @@ export default function Targets() {
             检测到 {installedCount}/{targets.length} 个应用已安装
           </p>
         </div>
-        <button
-          onClick={applyAll}
-          disabled={applying !== null || installedCount === 0}
-          className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
-        >
-          {applying === "__all__" ? "应用中…" : "一键配置全部"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={runProbe}
+            disabled={probing || installedCount === 0 || !auth?.apiKey}
+            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:bg-gray-800 disabled:opacity-40"
+          >
+            {probing ? "实测中…" : "实测兼容性"}
+          </button>
+          <button
+            onClick={applyAll}
+            disabled={applying !== null || installedCount === 0}
+            className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
+          >
+            {applying === "__all__" ? "应用中…" : "一键配置全部"}
+          </button>
+        </div>
       </header>
 
       <main className="flex-1 overflow-y-auto p-6">
@@ -156,7 +199,11 @@ export default function Targets() {
           {targets.map((t) => {
             const result = results[t.id];
             const isBusy = applying === t.id || applying === "__all__";
-            const compat = TARGET_COMPAT[t.id] ?? { level: "none" as CompatLevel, note: "未知兼容性" };
+            const probe = probes[t.id];
+            const baseline = baselineFor(t.id, probe?.model ?? probeModel);
+            // 实测过就以实测等级为准（只降不升），否则显示基线
+            const level = probe?.level ?? baseline.level;
+            const note = probe?.detail ?? baseline.note;
             const isRunning = procs[t.id] ?? false;
 
             return (
@@ -172,7 +219,11 @@ export default function Targets() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-white">{t.name}</p>
-                        <CompatBadge level={compat.level} note={compat.note} />
+                        <CompatBadge
+                          level={level}
+                          note={note}
+                          measured={probe ? (probe.ok ? "ok" : "fail") : undefined}
+                        />
                         {t.installed && (
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${
                             isRunning ? "bg-green-900/30 text-green-400" : "bg-gray-800 text-gray-500"
@@ -184,6 +235,15 @@ export default function Targets() {
                       <p className="mt-0.5 text-xs text-gray-500">{TARGET_DESC[t.id]}</p>
                       {!t.installed && (
                         <p className="mt-1 text-xs text-yellow-600">未检测到安装</p>
+                      )}
+                      {probe && (
+                        <p className={`mt-1 text-xs ${probe.ok ? "text-gray-500" : "text-yellow-600"}`}>
+                          实测 {probe.model}
+                          {probe.ok
+                            ? ` 通过${probe.latency_ms != null ? `（${probe.latency_ms}ms）` : ""}`
+                            : ` 未通过：${probe.detail ?? probe.error_kind ?? "未知原因"}`}
+                          {probe.checked_at ? ` · ${formatCheckedAt(probe.checked_at)}` : ""}
+                        </p>
                       )}
                     </div>
                   </div>

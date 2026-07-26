@@ -3,27 +3,104 @@ import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
 
+interface SnapshotEntry {
+  target_id: string;
+  filename: string;
+  timestamp: number;
+  original_name: string;
+}
+
+interface DiagPingResult {
+  reachable: boolean;
+  latency_ms?: number;
+  error_kind?: string;
+  error_detail?: string;
+  suggestion?: string;
+}
+
+const ERROR_KIND_LABELS: Record<string, string> = {
+  network: "网络不通",
+  auth: "API Key 无效",
+  server: "服务端错误",
+  unknown: "未知错误",
+};
+
+const TARGET_LABELS: Record<string, string> = {
+  "codex": "Codex",
+  "claude-desktop": "Claude Desktop",
+  "claude-code": "Claude Code",
+};
+
+const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-code"];
+
+function formatTime(ts: number): string {
+  return new Date(ts * 1000).toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 export default function Settings() {
   const auth = loadAuth();
   const navigate = useNavigate();
 
+  // 连通性检测
   const [pingUrl, setPingUrl] = useState("https://momotoken.win");
-  const [pingResult, setPingResult] = useState<{
-    reachable: boolean;
-    latency_ms?: number;
-    error?: string;
-  } | null>(null);
+  const [pingResult, setPingResult] = useState<DiagPingResult | null>(null);
   const [pinging, setPinging] = useState(false);
 
-  // E8-1: 开机自启
+  // 日志导出 (E7-3)
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  // 开机自启
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [autostartBusy, setAutostartBusy] = useState(false);
+
+  // 快照恢复 (E5-5)
+  const [snapshots, setSnapshots] = useState<Record<string, SnapshotEntry[]>>({});
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoreMsg, setRestoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // 检查更新
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
     invoke<boolean>("autostart_is_enabled")
       .then(setAutostart)
       .catch(() => setAutostart(null));
+    loadSnapshots();
   }, []);
+
+  const loadSnapshots = async () => {
+    setSnapshotLoading(true);
+    const result: Record<string, SnapshotEntry[]> = {};
+    await Promise.all(
+      ALL_TARGET_IDS.map(async (id) => {
+        try {
+          const list = await invoke<SnapshotEntry[]>("list_snapshots", { targetId: id });
+          if (list.length > 0) result[id] = list;
+        } catch { /* ignore */ }
+      })
+    );
+    setSnapshots(result);
+    setSnapshotLoading(false);
+  };
+
+  const restoreSnapshot = async (targetId: string, filename: string) => {
+    setRestoring(`${targetId}:${filename}`);
+    setRestoreMsg(null);
+    try {
+      await invoke("restore_snapshot", { targetId, filename });
+      setRestoreMsg({ ok: true, text: `✓ 已恢复 ${TARGET_LABELS[targetId] ?? targetId} 的快照` });
+    } catch (e) {
+      setRestoreMsg({ ok: false, text: `✗ 恢复失败：${String(e)}` });
+    } finally {
+      setRestoring(null);
+    }
+  };
 
   const toggleAutostart = async () => {
     if (autostart === null) return;
@@ -43,15 +120,10 @@ export default function Settings() {
     }
   };
 
-  // E9-4: 检查更新
-  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-
   const checkUpdate = async () => {
     setCheckingUpdate(true);
     setUpdateStatus(null);
     try {
-      // tauri-plugin-updater 暴露为 JS API，通过 shell 调用 check
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update?.available) {
@@ -71,15 +143,40 @@ export default function Settings() {
     setPinging(true);
     setPingResult(null);
     try {
-      const r = await invoke<{ reachable: boolean; latency_ms?: number; error?: string }>(
-        "ping",
-        { url: pingUrl }
-      );
+      const r = await invoke<DiagPingResult>("ping_diag", { url: pingUrl });
       setPingResult(r);
     } catch (e) {
-      setPingResult({ reachable: false, error: String(e) });
+      setPingResult({
+        reachable: false,
+        error_kind: "unknown",
+        error_detail: String(e),
+        suggestion: "请导出日志后联系支持",
+      });
     } finally {
       setPinging(false);
+    }
+  };
+
+  const exportLog = async () => {
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const dest = await save({
+        defaultPath: `momo-launcher-${stamp}.log`,
+        filters: [{ name: "日志", extensions: ["log", "txt"] }],
+      });
+      if (!dest) {
+        setExporting(false);
+        return;
+      }
+      const written = await invoke<string>("export_log", { destPath: dest });
+      setExportMsg(`✓ 日志已导出到 ${written}`);
+    } catch (e) {
+      setExportMsg(`✗ 导出失败：${String(e)}`);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -87,6 +184,8 @@ export default function Settings() {
     clearAuth();
     navigate("/login", { replace: true });
   };
+
+  const hasAnySnapshot = Object.keys(snapshots).length > 0;
 
   return (
     <div className="flex h-screen flex-col bg-gray-950">
@@ -112,7 +211,7 @@ export default function Settings() {
             </button>
           </section>
 
-          {/* E8-1: 开机自启 */}
+          {/* 开机自启 */}
           <section className="rounded-2xl bg-gray-900 p-5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">启动设置</h2>
             <div className="flex items-center justify-between">
@@ -138,6 +237,71 @@ export default function Settings() {
             </div>
           </section>
 
+          {/* E5-5: 快照恢复 */}
+          <section className="rounded-2xl bg-gray-900 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">配置快照恢复</h2>
+              <button
+                onClick={loadSnapshots}
+                disabled={snapshotLoading}
+                className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
+              >
+                {snapshotLoading ? "刷新中…" : "刷新"}
+              </button>
+            </div>
+
+            {restoreMsg && (
+              <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${
+                restoreMsg.ok ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"
+              }`}>
+                {restoreMsg.text}
+              </div>
+            )}
+
+            {!hasAnySnapshot && !snapshotLoading && (
+              <p className="text-xs text-gray-500">
+                暂无备份。首次配置接入目标后会自动创建快照。
+              </p>
+            )}
+
+            {ALL_TARGET_IDS.filter((id) => snapshots[id]).map((targetId) => {
+              const list = snapshots[targetId];
+              // 只展示最新 3 条
+              const latest = list.slice(0, 3);
+              return (
+                <div key={targetId} className="mb-4 last:mb-0">
+                  <p className="mb-2 text-xs font-medium text-gray-300">
+                    {TARGET_LABELS[targetId] ?? targetId}
+                  </p>
+                  <div className="space-y-1.5">
+                    {latest.map((snap) => {
+                      const key = `${targetId}:${snap.filename}`;
+                      const isRestoring = restoring === key;
+                      return (
+                        <div
+                          key={snap.filename}
+                          className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2"
+                        >
+                          <div>
+                            <p className="text-xs text-gray-200">{snap.original_name}</p>
+                            <p className="text-xs text-gray-500">{formatTime(snap.timestamp)}</p>
+                          </div>
+                          <button
+                            onClick={() => restoreSnapshot(targetId, snap.filename)}
+                            disabled={isRestoring || restoring !== null}
+                            className="rounded-md bg-gray-700 px-3 py-1 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+                          >
+                            {isRestoring ? "恢复中…" : "恢复"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+
           {/* 连通性检测 */}
           <section className="rounded-2xl bg-gray-900 p-5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">连通性自检</h2>
@@ -157,21 +321,41 @@ export default function Settings() {
               </button>
             </div>
             {pingResult && (
-              <div
-                className={`mt-3 rounded-lg px-3 py-2 text-xs ${
-                  pingResult.reachable
-                    ? "bg-green-900/30 text-green-400"
-                    : "bg-red-900/30 text-red-400"
-                }`}
-              >
-                {pingResult.reachable
-                  ? `✓ 可达，延迟 ${pingResult.latency_ms ?? "?"}ms`
-                  : `✗ 不可达：${pingResult.error ?? "未知错误"}`}
-              </div>
+              pingResult.reachable ? (
+                <div className="mt-3 rounded-lg bg-green-900/30 px-3 py-2 text-xs text-green-400">
+                  ✓ 可达，延迟 {pingResult.latency_ms ?? "?"}ms
+                </div>
+              ) : (
+                <div className="mt-3 space-y-1.5 rounded-lg bg-red-900/30 px-3 py-2 text-xs text-red-300">
+                  <p className="font-medium text-red-400">
+                    ✗ {ERROR_KIND_LABELS[pingResult.error_kind ?? "unknown"]}
+                  </p>
+                  {pingResult.error_detail && (
+                    <p className="text-red-300/80">详情：{pingResult.error_detail}</p>
+                  )}
+                  {pingResult.suggestion && (
+                    <p className="text-gray-300">建议：{pingResult.suggestion}</p>
+                  )}
+                </div>
+              )
             )}
+
+            <div className="mt-4 border-t border-gray-800 pt-4">
+              <p className="mb-2 text-xs text-gray-500">
+                导出的日志已对 API Key 做脱敏处理，不含完整密钥。
+              </p>
+              <button
+                onClick={exportLog}
+                disabled={exporting}
+                className="rounded-lg bg-gray-700 px-4 py-2 text-xs text-gray-200 transition hover:bg-gray-600 disabled:opacity-40"
+              >
+                {exporting ? "导出中…" : "导出日志"}
+              </button>
+              {exportMsg && <p className="mt-2 break-all text-xs text-gray-400">{exportMsg}</p>}
+            </div>
           </section>
 
-          {/* E9-4: 版本与更新 */}
+          {/* 版本与更新 */}
           <section className="rounded-2xl bg-gray-900 p-5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-400">关于 / 更新</h2>
             <p className="text-xs text-gray-400">momo·摸摸登录器 v0.1.0</p>

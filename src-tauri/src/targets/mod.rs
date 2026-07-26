@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fsx;
+use crate::commands::snapshots::save_backup;
 
 // ─── 公共结构 ───────────────────────────────────────────────────────────────
 
@@ -165,6 +166,8 @@ impl Target for CodexTarget {
 
         // 写 auth.json
         let auth_path = codex_dir.join("auth.json");
+        // E5-5: 写入前留存备份，供设置页恢复
+        let _ = save_backup(self.id(), &auth_path);
         let auth_val = serde_json::json!({
             "token": plan.api_key,
             "baseUrl": plan.base_url
@@ -174,6 +177,7 @@ impl Target for CodexTarget {
 
         // 保守合并 config.toml
         let config_path = codex_dir.join("config.toml");
+        let _ = save_backup(self.id(), &config_path);
         let mut toml_changed = merge_toml_openai(&config_path, &plan.base_url, &plan.api_key)?;
         changed.append(&mut toml_changed);
 
@@ -234,6 +238,8 @@ impl Target for ClaudeDesktopTarget {
 
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
         let path = Self::config_path();
+        // E5-5: 写入前留存备份
+        let _ = save_backup(self.id(), &path);
 
         // 读取现有文件，只更新 mcpServers.momotoken，不动其他字段
         let mut root: Value = if path.exists() {
@@ -289,6 +295,8 @@ impl Target for ClaudeCodeTarget {
 
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
         let settings_path = home_dir().join(".claude").join("settings.json");
+        // E5-5: 写入前留存备份
+        let _ = save_backup(self.id(), &settings_path);
 
         let changed = merge_json_keys(
             &settings_path,

@@ -44,6 +44,10 @@ pub async fn apply_target(req: ApplyRequest) -> Result<Vec<String>, String> {
         .ok_or_else(|| format!("未知目标: {}", req.target_id))?;
 
     let summary = target.apply(&plan)?;
+    crate::logx::append(
+        "apply_target",
+        &format!("{} changed={:?}", req.target_id, summary.changed_keys),
+    );
     Ok(summary.changed_keys)
 }
 

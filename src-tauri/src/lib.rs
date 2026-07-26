@@ -1,6 +1,7 @@
 mod commands;
 mod credentials;
 mod fsx;
+mod logx;
 mod targets;
 
 use tauri::Manager;
@@ -8,6 +9,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -29,8 +31,13 @@ pub fn run() {
             commands::targets::resolve_model_cmd,
             commands::diagnostics::ping,
             commands::diagnostics::verify_targets,
+            commands::diagnostics::ping_diag,
+            commands::diagnostics::export_log,
+            commands::diagnostics::probe_compat,
             commands::process::check_process,
             commands::process::check_all_processes,
+            commands::snapshots::list_snapshots,
+            commands::snapshots::restore_snapshot,
             autostart_enable,
             autostart_disable,
             autostart_is_enabled,
