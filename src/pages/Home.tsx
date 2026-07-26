@@ -153,6 +153,12 @@ export default function Home() {
             接入目标
           </button>
           <button
+            onClick={() => navigate("/devices")}
+            className="transition hover:text-white"
+          >
+            设备
+          </button>
+          <button
             onClick={() => navigate("/usage")}
             className="transition hover:text-white"
           >

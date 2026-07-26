@@ -4,6 +4,7 @@ import Home from "./pages/Home";
 import Targets from "./pages/Targets";
 import Usage from "./pages/Usage";
 import Settings from "./pages/Settings";
+import Devices from "./pages/Devices";
 import { loadAuth } from "./store/auth";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -21,6 +22,7 @@ export default function App() {
       <Route path="/targets" element={<RequireAuth><Targets /></RequireAuth>} />
       <Route path="/usage" element={<RequireAuth><Usage /></RequireAuth>} />
       <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+      <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
     </Routes>
   );
 }

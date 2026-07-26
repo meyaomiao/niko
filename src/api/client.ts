@@ -87,3 +87,50 @@ export const api = {
     return post("/client/provision", { group }, token);
   },
 };
+
+export interface DeviceItem {
+  id: number;
+  device_id: string;
+  device_name: string;
+  platform: string;
+  app_version: string;
+  created_time: number;
+  accessed_time: number;
+  is_current: boolean;
+}
+
+// 附加设备管理方法到 api 对象
+Object.assign(api, {
+  listDevices(token: string): Promise<DeviceItem[]> {
+    return get<DeviceItem[]>("/client/devices", token);
+  },
+  revokeDevice(token: string, id: number): Promise<void> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    return fetch(`${BASE_URL}/api/client/devices/${id}`, {
+      method: "DELETE",
+      headers,
+    }).then(async (r) => {
+      const json = await r.json() as { success: boolean; message?: string };
+      if (!json.success) throw new Error(json.message ?? "撤销失败");
+    });
+  },
+  revokeOtherDevices(token: string): Promise<void> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    return fetch(`${BASE_URL}/api/client/devices`, {
+      method: "DELETE",
+      headers,
+    }).then(async (r) => {
+      const json = await r.json() as { success: boolean; message?: string };
+      if (!json.success) throw new Error(json.message ?? "操作失败");
+    });
+  },
+});
+
+// 类型扩展（让调用方有类型提示）
+declare module "./client" {
+  interface ApiClient {
+    listDevices(token: string): Promise<DeviceItem[]>;
+    revokeDevice(token: string, id: number): Promise<void>;
+    revokeOtherDevices(token: string): Promise<void>;
+  }
+}
