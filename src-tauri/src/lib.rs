@@ -62,7 +62,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .tooltip("momo·摸摸")
+        .tooltip("Piko")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(win) = app.get_webview_window("main") {

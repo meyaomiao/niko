@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
-import { api, REGISTER_URL, type SiteConfig } from "../api/client";
+import { api, REGISTER_URL } from "../api/client";
 import { saveAuth } from "../store/auth";
+import { BRAND } from "../lib/brand";
+import Logo from "../components/Logo";
 
 // 设备信息
 function getDeviceId(): string {
@@ -26,7 +28,6 @@ type Stage = "login" | "2fa";
 
 export default function Login() {
   const navigate = useNavigate();
-  const [site, setSite] = useState<SiteConfig | null>(null);
   const [stage, setStage] = useState<Stage>("login");
   const [pendingToken, setPendingToken] = useState("");
 
@@ -38,11 +39,6 @@ export default function Login() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  // 加载站点配置
-  useEffect(() => {
-    api.getSite().then(setSite).catch(() => setSite({ system_name: "momo·摸摸", server_version: "" }));
-  }, []);
 
   // 回填「记住我」保存的凭证（存在系统钥匙串，不落明文文件）
   useEffect(() => {
@@ -131,12 +127,12 @@ export default function Login() {
     <div className="flex h-screen items-center justify-center bg-transparent">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-white/5 p-8 shadow-xl">
         <div className="mb-8 text-center">
-          <div className="mb-2 text-4xl">🐾</div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            {site?.system_name ?? "momo·摸摸"}
-          </h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400">
-            {stage === "login" ? "登录账号以使用 API 服务" : "请输入两步验证码"}
+          <div className="mb-3 flex justify-center">
+            <Logo size={56} />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{BRAND.name}</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            {stage === "login" ? BRAND.tagline : "请输入两步验证码"}
           </p>
         </div>
 

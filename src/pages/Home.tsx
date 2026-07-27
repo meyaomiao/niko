@@ -8,6 +8,8 @@ import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE } from "../lib/compat";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { vendorOfGroup, type Vendor } from "../lib/vendor";
+import { BRAND } from "../lib/brand";
+import Logo from "../components/Logo";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 
@@ -252,7 +254,10 @@ export default function Home() {
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center justify-between border-b border-black/5 px-6 py-3 dark:border-white/10">
-        <span className={TITLE}>🐾 momo·摸摸</span>
+        <span className={`flex items-center gap-2 ${TITLE}`}>
+          <Logo size={20} />
+          {BRAND.name}
+        </span>
         <div className="flex items-center gap-2">
           <button onClick={toggle} className={GHOST_BTN} aria-label="切换主题">
             {theme === "dark" ? "☀️" : "🌙"}

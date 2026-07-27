@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
+import { BRAND } from "../lib/brand";
+import Logo from "../components/Logo";
 
 interface SnapshotEntry {
   target_id: string;
@@ -164,7 +166,7 @@ export default function Settings() {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
       const dest = await save({
-        defaultPath: `momo-launcher-${stamp}.log`,
+        defaultPath: `piko-${stamp}.log`,
         filters: [{ name: "日志", extensions: ["log", "txt"] }],
       });
       if (!dest) {
@@ -223,7 +225,7 @@ export default function Settings() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-800 dark:text-gray-200">开机自启</p>
-                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">登录时自动启动 momo·摸摸</p>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">登录时自动启动 {BRAND.name}</p>
               </div>
               <button
                 onClick={toggleAutostart}
@@ -364,8 +366,15 @@ export default function Settings() {
           {/* 版本与更新 */}
           <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">关于 / 更新</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">momo·摸摸登录器 v0.1.0</p>
-            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-500">momotoken.win</p>
+            <div className="flex items-center gap-2">
+              <Logo size={24} />
+              <div>
+                <p className="text-xs text-gray-700 dark:text-gray-200">
+                  {BRAND.fullName} v{BRAND.version}
+                </p>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-500">{BRAND.tagline}</p>
+              </div>
+            </div>
             <button
               onClick={checkUpdate}
               disabled={checkingUpdate}

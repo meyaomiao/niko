@@ -1,6 +1,8 @@
 // E9-3: Windows SmartScreen 图文安装引导页
 // 仅在 Windows 环境下通过下载页链接展示，其他平台不会路由进来
 
+import { BRAND } from "../lib/brand";
+
 export default function InstallGuide() {
   return (
     <div className="flex min-h-screen flex-col bg-transparent px-6 py-10">
@@ -9,7 +11,7 @@ export default function InstallGuide() {
           <span className="text-3xl">🪟</span>
           <h1 className="mt-3 text-xl font-bold text-gray-900 dark:text-white">Windows 安装说明</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400">
-            momo·摸摸 Windows 版当前未购买代码签名证书，首次安装时会触发 SmartScreen 保护提示。
+            {BRAND.name} Windows 版当前未购买代码签名证书，首次安装时会触发 SmartScreen 保护提示。
             按以下步骤操作即可正常安装，程序本身完全安全。
           </p>
         </div>

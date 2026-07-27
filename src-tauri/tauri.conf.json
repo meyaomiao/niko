@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "momo·摸摸",
+  "productName": "Piko",
   "version": "0.1.0",
   "identifier": "win.momotoken.launcher",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "momo·摸摸",
+        "title": "Piko",
         "width": 960,
         "height": 640,
         "minWidth": 800,

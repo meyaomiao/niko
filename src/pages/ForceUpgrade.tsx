@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-shell";
+import { BRAND } from "../lib/brand";
 
 interface ForceUpgradeProps {
   currentVersion: string;
@@ -55,7 +56,7 @@ export default function ForceUpgrade({
         </button>
 
         {/* 版本信息 */}
-        <p className="text-xs text-gray-500 dark:text-gray-500">momotoken.win · v{currentVersion}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-500">{BRAND.name} · v{currentVersion}</p>
       </div>
     </div>
   );
