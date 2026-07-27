@@ -62,63 +62,35 @@ function rangeToTimestamps(range: RangeId, from: string, to: string): [number, n
   return [start, dayStart(now) + 86399];
 }
 
-const METRICS = [
-  { id: "quota", label: "消费" },
-  { id: "tokens", label: "token" },
-  { id: "requests", label: "请求" },
-] as const;
-
-type MetricId = (typeof METRICS)[number]["id"];
-
-function formatMetric(id: MetricId, v: number): string {
-  return id === "quota" ? usd(v) : num(v);
-}
-
-function TrendChart({ buckets }: { buckets: UsageDayBucket[] }) {
-  const [metric, setMetric] = useState<MetricId>("quota");
+// 卡片内嵌的迷你折线：按所选时间周期展示该指标的逐日变化
+function Sparkline({
+  buckets,
+  pick,
+  format,
+}: {
+  buckets: UsageDayBucket[];
+  pick: (b: UsageDayBucket) => number;
+  format: (v: number) => string;
+}) {
   if (buckets.length === 0) return null;
-  const values = buckets.map((b) => b[metric]);
+  const values = buckets.map(pick);
   const max = Math.max(...values, 1);
-  const points = buckets.map((_, i) => {
-    const x = buckets.length === 1 ? 50 : (i / (buckets.length - 1)) * 100;
-    const y = 100 - (values[i] / max) * 92 - 4;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
-  const line = buckets.length === 1 ? `0,${points[0].split(",")[1]} 100,${points[0].split(",")[1]}` : points.join(" ");
+  const y = (v: number) => (100 - (v / max) * 88 - 6).toFixed(2);
+  const points =
+    buckets.length === 1
+      ? `0,${y(values[0])} 100,${y(values[0])}`
+      : values.map((v, i) => `${((i / (values.length - 1)) * 100).toFixed(2)},${y(v)}`).join(" ");
 
   return (
-    <div className={CARD}>
-      <div className="flex items-center justify-between gap-3">
-        <p className={TITLE}>趋势变化</p>
-        <div className="flex gap-1">
-          {METRICS.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setMetric(m.id)}
-              className={`rounded-full px-2.5 py-1 text-xs transition ${
-                metric === m.id
-                  ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                  : "border border-black/10 text-gray-600 hover:bg-black/5 dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/10"
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="relative mt-4 h-32">
+    <div className="mt-3">
+      <div className="relative h-10">
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
+          <polyline points={`0,100 ${points} 100,100`} fill="rgb(99 102 241 / 0.12)" stroke="none" />
           <polyline
-            points={`0,100 ${line} 100,100`}
-            fill="rgb(99 102 241 / 0.12)"
-            stroke="none"
-          />
-          <polyline
-            points={line}
+            points={points}
             fill="none"
             stroke="rgb(99 102 241)"
-            strokeWidth="2"
+            strokeWidth="1.5"
             strokeLinejoin="round"
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
@@ -128,16 +100,15 @@ function TrendChart({ buckets }: { buckets: UsageDayBucket[] }) {
           {buckets.map((b, i) => (
             <div
               key={b.date}
-              title={`${b.date} · ${formatMetric(metric, values[i])}`}
+              title={`${b.date} · ${format(values[i])}`}
               className="flex-1 rounded transition hover:bg-black/5 dark:hover:bg-white/10"
             />
           ))}
         </div>
       </div>
-
-      <div className="mt-2 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+      <div className="mt-1 flex justify-between text-[10px] text-gray-400 dark:text-gray-500">
         <span>{buckets[0].date.slice(5)}</span>
-        <span>峰值 {formatMetric(metric, max)}</span>
+        <span>峰值 {format(max)}</span>
         <span>{buckets[buckets.length - 1].date.slice(5)}</span>
       </div>
     </div>
@@ -373,6 +344,7 @@ export default function Usage() {
                     {usd(summary.quota)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">均次 {avgCost}</p>
+                  <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={usd} />
                 </div>
                 <div className={CARD}>
                   <p className={LABEL}>累计 token</p>
@@ -382,6 +354,7 @@ export default function Usage() {
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     入 {num(summary.prompt_tokens)} · 出 {num(summary.completion_tokens)}
                   </p>
+                  <Sparkline buckets={trendBuckets} pick={(b) => b.tokens} format={num} />
                 </div>
                 <div className={CARD}>
                   <p className={LABEL}>请求次数</p>
@@ -389,10 +362,9 @@ export default function Usage() {
                     {num(requests)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">流式 {streamRate}</p>
+                  <Sparkline buckets={trendBuckets} pick={(b) => b.requests} format={num} />
                 </div>
               </div>
-
-              <TrendChart buckets={trendBuckets} />
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <DimensionList title="模型消费排行" items={summary.by_model ?? []} />
