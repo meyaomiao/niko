@@ -125,6 +125,7 @@ export default function Home() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: GroupOption[] = bootstrap?.groups ?? [];
+  const deviceLimit = bootstrap?.device_limit ?? 0;
   const installedTargets = targets.filter((t) => t.installed);
   // 选「全部」时按第一个已装应用推荐，语义上等价于用户最常用的那个
   const recommendVendor: Vendor | null = useMemo(() => {
@@ -438,11 +439,18 @@ export default function Home() {
               >
                 <h2 className={TITLE}>登录设备</h2>
                 <span className={SUBTLE}>
-                  {devices.length} 台 {devicesOpen ? "▲" : "▼"}
+                  {devices.length}
+                  {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台{" "}
+                  {devicesOpen ? "▲" : "▼"}
                 </span>
               </button>
               {devicesOpen && (
                 <div className="mt-3 space-y-2">
+                  {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
+                    <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                      已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
+                    </p>
+                  )}
                   {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
                   {devices.map((d) => (
                     <div

@@ -22,6 +22,18 @@ export interface LoginResult {
   email?: string;
 }
 
+/** 设备数达上限时后端回带的设备列表，登录页据此让用户当场释放旧设备 */
+export class DeviceLimitError extends Error {
+  constructor(
+    message: string,
+    readonly deviceLimit: number,
+    readonly devices: DeviceItem[]
+  ) {
+    super(message);
+    this.name = "DeviceLimitError";
+  }
+}
+
 // 后端 /api/client/login 的原始返回：成功时是 session_token + 嵌套 user，
 // 需要 2FA 时是 require_2fa + pending_token。
 interface RawLoginResponse {
@@ -67,6 +79,8 @@ export interface BootstrapData {
   models: string[];
   groups?: GroupOption[];
   pricing: PricingItem[];
+  /** 允许的最大登录设备数，用于首页展示 已用/上限 */
+  device_limit?: number;
   min_supported_version?: string;
   latest_version?: string;
   download_url?: string;
@@ -84,6 +98,32 @@ async function post<T>(path: string, body: unknown, token?: string): Promise<T> 
   const json = await res.json() as { success: boolean; message?: string; data?: T };
   if (!json.success) throw new Error(json.message ?? "请求失败");
   return (json.data ?? json) as T;
+}
+
+/** 登录请求：需要在失败分支识别 E_DEVICE_LIMIT 并取出回带的设备列表 */
+async function postLogin(path: string, body: unknown): Promise<LoginResult> {
+  const res = await fetch(`${BASE_URL}/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json()) as {
+    success: boolean;
+    message?: string;
+    code?: string;
+    data?: RawLoginResponse & { device_limit?: number; active_devices?: DeviceItem[] | null };
+  };
+  if (!json.success) {
+    if (json.code === "E_DEVICE_LIMIT") {
+      throw new DeviceLimitError(
+        json.message ?? "设备数已达上限",
+        json.data?.device_limit ?? 0,
+        json.data?.active_devices ?? []
+      );
+    }
+    throw new Error(json.message ?? "登录失败");
+  }
+  return toLoginResult((json.data ?? {}) as RawLoginResponse);
 }
 
 async function get<T>(path: string, token?: string): Promise<T> {
@@ -163,24 +203,28 @@ export const api = {
     deviceId: string;
     deviceName: string;
     platform: string;
+    revokeSessionIds?: number[];
   }): Promise<LoginResult> {
-    return post<RawLoginResponse>(
-      "/client/login",
-      {
-        username: params.username,
-        password: params.password,
-        device_id: params.deviceId,
-        device_name: params.deviceName,
-        platform: params.platform,
-        app_version: "0.1.0",
-      }
-    ).then(toLoginResult);
+    return postLogin("/client/login", {
+      username: params.username,
+      password: params.password,
+      device_id: params.deviceId,
+      device_name: params.deviceName,
+      platform: params.platform,
+      app_version: "0.1.0",
+      revoke_session_ids: params.revokeSessionIds,
+    });
   },
-  login2fa(pendingToken: string, code: string): Promise<LoginResult> {
-    return post<RawLoginResponse>("/client/login/2fa", {
+  login2fa(
+    pendingToken: string,
+    code: string,
+    revokeSessionIds?: number[]
+  ): Promise<LoginResult> {
+    return postLogin("/client/login/2fa", {
       pending_token: pendingToken,
       code,
-    }).then(toLoginResult);
+      revoke_session_ids: revokeSessionIds,
+    });
   },
   logout(token: string): Promise<void> {
     return post<void>("/client/logout", {}, token);
