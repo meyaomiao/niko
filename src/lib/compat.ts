@@ -31,7 +31,6 @@ export function modelFamily(model: string): Family {
 const MATRIX: Record<string, Record<Family, CompatLevel>> = {
   "codex": { claude: "good", gpt: "native", gemini: "limited", other: "limited" },
   "claude-desktop": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
-  "claude-code": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
 };
 
 const NOTES: Record<string, Record<Family, string>> = {
@@ -45,12 +44,6 @@ const NOTES: Record<string, Record<Family, string>> = {
     claude: "配置写入内置 Claude Code 面板，原生能力全部可用",
     gpt: "内置 Claude Code 面板经服务端协议转换接入，扩展思考不可用",
     gemini: "多模态与思考链差异最大，仅基础对话可用",
-    other: "未在该目标上验证过的模型，能力可能缺失",
-  },
-  "claude-code": {
-    claude: "同协议直连，原生能力全部可用",
-    gpt: "经服务端协议转换接入，日常对话与工具调用正常",
-    gemini: "多模态与思考链存在差异，部分能力缺失",
     other: "未在该目标上验证过的模型，能力可能缺失",
   },
 };
@@ -82,6 +75,5 @@ export function formatCheckedAt(ts: number): string {
 // 目标应用 → 原生匹配的上游厂商，用于「先选应用、再推荐模型」的默认选中
 export const NATIVE_VENDOR: Record<string, string> = {
   codex: "OpenAI",
-  "claude-code": "Anthropic",
   "claude-desktop": "Anthropic",
 };

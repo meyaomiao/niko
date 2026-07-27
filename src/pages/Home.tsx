@@ -30,9 +30,8 @@ interface ApplyResult {
 }
 
 const TARGET_ICONS: Record<string, string> = {
-  codex: "⌨️",
+  codex: "🖥️",
   "claude-desktop": "🖥️",
-  "claude-code": "💻",
 };
 
 function quotaToUSD(quota: number): string {
@@ -353,7 +352,7 @@ export default function Home() {
               {installedTargets.length === 0 ? (
                 <div>
                   <p className={SUBTLE}>
-                    没检测到支持的应用。先安装 Codex 或 Claude Code，再回来一键接入。
+                    没检测到支持的应用。先安装 Codex 桌面端或 Claude 桌面端，再回来一键接入。
                   </p>
                   <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
                     安装指引

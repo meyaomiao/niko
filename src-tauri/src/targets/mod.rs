@@ -173,17 +173,6 @@ fn merge_json_env(path: &Path, vars: &[(&str, String)]) -> Result<Vec<String>, S
     Ok(changed)
 }
 
-/// 写整个 JSON 文件（用于 auth.json 这种完全由我们控制的文件）
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
-    snap.commit();
-    Ok(())
-}
-
 fn home_dir() -> PathBuf {
     dirs_home()
 }
@@ -209,15 +198,57 @@ fn dirs_home() -> PathBuf {
     }
 }
 
+// ─── 桌面应用探测 ───────────────────────────────────────────────────────────
+//
+// 只面向桌面端：用户可能装了 App 但从未跑过 CLI，所以不能只看 ~/.codex 之类的目录。
+
+/// Codex 桌面端在不同渠道下的 bundle 名
+#[cfg(target_os = "macos")]
+const CODEX_APP_NAMES: &[&str] = &["Codex.app", "OpenAI Codex.app"];
+
+#[cfg(target_os = "macos")]
+fn macos_app_exists(names: &[&str]) -> bool {
+    let user_apps = home_dir().join("Applications");
+    names.iter().any(|name| {
+        Path::new("/Applications").join(name).exists() || user_apps.join(name).exists()
+    })
+}
+
+/// Windows 下按 (LOCALAPPDATA 子目录, 可执行文件名) 逐个探测
+#[cfg(target_os = "windows")]
+fn windows_app_exists(candidates: &[(&str, &str)]) -> bool {
+    let Ok(local) = std::env::var("LOCALAPPDATA") else {
+        return false;
+    };
+    let root = PathBuf::from(local);
+    candidates
+        .iter()
+        .any(|(dir, exe)| root.join(dir).join(exe).exists())
+}
+
 // ─── E6-1: Codex ────────────────────────────────────────────────────────────
 
 pub struct CodexTarget;
 
 impl Target for CodexTarget {
     fn id(&self) -> &'static str { "codex" }
-    fn display_name(&self) -> &'static str { "Codex (OpenAI CLI)" }
+    fn display_name(&self) -> &'static str { "Codex 桌面端" }
 
     fn is_installed(&self) -> bool {
+        // 桌面端与 CLI 共用 ~/.codex；但只装了桌面端、没跑过 CLI 时该目录可能还不存在，
+        // 所以先按已安装的 App 判断。
+        #[cfg(target_os = "macos")]
+        {
+            if macos_app_exists(CODEX_APP_NAMES) {
+                return true;
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if windows_app_exists(&[("Programs\\Codex", "Codex.exe"), ("Codex", "Codex.exe")]) {
+                return true;
+            }
+        }
         home_dir().join(".codex").exists()
     }
 
@@ -225,16 +256,16 @@ impl Target for CodexTarget {
         let codex_dir = home_dir().join(".codex");
         let mut changed = Vec::new();
 
-        // 写 auth.json
+        // 合并 auth.json
         let auth_path = codex_dir.join("auth.json");
         // E5-5: 写入前留存备份，供设置页恢复
         let _ = save_backup(self.id(), &auth_path);
-        // Codex 只认 OPENAI_API_KEY 这个键；写 {"token":...} 会被误判成 ChatGPT OAuth 登录态
-        let auth_val = serde_json::json!({
-            "OPENAI_API_KEY": plan.api_key
-        });
-        write_json(&auth_path, &auth_val)?;
-        changed.push("auth.json".to_owned());
+        // Codex 只认 OPENAI_API_KEY 这个键；整体覆写会清掉桌面端已有的 ChatGPT 登录态，
+        // 所以只合并这一个键。
+        changed.append(&mut merge_json_keys(
+            &auth_path,
+            &[("OPENAI_API_KEY", Value::String(plan.api_key.clone()))],
+        )?);
 
         // 保守合并 config.toml
         let config_path = codex_dir.join("config.toml");
@@ -253,19 +284,16 @@ pub struct ClaudeDesktopTarget;
 
 impl Target for ClaudeDesktopTarget {
     fn id(&self) -> &'static str { "claude-desktop" }
-    fn display_name(&self) -> &'static str { "Claude Desktop（内置 Claude Code）" }
+    fn display_name(&self) -> &'static str { "Claude 桌面端" }
 
     fn is_installed(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            Path::new("/Applications/Claude.app").exists()
-                || home_dir().join("Applications").join("Claude.app").exists()
+            macos_app_exists(&["Claude.app"])
         }
         #[cfg(target_os = "windows")]
         {
-            std::env::var("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join("AnthropicClaude").join("claude.exe").exists())
-                .unwrap_or(false)
+            windows_app_exists(&[("AnthropicClaude", "claude.exe")])
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -298,51 +326,10 @@ impl Target for ClaudeDesktopTarget {
     }
 }
 
-// ─── E6-3: Claude Code CLI ──────────────────────────────────────────────────
-
-pub struct ClaudeCodeTarget;
-
-impl Target for ClaudeCodeTarget {
-    fn id(&self) -> &'static str { "claude-code" }
-    fn display_name(&self) -> &'static str { "Claude Code (CLI)" }
-
-    fn is_installed(&self) -> bool {
-        // claude code 安装后会有 ~/.claude 目录
-        home_dir().join(".claude").exists()
-    }
-
-    fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
-        let settings_path = home_dir().join(".claude").join("settings.json");
-        // E5-5: 写入前留存备份
-        let _ = save_backup(self.id(), &settings_path);
-
-        // Claude Code 只从 settings.json 的 env 块读取端点与密钥，顶层 apiKey/baseUrl 会被忽略
-        let mut changed = merge_json_env(
-            &settings_path,
-            &[
-                ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
-                ("ANTHROPIC_BASE_URL", plan.base_url.clone()),
-            ],
-        )?;
-        if let Some(model) = &plan.model {
-            changed.append(&mut merge_json_keys(
-                &settings_path,
-                &[("model", Value::String(model.clone()))],
-            )?);
-        }
-
-        Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
-    }
-}
-
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
-    vec![
-        Box::new(CodexTarget),
-        Box::new(ClaudeDesktopTarget),
-        Box::new(ClaudeCodeTarget),
-    ]
+    vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget)]
 }
 
 // ─── E5-4: 配置漂移检测 ──────────────────────────────────────────────────────
@@ -392,8 +379,8 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                 mismatched.push("config.toml:missing".to_owned());
             }
         }
-        // Claude Desktop 与 Claude Code 共用 ~/.claude/settings.json
-        "claude-desktop" | "claude-code" => {
+        // Claude Desktop 内置 Claude Code 面板读 ~/.claude/settings.json
+        "claude-desktop" => {
             let settings = h.join(".claude").join("settings.json");
             if settings.exists() {
                 let raw = fs::read_to_string(&settings).unwrap_or_default();
@@ -484,7 +471,33 @@ mod tests {
         );
     }
 
-    /// Claude Code / Claude Desktop 只读 settings.json 的 env 块，顶层 apiKey 不被识别
+    /// Codex 桌面端可能已有 ChatGPT 登录态，写 API Key 不能清掉它
+    #[test]
+    fn codex_auth_json_merges_api_key_and_keeps_chatgpt_login() {
+        let p = tmp_path("auth.json");
+        fs::write(
+            &p,
+            r#"{"preferred_auth_method":"chatgpt","tokens":{"id_token":"keep"}}"#,
+        )
+        .unwrap();
+
+        let changed =
+            merge_json_keys(&p, &[("OPENAI_API_KEY", Value::String("sk-abc".to_owned()))]).unwrap();
+        assert_eq!(changed, vec!["OPENAI_API_KEY".to_owned()]);
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v.get("OPENAI_API_KEY").and_then(Value::as_str), Some("sk-abc"));
+        assert_eq!(
+            v.get("preferred_auth_method").and_then(Value::as_str),
+            Some("chatgpt")
+        );
+        assert_eq!(
+            v.pointer("/tokens/id_token").and_then(Value::as_str),
+            Some("keep")
+        );
+    }
+
+    /// Claude Desktop 只读 settings.json 的 env 块，顶层 apiKey 不被识别
     #[test]
     fn claude_settings_writes_env_block_and_keeps_user_vars() {
         let p = tmp_path("settings.json");

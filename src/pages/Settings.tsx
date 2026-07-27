@@ -28,12 +28,11 @@ const ERROR_KIND_LABELS: Record<string, string> = {
 };
 
 const TARGET_LABELS: Record<string, string> = {
-  "codex": "Codex",
-  "claude-desktop": "Claude Desktop",
-  "claude-code": "Claude Code",
+  "codex": "Codex 桌面端",
+  "claude-desktop": "Claude 桌面端",
 };
 
-const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-code"];
+const ALL_TARGET_IDS = ["codex", "claude-desktop"];
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString("zh-CN", {

@@ -141,11 +141,11 @@ export default function InstallGuide() {
 
           <div className={CARD}>
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              还没装 Codex 或 Claude Code？
+              还没装 Codex 桌面端或 Claude 桌面端？
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              {BRAND.name} 负责把账号和模型配置写进这些应用，本身不替代它们。请先按官方文档装好
-              Codex CLI、Claude Code 或 Claude 桌面端，再回到首页选择应用并一键接入，
+              {BRAND.name} 负责把账号和模型配置写进这些应用，本身不替代它们。请先从官网装好
+              Codex 桌面端或 Claude 桌面端，再回到首页选择应用并一键接入，
               {BRAND.name} 会自动检测到已安装的应用。
             </p>
           </div>
