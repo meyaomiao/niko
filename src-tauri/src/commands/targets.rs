@@ -249,7 +249,7 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
 
 // ─── 恢复官方默认配置 ───────────────────────────────────────────────────────
 
-/// 移除 Piko 写入的中转配置，让应用回到用官方账号登录的状态
+/// 移除 Niko 写入的中转配置，让应用回到用官方账号登录的状态
 #[tauri::command]
 pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, String> {
     let summary = crate::targets::restore_defaults(&target_id)?;

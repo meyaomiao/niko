@@ -165,7 +165,7 @@ export default function Settings() {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
       const dest = await save({
-        defaultPath: `piko-${stamp}.log`,
+        defaultPath: `niko-${stamp}.log`,
         filters: [{ name: "日志", extensions: ["log", "txt"] }],
       });
       if (!dest) {

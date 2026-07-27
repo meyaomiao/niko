@@ -1,4 +1,4 @@
-// Piko 自身的安装说明：macOS / Windows 双平台图文引导
+// Niko 自身的安装说明：macOS / Windows 双平台图文引导
 // 两个平台都未购买签名证书，首次安装会被系统拦一次，这里说明如何放行
 
 import { useState } from "react";
@@ -70,7 +70,7 @@ export default function InstallGuide() {
               <ol className="space-y-5">
                 <Step num={1} title="下载并打开 dmg">
                   <p className={SUBTLE}>
-                    下载 <code className={CODE}>Piko_x.y.z_aarch64.dmg</code>（Apple 芯片）或{" "}
+                    下载 <code className={CODE}>Niko_x.y.z_aarch64.dmg</code>（Apple 芯片）或{" "}
                     <code className={CODE}>x64.dmg</code>（Intel 芯片），双击打开后把{" "}
                     <code className={CODE}>{BRAND.name}.app</code> 拖进「应用程序」文件夹。
                   </p>

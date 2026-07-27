@@ -312,7 +312,7 @@ export default function Home() {
     // 二次确认：这会移除中转配置，用户可能只是误点
     if (!confirmRestore) {
       setConfirmRestore(true);
-      setNotice({ ok: false, text: "将移除 Piko 写入的中转配置，恢复用官方账号登录，再点一次确认" });
+      setNotice({ ok: false, text: "将移除 Niko 写入的中转配置，恢复用官方账号登录，再点一次确认" });
       window.setTimeout(() => setConfirmRestore(false), 5000);
       return;
     }

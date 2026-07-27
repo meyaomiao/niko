@@ -372,7 +372,7 @@ fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
     let icns = candidates.into_iter().find(|p| p.exists())?;
 
     // sips 是 macOS 自带工具，无需额外依赖
-    let out = std::env::temp_dir().join(format!("piko-icon-{}.png", std::process::id()));
+    let out = std::env::temp_dir().join(format!("niko-icon-{}.png", std::process::id()));
     let ok = std::process::Command::new("/usr/bin/sips")
         .args(["-s", "format", "png", "-Z", "128"])
         .arg(&icns)
@@ -663,10 +663,10 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
 
 // ─── 恢复官方默认配置 ───────────────────────────────────────────────────────
 //
-// 只移除 Piko 自己写入的键，让应用回到「未接第三方中转」的状态。
+// 只移除 Niko 自己写入的键，让应用回到「未接第三方中转」的状态。
 // 用户其他配置（projects / mcp_servers / sandbox / ChatGPT 登录态）一律保留。
 
-/// 移除 TOML 里 Piko 写入的 provider 段与顶层键
+/// 移除 TOML 里 Niko 写入的 provider 段与顶层键
 fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
     if !path.exists() {
         return Ok(Vec::new());

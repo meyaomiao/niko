@@ -67,7 +67,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .icon(tauri::include_image!("icons/tray-mono.png"))
         .icon_as_template(true)
         .menu(&menu)
-        .tooltip("Piko")
+        .tooltip("Niko")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(win) = app.get_webview_window("main") {
