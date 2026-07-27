@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    momo_launcher_lib::run()
+    niko_lib::run()
 }

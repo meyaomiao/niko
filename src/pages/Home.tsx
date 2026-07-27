@@ -13,11 +13,11 @@ import Logo from "../components/Logo";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
-const TARGET_STORAGE_KEY = "momo_last_target";
+const TARGET_STORAGE_KEY = "niko_last_target";
 /// 应用选择里代表「全部已安装应用」的哨兵值
 const ALL_TARGETS = "__all__";
 /// 记住 Codex 是否用混用模式（有 ChatGPT 订阅时保留官方登录态）
-const CODEX_MIXED_STORAGE_KEY = "momo_codex_mixed";
+const CODEX_MIXED_STORAGE_KEY = "niko_codex_mixed";
 
 interface TargetInfo {
   id: string;

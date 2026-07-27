@@ -7,7 +7,7 @@ export interface AuthState {
   apiKey: string;
 }
 
-const KEY = "momo_launcher_auth";
+const KEY = "niko_auth";
 
 export function loadAuth(): AuthState | null {
   try {

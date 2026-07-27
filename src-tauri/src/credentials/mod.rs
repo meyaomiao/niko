@@ -1,6 +1,6 @@
 use keyring::Entry;
 
-const SERVICE: &str = "win.momotoken.launcher";
+const SERVICE: &str = "win.momotoken.niko";
 
 pub struct CredentialStore;
 

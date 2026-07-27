@@ -1,6 +1,6 @@
 //! E7-3: 会话日志（脱敏）+ 轮转
 //!
-//! 日志写到 `~/.momo-launcher/logs/session.log`（Windows 为 %APPDATA%）。
+//! 日志写到 `~/.niko/logs/session.log`（Windows 为 %APPDATA%）。
 //! 所有写入前都会做一次密钥脱敏，导出时再做一次，保证文件中不含完整 Key。
 
 use std::fs::{self, OpenOptions};
@@ -19,7 +19,7 @@ pub fn base_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"));
 
-    base.join(".momo-launcher")
+    base.join(".niko")
 }
 
 pub fn session_log_path() -> PathBuf {

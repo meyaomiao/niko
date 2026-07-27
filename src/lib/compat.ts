@@ -1,5 +1,5 @@
 // E7-2: 兼容等级基线表 + 实测结果合并
-// 四级定义见 docs/momo-launcher-design.md §9
+// 四级定义见 docs/niko-design.md §9
 
 export type CompatLevel = "native" | "good" | "limited" | "unsupported";
 

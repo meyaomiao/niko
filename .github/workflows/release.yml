@@ -1,13 +1,13 @@
-name: Launcher Release
+name: Niko Release
 
 on:
   push:
     tags:
-      - "launcher-v*"
+      - "niko-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. launcher-v0.1.0)"
+        description: "Release tag (e.g. niko-v0.1.0)"
         required: true
 
 permissions:
@@ -24,9 +24,6 @@ jobs:
       app_version: ${{ steps.version.outputs.version }}
       macos_sig: ${{ steps.sig.outputs.signature }}
       macos_url: ${{ steps.url.outputs.url }}
-    defaults:
-      run:
-        working-directory: launcher
     steps:
       - uses: actions/checkout@v4
 
@@ -36,13 +33,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: launcher/src-tauri
+          workspaces: src-tauri
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: launcher/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install frontend deps
         run: npm ci
@@ -99,17 +96,17 @@ jobs:
         run: |
           TAG=${{ github.ref_name || inputs.tag }}
           VER=${{ steps.version.outputs.version }}
-          echo "url=https://github.com/meyaomiao/momotoken-new-api/releases/download/${TAG}/momo-摸摸_${VER}_universal.app.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/meyaomiao/niko/releases/download/${TAG}/Niko_${VER}_universal.app.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-universal
           path: |
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz.sig
-            launcher/src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz.sig
+            src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
 
   # ──────────────────────────────────────────────────────────────
   # E9-2: Windows — 未签名产物 + SHA256 公示
@@ -120,9 +117,6 @@ jobs:
     outputs:
       win_sig: ${{ steps.sig.outputs.signature }}
       win_url: ${{ steps.url.outputs.url }}
-    defaults:
-      run:
-        working-directory: launcher
     steps:
       - uses: actions/checkout@v4
 
@@ -130,13 +124,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: launcher/src-tauri
+          workspaces: src-tauri
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: launcher/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install frontend deps
         run: npm ci
@@ -173,18 +167,18 @@ jobs:
         run: |
           $tag = "${{ github.ref_name || inputs.tag }}"
           $ver = node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)"
-          echo "url=https://github.com/meyaomiao/momotoken-new-api/releases/download/$tag/momo-摸摸_${ver}_x64_en-US.msi.zip" >> $env:GITHUB_OUTPUT
+          echo "url=https://github.com/meyaomiao/niko/releases/download/$tag/Niko_${ver}_x64_en-US.msi.zip" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-unsigned
           path: |
-            launcher/src-tauri/target/release/bundle/**/*.msi
-            launcher/src-tauri/target/release/bundle/**/*.msi.zip
-            launcher/src-tauri/target/release/bundle/**/*.msi.zip.sig
-            launcher/src-tauri/target/release/bundle/**/*.exe
-            launcher/SHA256SUMS_win.txt
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.msi.zip
+            src-tauri/target/release/bundle/**/*.msi.zip.sig
+            src-tauri/target/release/bundle/**/*.exe
+            SHA256SUMS_win.txt
 
   # ──────────────────────────────────────────────────────────────
   # E9-4: 生成 latest.json（Tauri updater 所需）
@@ -216,7 +210,7 @@ jobs:
           cat > latest.json << JSON
           {
             "version": "$VER",
-            "notes": "查看 Release Notes：https://github.com/meyaomiao/momotoken-new-api/releases/tag/$TAG",
+            "notes": "查看 Release Notes：https://github.com/meyaomiao/niko/releases/tag/$TAG",
             "pub_date": "$PUB_DATE",
             "platforms": {
               "darwin-universal": {

@@ -3,7 +3,7 @@ import { initReactI18next } from "react-i18next";
 import zh from "./locales/zh.json";
 import en from "./locales/en.json";
 
-const savedLang = localStorage.getItem("momo_lang");
+const savedLang = localStorage.getItem("niko_lang");
 const browserLang = navigator.language.startsWith("zh") ? "zh" : "en";
 const defaultLang = savedLang ?? browserLang;
 

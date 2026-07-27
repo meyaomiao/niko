@@ -211,7 +211,7 @@ pub async fn export_log(dest_path: String) -> Result<String, String> {
 // ─── E7-2: 兼容等级实测 ─────────────────────────────────────────────────────
 
 /// 单个「目标应用 + 模型」组合的实测结果。
-/// level 与 docs/momo-launcher-design.md §9 的四级矩阵一致：
+/// level 与 docs/niko-design.md §9 的四级矩阵一致：
 /// native / good / limited / unsupported。
 #[derive(Debug, serde::Serialize)]
 pub struct CompatProbe {

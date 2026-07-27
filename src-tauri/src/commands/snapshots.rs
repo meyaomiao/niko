@@ -1,7 +1,7 @@
 //! E5-5: 快照列表与恢复
 //!
 //! 每次 apply 前由 targets/mod.rs 写一份 `.bak` 到
-//! `~/.momo-launcher/backups/{target_id}/{timestamp}_{filename}`
+//! `~/.niko/backups/{target_id}/{timestamp}_{filename}`
 //! 本模块提供列出和恢复的 Tauri 命令。
 
 use serde::Serialize;
@@ -18,7 +18,7 @@ fn backup_dir_for(target_id: &str) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"));
 
-    base.join(".momo-launcher").join("backups").join(target_id)
+    base.join(".niko").join("backups").join(target_id)
 }
 
 /// 把 `src` 文件备份到对应目标的备份目录，文件名加上时间戳前缀。
