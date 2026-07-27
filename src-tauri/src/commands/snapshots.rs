@@ -110,21 +110,8 @@ pub async fn restore_snapshot(target_id: String, filename: String) -> Result<(),
                 home.join(".codex").join("config.toml")
             }
         }
-        "claude-desktop" => {
-            #[cfg(target_os = "macos")]
-            {
-                home.join("Library")
-                    .join("Application Support")
-                    .join("Claude")
-                    .join("claude_desktop_config.json")
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                home.join(".config")
-                    .join("Claude")
-                    .join("claude_desktop_config.json")
-            }
-        }
+        // Claude Desktop 的接入点是它内置 Claude Code 面板读的 ~/.claude/settings.json
+        "claude-desktop" => home.join(".claude").join("settings.json"),
         "claude-code" => home.join(".claude").join("settings.json"),
         other => return Err(format!("未知目标: {other}")),
     };

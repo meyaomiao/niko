@@ -240,7 +240,7 @@ export default function Usage() {
 
   return (
     <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 px-6 py-4 dark:border-white/10">
+      <header className="flex items-center gap-3 border-b border-black/5 px-5 py-3 dark:border-white/10">
         <button
           onClick={() => navigate("/home")}
           className="text-gray-500 transition hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
@@ -250,8 +250,8 @@ export default function Usage() {
         <h1 className="text-sm font-semibold text-gray-900 dark:text-white">用量明细</h1>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-3xl space-y-4">
+      <main className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="mx-auto max-w-5xl space-y-3">
           <div className={CARD}>
             <div className="flex flex-wrap items-center gap-2">
               {RANGES.map((r) => (
@@ -337,7 +337,7 @@ export default function Usage() {
 
           {!loading && summary && (
             <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className={CARD}>
                   <p className={LABEL}>累计消费</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">

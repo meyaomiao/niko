@@ -42,8 +42,8 @@ const NOTES: Record<string, Record<Family, string>> = {
     other: "未在该目标上验证过的模型，能力可能缺失",
   },
   "claude-desktop": {
-    claude: "同协议直连，原生能力全部可用",
-    gpt: "经 MCP 通道转换接入，扩展思考不可用",
+    claude: "配置写入内置 Claude Code 面板，原生能力全部可用",
+    gpt: "内置 Claude Code 面板经服务端协议转换接入，扩展思考不可用",
     gemini: "多模态与思考链差异最大，仅基础对话可用",
     other: "未在该目标上验证过的模型，能力可能缺失",
   },
@@ -78,3 +78,10 @@ export function formatCheckedAt(ts: number): string {
   if (!ts) return "";
   return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
 }
+
+// 目标应用 → 原生匹配的上游厂商，用于「先选应用、再推荐模型」的默认选中
+export const NATIVE_VENDOR: Record<string, string> = {
+  codex: "OpenAI",
+  "claude-code": "Anthropic",
+  "claude-desktop": "Anthropic",
+};

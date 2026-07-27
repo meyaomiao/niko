@@ -5,13 +5,17 @@ import { loadAuth, saveAuth } from "../store/auth";
 import { api, type BootstrapData, type GroupOption, type DeviceItem } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
-import { baselineFor, COMPAT_LABEL, COMPAT_STYLE } from "../lib/compat";
+import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
-import { vendorOfGroup, type Vendor } from "../lib/vendor";
+import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import { BRAND } from "../lib/brand";
 import Logo from "../components/Logo";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
+/// 记住上次配置的应用，多应用用户不必每次重选
+const TARGET_STORAGE_KEY = "momo_last_target";
+/// 应用选择里代表「全部已安装应用」的哨兵值
+const ALL_TARGETS = "__all__";
 
 interface TargetInfo {
   id: string;
@@ -45,7 +49,11 @@ function formatTime(ts: number): string {
   });
 }
 
-const CARD = "rounded-2xl border border-black/5 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/5";
+/** 小白用户不懂 token 单位，用字数举例说明 */
+const TOKEN_TIP =
+  "token 是模型计费的最小文本单位。中文约 1 个字 ≈ 1.5 token，英文约 1 个单词 ≈ 1.3 token。100 万 token 大致相当于 60~70 万汉字，约等于一本长篇小说的量。输入（你发的内容）和输出（模型回复）分别计价。";
+
+const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5";
 const LABEL = "text-xs font-medium text-gray-500 dark:text-gray-400";
 const TITLE = "text-sm font-semibold text-gray-900 dark:text-gray-100";
 const SUBTLE = "text-xs text-gray-500 dark:text-gray-400";
@@ -70,8 +78,10 @@ export default function Home() {
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [targets, setTargets] = useState<TargetInfo[]>([]);
-  const [applying, setApplying] = useState<string | null>(null);
+  const [targetId, setTargetId] = useState("");
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
+  // 用户一旦手动挑过分组，就不再按所选应用自动推荐
+  const [groupTouched, setGroupTouched] = useState(false);
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [devicesOpen, setDevicesOpen] = useState(false);
@@ -87,33 +97,70 @@ export default function Home() {
       .then((data) => {
         setBootstrap(data);
         saveAuth({ ...auth, quota: data.user.quota, group: data.user.group });
+        // 分组不在这里定：等选好应用后按应用推荐（见下方 effect）
         const groups = data.groups ?? [];
-        // 优先沿用上次选择，其次用户自身分组，最后第一个有模型的分组
-        const preferred =
-          groups.find((g) => g.name === auth.group) ??
-          groups.find((g) => g.name === data.user.group) ??
-          groups[0];
-        if (preferred) {
-          setGroup(preferred.name);
-          setModel(preferred.models[0] ?? "");
+        const remembered = groups.find((g) => g.name === auth.group);
+        if (remembered) {
+          setGroup(remembered.name);
+          setModel(remembered.models[0] ?? "");
+          setGroupTouched(true);
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
 
-    invoke<TargetInfo[]>("list_targets").then(setTargets).catch(() => {});
+    // 先选应用：只装了一个就直接选中，装了多个则沿用上次
+    invoke<TargetInfo[]>("list_targets")
+      .then((list) => {
+        setTargets(list);
+        const installed = list.filter((t) => t.installed);
+        const last = localStorage.getItem(TARGET_STORAGE_KEY);
+        const pick =
+          installed.find((t) => t.id === last)?.id ??
+          (installed.length === 1 ? installed[0].id : installed[0]?.id ?? "");
+        setTargetId(pick);
+      })
+      .catch(() => {});
     api.listDevices(auth.accessToken).then(setDevices).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: GroupOption[] = bootstrap?.groups ?? [];
-  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」；只保留有分组的厂商作为页签
+  const installedTargets = targets.filter((t) => t.installed);
+  // 选「全部」时按第一个已装应用推荐，语义上等价于用户最常用的那个
+  const recommendVendor: Vendor | null = useMemo(() => {
+    const id = targetId === ALL_TARGETS ? installedTargets[0]?.id : targetId;
+    const v = id ? NATIVE_VENDOR[id] : undefined;
+    return (VENDORS as readonly string[]).includes(v ?? "") ? (v as Vendor) : null;
+  }, [targetId, targets]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」；只保留有分组的厂商作为页签。
+  // 与所选应用原生匹配的厂商排在最前，让推荐路径成为默认路径。
   const vendorTabs = useMemo(() => {
     const buckets: Record<string, GroupOption[]> = { OpenAI: [], Anthropic: [], Google: [], 其他: [] };
     for (const g of groups) {
       buckets[vendorOfGroup(g.name)].push(g);
     }
-    return Object.entries(buckets).filter(([, list]) => list.length > 0) as [Vendor, GroupOption[]][];
-  }, [groups]);
+    const tabs = Object.entries(buckets).filter(([, list]) => list.length > 0) as [Vendor, GroupOption[]][];
+    return tabs.sort(([a], [b]) => Number(b === recommendVendor) - Number(a === recommendVendor));
+  }, [groups, recommendVendor]);
+  // 应用选定后自动落到推荐厂商的第一个分组；用户手动挑过分组后不再干预
+  useEffect(() => {
+    if (groupTouched || groups.length === 0) return;
+    const preferred = vendorTabs[0]?.[1][0];
+    if (preferred) {
+      setGroup(preferred.name);
+      setModel(preferred.models[0] ?? "");
+    }
+  }, [groupTouched, groups, vendorTabs]);
+
+  const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
+  const targetLabel =
+    targetId === ALL_TARGETS ? `${installedTargets.length} 个应用` : selectedTarget?.name ?? "";
+  // 兼容等级按所选应用判断；选「全部」时以第一个已装应用为准
+  const compatTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id ?? "" : targetId;
+  const compatOf = (name: string) => (compatTargetId ? baselineFor(compatTargetId, name) : null);
+  const selectedCompat = model ? compatOf(model) : null;
+
   const currentGroup = groups.find((g) => g.name === group);
   // 页签跟随当前分组所属厂商，切换页签时自动选中该厂商第一个分组
   const activeVendor: Vendor | null = currentGroup
@@ -140,14 +187,21 @@ export default function Home() {
 
   const pickGroup = (name: string) => {
     setGroup(name);
+    setGroupTouched(true);
     setNotice(null);
     const g = groups.find((x) => x.name === name);
     setModel(g?.models[0] ?? "");
   };
 
-  // 申领/切换当前分组的 Key，再写入所有已安装的目标
+  const pickTarget = (id: string) => {
+    setTargetId(id);
+    setResults({});
+    setNotice(null);
+  };
+
+  // 申领/切换当前分组的 Key，再写入所选应用（或全部已安装应用）
   const enable = async () => {
-    if (!auth?.accessToken || !group) return;
+    if (!auth?.accessToken || !group || !targetId) return;
     setProvisioning(true);
     setNotice(null);
     setResults({});
@@ -156,49 +210,40 @@ export default function Home() {
       setApiKey(res.api_key);
       saveAuth({ ...auth, apiKey: res.api_key, group });
 
-      const applied = await invoke<Array<{ id: string; ok: boolean; changed?: string[]; error?: string }>>(
-        "apply_all_targets",
-        { baseUrl: RELAY_BASE_URL, apiKey: res.api_key, modelGroup: group, model: model || null }
-      );
-      const map: Record<string, ApplyResult> = {};
-      applied.forEach((r) => {
-        map[r.id] = { ok: r.ok, changed: r.changed, error: r.error };
-      });
-      setResults(map);
-      const okCount = applied.filter((r) => r.ok).length;
-      setNotice(
-        applied.length === 0
-          ? { ok: false, text: "未检测到已安装的应用，请先安装 Codex 或 Claude" }
-          : { ok: okCount > 0, text: `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}` }
-      );
+      if (targetId === ALL_TARGETS) {
+        const applied = await invoke<Array<{ id: string; ok: boolean; changed?: string[]; error?: string }>>(
+          "apply_all_targets",
+          { baseUrl: RELAY_BASE_URL, apiKey: res.api_key, modelGroup: group, model: model || null }
+        );
+        const map: Record<string, ApplyResult> = {};
+        applied.forEach((r) => {
+          map[r.id] = { ok: r.ok, changed: r.changed, error: r.error };
+        });
+        setResults(map);
+        const okCount = applied.filter((r) => r.ok).length;
+        setNotice(
+          applied.length === 0
+            ? { ok: false, text: "未检测到已安装的应用，请先安装 Codex 或 Claude" }
+            : { ok: okCount > 0, text: `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}` }
+        );
+      } else {
+        const changed = await invoke<string[]>("apply_target", {
+          req: {
+            target_id: targetId,
+            base_url: RELAY_BASE_URL,
+            api_key: res.api_key,
+            model_group: group || null,
+            model: model || null,
+          },
+        });
+        setResults({ [targetId]: { ok: true, changed } });
+        setNotice({ ok: true, text: `已为 ${targetLabel} 启用 ${model || group}` });
+      }
+      localStorage.setItem(TARGET_STORAGE_KEY, targetId);
     } catch (e) {
       setNotice({ ok: false, text: String(e instanceof Error ? e.message : e) });
     } finally {
       setProvisioning(false);
-    }
-  };
-
-  const applyOne = async (targetId: string) => {
-    if (!apiKey) {
-      setNotice({ ok: false, text: "请先点击“启用”获取密钥" });
-      return;
-    }
-    setApplying(targetId);
-    try {
-      const changed = await invoke<string[]>("apply_target", {
-        req: {
-          target_id: targetId,
-          base_url: RELAY_BASE_URL,
-          api_key: apiKey,
-          model_group: group || null,
-          model: model || null,
-        },
-      });
-      setResults((r) => ({ ...r, [targetId]: { ok: true, changed } }));
-    } catch (e) {
-      setResults((r) => ({ ...r, [targetId]: { ok: false, error: String(e) } }));
-    } finally {
-      setApplying(null);
     }
   };
 
@@ -249,7 +294,6 @@ export default function Home() {
 
   const quota = bootstrap?.user.quota ?? auth?.quota ?? 0;
   const otherDevices = devices.filter((d) => !d.is_current).length;
-  const installed = targets.filter((t) => t.installed);
 
   return (
     <div className="flex h-screen flex-col">
@@ -271,288 +315,346 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto max-w-xl space-y-4">
-          {/* 余额 */}
-          <section className={CARD}>
-            <div className="flex items-end justify-between">
-              <div>
-                <p className={LABEL}>{auth?.username ?? "已登录"}</p>
-                <p className="mt-1 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
-                  ${quotaToUSD(quota)}
-                </p>
-                <p className={`mt-1 ${SUBTLE}`}>可用余额</p>
+      <main className="flex-1 overflow-hidden px-5 py-4">
+        {/* 双列：左侧账户与应用，右侧模型选择，避免宽窗口下大量留白 */}
+        <div className="mx-auto grid h-full max-w-5xl grid-cols-1 gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-0.5">
+            {/* 余额 */}
+            <section className={CARD}>
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className={LABEL}>{auth?.username ?? "已登录"}</p>
+                  <p className="mt-1 text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">
+                    ${quotaToUSD(quota)}
+                  </p>
+                  <p className={`mt-1 ${SUBTLE}`}>可用余额</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
+                    充值
+                  </button>
+                  <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
+                    用量明细
+                  </button>
+                </div>
               </div>
-              <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
-                用量明细
-              </button>
-            </div>
-          </section>
+            </section>
 
-          {/* 分组 + 模型选择 */}
-          <section className={CARD}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className={TITLE}>选择模型</h2>
-              {currentGroup && (
-                <span className={SUBTLE}>价格按每百万 token</span>
-              )}
-            </div>
-
-            {groups.length === 0 ? (
-              <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
-            ) : (
-              <>
-                <div className="flex gap-1 border-b border-black/5 dark:border-white/10">
-                  {vendorTabs.map(([vendor, list]) => (
-                    <button
-                      key={vendor}
-                      onClick={() => pickGroup(list[0].name)}
-                      className={`-mb-px border-b-2 px-3 py-2 text-xs transition ${
-                        vendor === activeVendor
-                          ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
-                          : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
-                      }`}
-                    >
-                      {vendor}
-                      <span className="ml-1.5 opacity-60">{list.length}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {vendorGroups.map((g) => (
-                    <button
-                      key={g.name}
-                      onClick={() => pickGroup(g.name)}
-                      title={g.desc}
-                      className={`rounded-full px-3 py-1.5 text-xs transition ${
-                        g.name === group
-                          ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                          : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
-                      }`}
-                    >
-                      {g.name}
-                      <span className="ml-1.5 opacity-60">{g.ratio}x</span>
-                    </button>
-                  ))}
-                </div>
-                {currentGroup?.desc && (
-                  <p className={`mt-2 ${SUBTLE}`}>{currentGroup.desc}</p>
-                )}
-
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <p className={LABEL}>
-                    模型
-                    <span className="ml-1.5 opacity-70">{models.length}</span>
+            {/* 接入应用（先选应用，再按应用推荐模型） */}
+            <section className={CARD}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className={TITLE}>接入应用</h2>
+                <span className={SUBTLE}>
+                  已安装 {installedTargets.length}/{targets.length}
+                </span>
+              </div>
+              {installedTargets.length === 0 ? (
+                <div>
+                  <p className={SUBTLE}>
+                    没检测到支持的应用。先安装 Codex 或 Claude Code，再回来一键接入。
                   </p>
-                  <input
-                    value={modelFilter}
-                    onChange={(e) => setModelFilter(e.target.value)}
-                    placeholder="搜索模型"
-                    className="w-40 rounded-full border border-black/10 bg-transparent px-3 py-1 text-xs text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-white/15 dark:text-gray-100"
-                  />
+                  <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
+                    安装指引
+                  </button>
                 </div>
-                <div className="mt-2 max-h-44 space-y-1 overflow-y-auto pr-1">
-                  {models.length === 0 && <p className={SUBTLE}>没有匹配的模型</p>}
-                  {models.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setModel(m)}
-                      className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition ${
-                        m === model
-                          ? "bg-gray-900/5 text-gray-900 dark:bg-white/10 dark:text-white"
-                          : "text-gray-600 hover:bg-black/5 dark:text-gray-300 dark:hover:bg-white/5"
-                      }`}
-                    >
-                      <span className="truncate font-mono">{m}</span>
-                      <span className="ml-2 flex shrink-0 items-center gap-2">
-                        <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
-                          {priceLabel(m)}
-                        </span>
-                        {m === model && <span>✓</span>}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                {selectedPrice && (
-                  <div className="mt-3 rounded-xl bg-black/[0.03] px-3 py-2.5 dark:bg-white/5">
-                    <p className={LABEL}>
-                      {model} 价格（已含 {groupRatio}x 分组倍率）
-                    </p>
-                    {selectedPrice.perRequest ? (
-                      <p className="mt-1.5 text-xs text-gray-700 dark:text-gray-200">
-                        按次计费 {fmtUSD(selectedPrice.input)} / 次
-                      </p>
-                    ) : (
-                      <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-700 dark:text-gray-200">
-                        <span>
-                          输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
-                        </span>
-                        <span>
-                          输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
-                        </span>
-                        {selectedPrice.cache !== undefined && (
-                          <span>
-                            读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
-                          </span>
-                        )}
-                        {selectedPrice.createCache !== undefined && (
-                          <span>
-                            写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <button
-                  onClick={enable}
-                  disabled={provisioning || !group || !model}
-                  className={`mt-4 w-full rounded-xl bg-gray-900 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200`}
-                >
-                  {provisioning ? "配置中…" : "一键启用到已安装应用"}
-                </button>
-                {notice && (
-                  <p
-                    className={`mt-2 text-xs ${
-                      notice.ok ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"
-                    }`}
-                  >
-                    {notice.text}
-                  </p>
-                )}
-              </>
-            )}
-          </section>
-
-          {/* 接入目标 */}
-          <section className={CARD}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className={TITLE}>接入应用</h2>
-              <span className={SUBTLE}>
-                已安装 {installed.length}/{targets.length}
-              </span>
-            </div>
-            <div className="space-y-2">
-              {targets.map((t) => {
-                const compat = model ? baselineFor(t.id, model) : null;
-                const result = results[t.id];
-                return (
-                  <div
-                    key={t.id}
-                    className={`rounded-xl px-3 py-2.5 ${
-                      t.installed ? "bg-black/[0.03] dark:bg-white/5" : "bg-black/[0.02] opacity-60 dark:bg-white/[0.03]"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span>{TARGET_ICONS[t.id] ?? "🔧"}</span>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                            {t.name}
-                          </p>
-                          <p className={SUBTLE}>
-                            {t.installed ? "已安装" : "未检测到安装"}
-                            {compat && ` · ${COMPAT_LABEL[compat.level]}`}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {compat && (
-                          <span
-                            title={compat.note}
-                            className={`hidden rounded-full px-2 py-0.5 text-xs sm:inline-block ${COMPAT_STYLE[compat.level]}`}
-                          >
-                            {COMPAT_LABEL[compat.level]}
-                          </span>
-                        )}
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    {targets.map((t) => {
+                      const result = results[t.id];
+                      const active = t.id === targetId;
+                      return (
                         <button
-                          onClick={() => applyOne(t.id)}
-                          disabled={!t.installed || applying !== null}
-                          className={GHOST_BTN}
+                          key={t.id}
+                          onClick={() => pickTarget(t.id)}
+                          disabled={!t.installed}
+                          className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
+                            active
+                              ? "bg-gray-900/5 ring-1 ring-gray-900/20 dark:bg-white/10 dark:ring-white/25"
+                              : t.installed
+                                ? "bg-black/[0.03] hover:bg-black/[0.06] dark:bg-white/5 dark:hover:bg-white/10"
+                                : "bg-black/[0.02] opacity-60 dark:bg-white/[0.03]"
+                          }`}
                         >
-                          {applying === t.id ? "…" : "单独配置"}
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span>{TARGET_ICONS[t.id] ?? "🔧"}</span>
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
+                                  {t.name}
+                                </p>
+                                <p className={SUBTLE}>{t.installed ? "已安装" : "未检测到安装"}</p>
+                                {t.id === "claude-desktop" && (
+                                  <p className={SUBTLE}>
+                                    仅作用于内置 Claude Code 面板，桌面端普通对话仍用你的 Anthropic 账号
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            {active && <span className="shrink-0 text-xs">✓</span>}
+                          </div>
+                          {result && (
+                            <p
+                              className={`mt-1.5 text-xs ${
+                                result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                              }`}
+                            >
+                              {result.ok
+                                ? result.changed && result.changed.length > 0
+                                  ? `✓ 已更新 ${result.changed.join("、")}`
+                                  : "✓ 配置已是最新"
+                                : `✗ ${result.error}`}
+                            </p>
+                          )}
                         </button>
-                      </div>
-                    </div>
-                    {result && (
-                      <p
-                        className={`mt-1.5 text-xs ${
-                          result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                      );
+                    })}
+                    {installedTargets.length > 1 && (
+                      <button
+                        onClick={() => pickTarget(ALL_TARGETS)}
+                        className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${
+                          targetId === ALL_TARGETS
+                            ? "bg-gray-900/5 ring-1 ring-gray-900/20 dark:bg-white/10 dark:ring-white/25"
+                            : "bg-black/[0.03] hover:bg-black/[0.06] dark:bg-white/5 dark:hover:bg-white/10"
                         }`}
                       >
-                        {result.ok
-                          ? result.changed && result.changed.length > 0
-                            ? `✓ 已更新 ${result.changed.join("、")}`
-                            : "✓ 配置已是最新"
-                          : `✗ ${result.error}`}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-              {targets.length === 0 && <p className={SUBTLE}>未找到支持的应用</p>}
-            </div>
-            <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
-              安装指引
-            </button>
-          </section>
-
-          {/* 设备（折叠） */}
-          <section className={CARD}>
-            <button
-              onClick={() => setDevicesOpen((v) => !v)}
-              className="flex w-full items-center justify-between"
-            >
-              <h2 className={TITLE}>登录设备</h2>
-              <span className={SUBTLE}>
-                {devices.length} 台 {devicesOpen ? "▲" : "▼"}
-              </span>
-            </button>
-            {devicesOpen && (
-              <div className="mt-3 space-y-2">
-                {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
-                {devices.map((d) => (
-                  <div
-                    key={d.id}
-                    className="flex items-center justify-between gap-3 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                        {d.device_name || d.device_id.slice(0, 8)}
-                        {d.is_current && <span className="ml-2 opacity-60">当前</span>}
-                      </p>
-                      <p className={SUBTLE}>
-                        {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
-                      </p>
-                    </div>
-                    {!d.is_current && (
-                      <button
-                        onClick={() => revokeDevice(d.id)}
-                        disabled={revoking !== null}
-                        className={GHOST_BTN}
-                      >
-                        {revoking === d.id ? "…" : "撤销"}
+                        <span className="font-medium text-gray-900 dark:text-gray-100">全部已安装应用</span>
+                        <span className="ml-1.5 opacity-60">{installedTargets.length}</span>
                       </button>
                     )}
                   </div>
-                ))}
-                {otherDevices > 0 && (
-                  <button onClick={revokeOthers} disabled={revoking !== null} className={PRIMARY_BTN}>
-                    {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
+                  <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
+                    安装指引
                   </button>
+                </>
+              )}
+            </section>
+
+            {/* 设备（折叠） */}
+            <section className={CARD}>
+              <button
+                onClick={() => setDevicesOpen((v) => !v)}
+                className="flex w-full items-center justify-between"
+              >
+                <h2 className={TITLE}>登录设备</h2>
+                <span className={SUBTLE}>
+                  {devices.length} 台 {devicesOpen ? "▲" : "▼"}
+                </span>
+              </button>
+              {devicesOpen && (
+                <div className="mt-3 space-y-2">
+                  {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
+                  {devices.map((d) => (
+                    <div
+                      key={d.id}
+                      className="flex items-center justify-between gap-3 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
+                          {d.device_name || d.device_id.slice(0, 8)}
+                          {d.is_current && <span className="ml-2 opacity-60">当前</span>}
+                        </p>
+                        <p className={SUBTLE}>
+                          {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
+                        </p>
+                      </div>
+                      {!d.is_current && (
+                        <button
+                          onClick={() => revokeDevice(d.id)}
+                          disabled={revoking !== null}
+                          className={GHOST_BTN}
+                        >
+                          {revoking === d.id ? "…" : "撤销"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {otherDevices > 0 && (
+                    <button onClick={revokeOthers} disabled={revoking !== null} className={PRIMARY_BTN}>
+                      {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
+                    </button>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {apiKey && (
+              <p className={SUBTLE}>
+                当前密钥 {apiKey.slice(0, 10)}
+                {"•".repeat(6)} · 分组 {group}
+              </p>
+            )}
+          </div>
+
+          <div className="flex min-h-0 flex-col overflow-y-auto pr-0.5">
+            {/* 分组 + 模型选择（跟随所选应用推荐） */}
+            {installedTargets.length > 0 && (
+            <section className={CARD}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
+                {currentGroup && (
+                  <span className={`flex items-center gap-1 ${SUBTLE}`}>
+                    价格按每百万 token
+                    <span
+                      tabIndex={0}
+                      role="note"
+                      aria-label={TOKEN_TIP}
+                      title={TOKEN_TIP}
+                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-black/15 text-[10px] leading-none text-gray-500 dark:border-white/20 dark:text-gray-400"
+                    >
+                      ?
+                    </span>
+                  </span>
                 )}
               </div>
-            )}
-          </section>
 
-          {apiKey && (
-            <p className={`text-center ${SUBTLE}`}>
-              当前密钥 {apiKey.slice(0, 10)}
-              {"•".repeat(6)} · 分组 {group}
-            </p>
-          )}
+              {groups.length === 0 ? (
+                <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
+              ) : (
+                <>
+                  <div className="flex gap-1 border-b border-black/5 dark:border-white/10">
+                    {vendorTabs.map(([vendor, list]) => (
+                      <button
+                        key={vendor}
+                        onClick={() => pickGroup(list[0].name)}
+                        className={`-mb-px border-b-2 px-3 py-2 text-xs transition ${
+                          vendor === activeVendor
+                            ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
+                            : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                        }`}
+                      >
+                        {vendor}
+                        <span className="ml-1.5 opacity-60">{list.length}</span>
+                        {recommendVendor && vendor !== recommendVendor && (
+                          <span className="ml-1.5 opacity-60">转换接入</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {vendorGroups.map((g) => (
+                      <button
+                        key={g.name}
+                        onClick={() => pickGroup(g.name)}
+                        title={g.desc}
+                        className={`rounded-full px-3 py-1.5 text-xs transition ${
+                          g.name === group
+                            ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                            : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
+                        }`}
+                      >
+                        {g.name}
+                        <span className="ml-1.5 opacity-60">{g.ratio}x</span>
+                      </button>
+                    ))}
+                  </div>
+                  {currentGroup?.desc && (
+                    <p className={`mt-2 ${SUBTLE}`}>{currentGroup.desc}</p>
+                  )}
+
+                  <div className="mt-4 flex items-center justify-between gap-3">
+                    <p className={LABEL}>
+                      模型
+                      <span className="ml-1.5 opacity-70">{models.length}</span>
+                    </p>
+                    <input
+                      value={modelFilter}
+                      onChange={(e) => setModelFilter(e.target.value)}
+                      placeholder="搜索模型"
+                      className="w-40 rounded-full border border-black/10 bg-transparent px-3 py-1 text-xs text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-white/15 dark:text-gray-100"
+                    />
+                  </div>
+                  <div className="mt-2 max-h-[19rem] space-y-1 overflow-y-auto pr-1">
+                    {models.length === 0 && <p className={SUBTLE}>没有匹配的模型</p>}
+                    {models.map((m) => {
+                      const compat = compatOf(m);
+                      return (
+                      <button
+                        key={m}
+                        onClick={() => setModel(m)}
+                        className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition ${
+                          m === model
+                            ? "bg-gray-900/5 text-gray-900 dark:bg-white/10 dark:text-white"
+                            : "text-gray-600 hover:bg-black/5 dark:text-gray-300 dark:hover:bg-white/5"
+                        }`}
+                      >
+                        <span className="truncate font-mono">{m}</span>
+                        <span className="ml-2 flex shrink-0 items-center gap-2">
+                          {compat && (
+                            <span
+                              title={compat.note}
+                              className={`rounded-full px-2 py-0.5 text-[11px] ${COMPAT_STYLE[compat.level]}`}
+                            >
+                              {COMPAT_LABEL[compat.level]}
+                            </span>
+                          )}
+                          <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
+                            {priceLabel(m)}
+                          </span>
+                          {m === model && <span>✓</span>}
+                        </span>
+                      </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedPrice && (
+                    <div className="mt-3 rounded-xl bg-black/[0.03] px-3 py-2.5 dark:bg-white/5">
+                      <p className={LABEL}>
+                        {model} 价格（已含 {groupRatio}x 分组倍率）
+                      </p>
+                      {selectedPrice.perRequest ? (
+                        <p className="mt-1.5 text-xs text-gray-700 dark:text-gray-200">
+                          按次计费 {fmtUSD(selectedPrice.input)} / 次
+                        </p>
+                      ) : (
+                        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-700 dark:text-gray-200">
+                          <span>
+                            输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
+                          </span>
+                          <span>
+                            输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
+                          </span>
+                          {selectedPrice.cache !== undefined && (
+                            <span>
+                              读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
+                            </span>
+                          )}
+                          {selectedPrice.createCache !== undefined && (
+                            <span>
+                              写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {selectedCompat && (
+                        <p className={`mt-2 ${SUBTLE}`}>{selectedCompat.note}</p>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={enable}
+                    disabled={provisioning || !group || !model || !targetId}
+                    className={`mt-4 w-full rounded-xl bg-gray-900 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200`}
+                  >
+                    {provisioning ? "配置中…" : targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
+                  </button>
+                  {notice && (
+                    <p
+                      className={`mt-2 text-xs ${
+                        notice.ok ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"
+                      }`}
+                    >
+                      {notice.text}
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+            )}
+
+          </div>
         </div>
       </main>
     </div>

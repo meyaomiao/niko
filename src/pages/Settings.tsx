@@ -191,7 +191,7 @@ export default function Settings() {
 
   return (
     <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 dark:border-white/10 px-6 py-4">
+      <header className="flex items-center gap-3 border-b border-black/5 dark:border-white/10 px-5 py-3">
         <button
           onClick={() => navigate("/home")}
           className="text-gray-500 dark:text-gray-400 transition hover:text-gray-900 dark:text-white"
@@ -201,11 +201,12 @@ export default function Settings() {
         <h1 className="text-sm font-semibold text-gray-900 dark:text-white">设置</h1>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-lg space-y-6">
+      <main className="flex-1 overflow-y-auto px-5 py-4">
+        {/* 宽窗口下分两列，避免长单列造成左右大片留白 */}
+        <div className="mx-auto max-w-5xl columns-1 gap-4 md:columns-2 [&>section]:mb-4 [&>section]:break-inside-avoid">
 
           {/* 当前账户 */}
-          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">当前账户</h2>
             <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
               <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
@@ -220,7 +221,7 @@ export default function Settings() {
           </section>
 
           {/* 开机自启 */}
-          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">启动设置</h2>
             <div className="flex items-center justify-between">
               <div>
@@ -246,7 +247,7 @@ export default function Settings() {
           </section>
 
           {/* E5-5: 快照恢复 */}
-          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">配置快照恢复</h2>
               <button
@@ -311,7 +312,7 @@ export default function Settings() {
           </section>
 
           {/* 连通性检测 */}
-          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">连通性自检</h2>
             <div className="flex gap-2">
               <input
@@ -364,7 +365,7 @@ export default function Settings() {
           </section>
 
           {/* 版本与更新 */}
-          <section className="rounded-2xl bg-white dark:bg-white/5 p-5">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
             <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">关于 / 更新</h2>
             <div className="flex items-center gap-2">
               <Logo size={24} />

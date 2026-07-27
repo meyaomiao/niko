@@ -5,6 +5,9 @@ const BASE_URL = "https://momotoken.win";
 /** 网页端注册页，登录器无注册功能，引导用户去官网注册 */
 export const REGISTER_URL = `${BASE_URL}/register`;
 
+/** 网页端充值页，仅用于站内充值不可用时的兜底跳转 */
+export const TOPUP_URL = `${BASE_URL}/console/topup`;
+
 export interface SiteConfig {
   system_name: string;
   server_version: string;
@@ -115,6 +118,41 @@ function usageQueryString(params: UsageQuery): string {
   return q.toString();
 }
 
+export interface PayMethod {
+  name: string;
+  type: string;
+  color?: string;
+  tag?: string;
+  tag_color?: string;
+  min_topup?: string;
+}
+
+export interface TopUpInfo {
+  enable_online_topup: boolean;
+  pay_methods: PayMethod[] | null;
+  min_topup: number;
+  amount_options?: number[] | null;
+  discount?: Record<string, number> | null;
+  topup_link?: string;
+}
+
+export interface TopUpRecord {
+  id: number;
+  amount: number;
+  money: number;
+  trade_no: string;
+  payment_method: string;
+  create_time: number;
+  complete_time: number;
+  status: string;
+}
+
+/** 易支付下单返回 {message,data,url}，与常规 {success,data} 格式不同，需单独解析 */
+export interface EpayOrder {
+  url: string;
+  params: Record<string, unknown>;
+}
+
 export const api = {
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");
@@ -167,6 +205,35 @@ export const api = {
   },
   usageSummary(token: string, params: UsageQuery = {}): Promise<UsageSummary> {
     return get<UsageSummary>(`/client/usage/summary?${usageQueryString(params)}`, token);
+  },
+  topupInfo(token: string): Promise<TopUpInfo> {
+    return get<TopUpInfo>("/client/topup/info", token);
+  },
+  topupHistory(token: string, pageSize = 10): Promise<{ items: TopUpRecord[] | null }> {
+    return get<{ items: TopUpRecord[] | null }>(
+      `/client/topup/self?p=1&page_size=${pageSize}`,
+      token
+    );
+  },
+  async requestEpay(token: string, amount: number, paymentMethod: string): Promise<EpayOrder> {
+    const res = await fetch(`${BASE_URL}/api/client/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ amount, payment_method: paymentMethod }),
+    });
+    const json = await res.json() as {
+      message?: string;
+      data?: unknown;
+      url?: string;
+      success?: boolean;
+    };
+    if (json.message !== "success") {
+      throw new Error(typeof json.data === "string" ? json.data : json.message ?? "下单失败");
+    }
+    return {
+      url: json.url ?? "",
+      params: (json.data ?? {}) as Record<string, unknown>,
+    };
   },
   revokeDevice(token: string, id: number): Promise<void> {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };

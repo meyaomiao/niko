@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Usage from "./pages/Usage";
+import TopUp from "./pages/TopUp";
 import Settings from "./pages/Settings";
 import ForceUpgrade from "./pages/ForceUpgrade";
 import InstallGuide from "./pages/InstallGuide";
@@ -97,6 +98,7 @@ export default function App() {
               <Routes>
                 <Route path="/home" element={<Home />} />
                 <Route path="/usage" element={<Usage />} />
+                <Route path="/topup" element={<TopUp />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/install-guide" element={<InstallGuide />} />
                 <Route path="*" element={<Navigate to="/home" replace />} />

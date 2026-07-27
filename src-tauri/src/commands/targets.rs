@@ -83,7 +83,7 @@ pub async fn apply_all_targets(
     Ok(results)
 }
 
-use crate::targets::{check_drift, resolve_model, DriftReport};
+use crate::targets::{check_drift, DriftReport};
 
 #[tauri::command]
 pub async fn check_drift_cmd(
@@ -118,9 +118,4 @@ pub async fn check_all_drift(
         }
     }
     Ok(reports)
-}
-
-#[tauri::command]
-pub async fn resolve_model_cmd(role: String, group: Option<String>) -> String {
-    resolve_model(&role, group.as_deref())
 }

@@ -35,12 +35,15 @@ pub trait Target: Send + Sync {
 
 // ─── E5-2: TOML 保守合并 ────────────────────────────────────────────────────
 //
-// 策略：只改 [openai] 下的 base_url / api_key，其余 key 原封不动。
+// Codex 只从 [model_providers.<name>] 读取自定义端点，顶层 model_provider 指向它。
+// 策略：只改 momotoken 这一个 provider 段和顶层 model / model_provider，其余 key 原封不动。
 
-fn merge_toml_openai(
+/// Codex config.toml 里我们独占的 provider 段名
+const CODEX_PROVIDER: &str = "momotoken";
+
+fn merge_toml_codex_provider(
     path: &Path,
     base_url: &str,
-    api_key: &str,
     model: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let raw = if path.exists() {
@@ -50,27 +53,33 @@ fn merge_toml_openai(
     };
 
     let mut doc: toml::Table = raw.parse::<toml::Table>().unwrap_or_default();
-
-    let openai = doc
-        .entry("openai")
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-
-    let tbl = openai
-        .as_table_mut()
-        .ok_or("openai 字段不是 table")?;
-
     let mut changed = Vec::new();
 
-    let new_url = toml::Value::String(base_url.to_owned());
-    if tbl.get("base_url") != Some(&new_url) {
-        tbl.insert("base_url".to_owned(), new_url);
-        changed.push("openai.base_url".to_owned());
+    let providers = doc
+        .entry("model_providers")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or("model_providers 字段不是 table")?;
+
+    // wire_api 必须是 responses：新版 Codex 已拒绝 "chat"
+    // env_key + requires_openai_auth 让 Codex 从 auth.json 的 OPENAI_API_KEY 取密钥
+    let mut provider = toml::Table::new();
+    provider.insert("name".to_owned(), toml::Value::String(CODEX_PROVIDER.to_owned()));
+    provider.insert("base_url".to_owned(), toml::Value::String(base_url.to_owned()));
+    provider.insert("wire_api".to_owned(), toml::Value::String("responses".to_owned()));
+    provider.insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
+    provider.insert("requires_openai_auth".to_owned(), toml::Value::Boolean(true));
+    let provider = toml::Value::Table(provider);
+
+    if providers.get(CODEX_PROVIDER) != Some(&provider) {
+        providers.insert(CODEX_PROVIDER.to_owned(), provider);
+        changed.push(format!("model_providers.{CODEX_PROVIDER}"));
     }
 
-    let new_key = toml::Value::String(api_key.to_owned());
-    if tbl.get("api_key") != Some(&new_key) {
-        tbl.insert("api_key".to_owned(), new_key);
-        changed.push("openai.api_key".to_owned());
+    let selected = toml::Value::String(CODEX_PROVIDER.to_owned());
+    if doc.get("model_provider") != Some(&selected) {
+        doc.insert("model_provider".to_owned(), selected);
+        changed.push("model_provider".to_owned());
     }
 
     if let Some(model) = model {
@@ -112,6 +121,43 @@ fn merge_json_keys(path: &Path, updates: &[(&str, Value)]) -> Result<Vec<String>
         if obj.get(*k) != Some(v) {
             obj.insert(k.to_string(), v.clone());
             changed.push(k.to_string());
+        }
+    }
+
+    if !changed.is_empty() {
+        let content = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+
+    Ok(changed)
+}
+
+/// 只更新 JSON 里 env 块的指定环境变量，保留用户已有的其他变量
+fn merge_json_env(path: &Path, vars: &[(&str, String)]) -> Result<Vec<String>, String> {
+    let mut root: Value = if path.exists() {
+        let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()))
+    } else {
+        Value::Object(Default::default())
+    };
+
+    let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or("env 字段不是 object")?;
+
+    let mut changed = Vec::new();
+    for (k, v) in vars {
+        let val = Value::String(v.clone());
+        if env.get(*k) != Some(&val) {
+            env.insert((*k).to_owned(), val);
+            changed.push(format!("env.{k}"));
         }
     }
 
@@ -183,9 +229,9 @@ impl Target for CodexTarget {
         let auth_path = codex_dir.join("auth.json");
         // E5-5: 写入前留存备份，供设置页恢复
         let _ = save_backup(self.id(), &auth_path);
+        // Codex 只认 OPENAI_API_KEY 这个键；写 {"token":...} 会被误判成 ChatGPT OAuth 登录态
         let auth_val = serde_json::json!({
-            "token": plan.api_key,
-            "baseUrl": plan.base_url
+            "OPENAI_API_KEY": plan.api_key
         });
         write_json(&auth_path, &auth_val)?;
         changed.push("auth.json".to_owned());
@@ -193,7 +239,8 @@ impl Target for CodexTarget {
         // 保守合并 config.toml
         let config_path = codex_dir.join("config.toml");
         let _ = save_backup(self.id(), &config_path);
-        let mut toml_changed = merge_toml_openai(&config_path, &plan.base_url, &plan.api_key, plan.model.as_deref())?;
+        let mut toml_changed =
+            merge_toml_codex_provider(&config_path, &plan.base_url, plan.model.as_deref())?;
         changed.append(&mut toml_changed);
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
@@ -204,34 +251,9 @@ impl Target for CodexTarget {
 
 pub struct ClaudeDesktopTarget;
 
-impl ClaudeDesktopTarget {
-    fn config_path() -> PathBuf {
-        #[cfg(target_os = "macos")]
-        {
-            home_dir()
-                .join("Library")
-                .join("Application Support")
-                .join("Claude")
-                .join("claude_desktop_config.json")
-        }
-        #[cfg(target_os = "windows")]
-        {
-            std::env::var("APPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home_dir().join("AppData").join("Roaming"))
-                .join("Claude")
-                .join("claude_desktop_config.json")
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            home_dir().join(".config").join("Claude").join("claude_desktop_config.json")
-        }
-    }
-}
-
 impl Target for ClaudeDesktopTarget {
     fn id(&self) -> &'static str { "claude-desktop" }
-    fn display_name(&self) -> &'static str { "Claude Desktop" }
+    fn display_name(&self) -> &'static str { "Claude Desktop（内置 Claude Code）" }
 
     fn is_installed(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -252,47 +274,27 @@ impl Target for ClaudeDesktopTarget {
     }
 
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
-        let path = Self::config_path();
-        // E5-5: 写入前留存备份
-        let _ = save_backup(self.id(), &path);
+        // Claude Desktop 把 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 列为「由 Claude Desktop
+        // 托管、不可覆盖」，桌面端聊天本身没有自定义 API 端点入口。能接入的是它内置的
+        // Claude Code 面板，读的是 ~/.claude/settings.json，和 CLI 共用同一份配置。
+        let settings_path = home_dir().join(".claude").join("settings.json");
+        let _ = save_backup(self.id(), &settings_path);
 
-        // 读取现有文件，只更新 mcpServers.momotoken，不动其他字段
-        let mut root: Value = if path.exists() {
-            let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()))
-        } else {
-            Value::Object(Default::default())
-        };
-
-        let obj = root.as_object_mut().ok_or("config 根节点不是 object")?;
-
-        let mcp_servers = obj
-            .entry("mcpServers")
-            .or_insert_with(|| Value::Object(Default::default()));
-
-        let servers = mcp_servers.as_object_mut().ok_or("mcpServers 不是 object")?;
-
-        servers.insert(
-            "momotoken".to_owned(),
-            serde_json::json!({
-                "type": "openai-compatible",
-                "baseUrl": plan.base_url,
-                "apiKey": plan.api_key,
-                "model": plan.model
-            }),
-        );
-
-        let content = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let mut changed = merge_json_env(
+            &settings_path,
+            &[
+                ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
+                ("ANTHROPIC_BASE_URL", plan.base_url.clone()),
+            ],
+        )?;
+        if let Some(model) = &plan.model {
+            changed.append(&mut merge_json_keys(
+                &settings_path,
+                &[("model", Value::String(model.clone()))],
+            )?);
         }
-        let snap = fsx::write_with_snapshot(&path, content.as_bytes()).map_err(|e| e.to_string())?;
-        snap.commit();
 
-        Ok(ApplySummary {
-            target_id: self.id().to_owned(),
-            changed_keys: vec!["mcpServers.momotoken".to_owned()],
-        })
+        Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
     }
 }
 
@@ -314,14 +316,20 @@ impl Target for ClaudeCodeTarget {
         // E5-5: 写入前留存备份
         let _ = save_backup(self.id(), &settings_path);
 
-        let mut updates = vec![
-            ("apiKey", Value::String(plan.api_key.clone())),
-            ("baseUrl", Value::String(plan.base_url.clone())),
-        ];
+        // Claude Code 只从 settings.json 的 env 块读取端点与密钥，顶层 apiKey/baseUrl 会被忽略
+        let mut changed = merge_json_env(
+            &settings_path,
+            &[
+                ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
+                ("ANTHROPIC_BASE_URL", plan.base_url.clone()),
+            ],
+        )?;
         if let Some(model) = &plan.model {
-            updates.push(("model", Value::String(model.clone())));
+            changed.append(&mut merge_json_keys(
+                &settings_path,
+                &[("model", Value::String(model.clone()))],
+            )?);
         }
-        let changed = merge_json_keys(&settings_path, &updates)?;
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
     }
@@ -357,11 +365,8 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
             if auth_path.exists() {
                 let raw = fs::read_to_string(&auth_path).unwrap_or_default();
                 let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                if v.get("token").and_then(Value::as_str) != Some(&plan.api_key) {
-                    mismatched.push("auth.json:token".to_owned());
-                }
-                if v.get("baseUrl").and_then(Value::as_str) != Some(&plan.base_url) {
-                    mismatched.push("auth.json:baseUrl".to_owned());
+                if v.get("OPENAI_API_KEY").and_then(Value::as_str) != Some(&plan.api_key) {
+                    mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
                 }
             } else {
                 mismatched.push("auth.json:missing".to_owned());
@@ -370,51 +375,39 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
             if config_path.exists() {
                 let raw = fs::read_to_string(&config_path).unwrap_or_default();
                 let doc: toml::Table = raw.parse().unwrap_or_default();
-                let openai = doc.get("openai").and_then(|v| v.as_table());
-                if openai.and_then(|t| t.get("api_key")).and_then(|v| v.as_str())
-                    != Some(&plan.api_key)
-                {
-                    mismatched.push("config.toml:[openai].api_key".to_owned());
-                }
-                if openai.and_then(|t| t.get("base_url")).and_then(|v| v.as_str())
+                let provider = doc
+                    .get("model_providers")
+                    .and_then(|v| v.as_table())
+                    .and_then(|t| t.get(CODEX_PROVIDER))
+                    .and_then(|v| v.as_table());
+                if provider.and_then(|t| t.get("base_url")).and_then(|v| v.as_str())
                     != Some(&plan.base_url)
                 {
-                    mismatched.push("config.toml:[openai].base_url".to_owned());
+                    mismatched.push(format!("config.toml:model_providers.{CODEX_PROVIDER}.base_url"));
                 }
-            }
-        }
-        "claude-desktop" => {
-            let path = ClaudeDesktopTarget::config_path();
-            if path.exists() {
-                let raw = fs::read_to_string(&path).unwrap_or_default();
-                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                let entry = v
-                    .get("mcpServers")
-                    .and_then(|s| s.get("momotoken"));
-                if entry.and_then(|e| e.get("apiKey")).and_then(Value::as_str)
-                    != Some(&plan.api_key)
-                {
-                    mismatched.push("mcpServers.momotoken.apiKey".to_owned());
-                }
-                if entry.and_then(|e| e.get("baseUrl")).and_then(Value::as_str)
-                    != Some(&plan.base_url)
-                {
-                    mismatched.push("mcpServers.momotoken.baseUrl".to_owned());
+                if doc.get("model_provider").and_then(|v| v.as_str()) != Some(CODEX_PROVIDER) {
+                    mismatched.push("config.toml:model_provider".to_owned());
                 }
             } else {
-                mismatched.push("claude_desktop_config.json:missing".to_owned());
+                mismatched.push("config.toml:missing".to_owned());
             }
         }
-        "claude-code" => {
+        // Claude Desktop 与 Claude Code 共用 ~/.claude/settings.json
+        "claude-desktop" | "claude-code" => {
             let settings = h.join(".claude").join("settings.json");
             if settings.exists() {
                 let raw = fs::read_to_string(&settings).unwrap_or_default();
                 let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                if v.get("apiKey").and_then(Value::as_str) != Some(&plan.api_key) {
-                    mismatched.push("settings.json:apiKey".to_owned());
+                let env = v.get("env");
+                if env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(Value::as_str)
+                    != Some(&plan.api_key)
+                {
+                    mismatched.push("settings.json:env.ANTHROPIC_AUTH_TOKEN".to_owned());
                 }
-                if v.get("baseUrl").and_then(Value::as_str) != Some(&plan.base_url) {
-                    mismatched.push("settings.json:baseUrl".to_owned());
+                if env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(Value::as_str)
+                    != Some(&plan.base_url)
+                {
+                    mismatched.push("settings.json:env.ANTHROPIC_BASE_URL".to_owned());
                 }
             } else {
                 mismatched.push("settings.json:missing".to_owned());
@@ -430,22 +423,105 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
     })
 }
 
-// ─── E6-4: 角色映射与兜底 ───────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// 将用户选择的 "角色" 映射为实际模型名（momotoken 分组可用时优先）
-pub fn resolve_model(role: &str, group: Option<&str>) -> String {
-    let group = group.unwrap_or("default");
-    // 标准角色 → 推荐模型（按优先级排列，第一个是兜底）
-    let candidates: &[&str] = match role {
-        "fast" | "haiku" => &["claude-haiku-3-5", "claude-haiku-3", "gpt-4o-mini"],
-        "balanced" | "sonnet" => &["claude-sonnet-4-5", "claude-sonnet-4", "claude-sonnet-3-5", "gpt-4o"],
-        "best" | "opus" => &["claude-opus-4-5", "claude-opus-4", "claude-opus-3", "gpt-4o"],
-        "code" => &["claude-sonnet-4-5", "gpt-4o", "claude-sonnet-3-5"],
-        other => return other.to_owned(),
-    };
+    fn tmp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "targets_test_{}_{}",
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
 
-    // 分组名透传作为 model 前缀提示（简单策略：直接返回第一个候选）
-    // 后续 E7-1 连通性检测后可优化为选第一个可用的
-    let _ = group;
-    candidates.first().copied().unwrap_or(role).to_owned()
+    /// Codex 只读 [model_providers.*]，且必须保留用户已有的其他 provider 与顶层配置
+    #[test]
+    fn codex_toml_writes_provider_and_keeps_user_keys() {
+        let p = tmp_path("config.toml");
+        fs::write(
+            &p,
+            "approval_policy = \"on-request\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://example.com/v1\"\n",
+        )
+        .unwrap();
+
+        let changed =
+            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"))
+                .unwrap();
+        assert!(changed.contains(&"model_providers.momotoken".to_owned()));
+        assert!(changed.contains(&"model_provider".to_owned()));
+        assert!(changed.contains(&"model".to_owned()));
+
+        let doc: toml::Table = fs::read_to_string(&p).unwrap().parse().unwrap();
+        assert_eq!(
+            doc.get("approval_policy").and_then(|v| v.as_str()),
+            Some("on-request")
+        );
+        assert_eq!(doc.get("model_provider").and_then(|v| v.as_str()), Some("momotoken"));
+        assert_eq!(doc.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4-6"));
+
+        let providers = doc.get("model_providers").unwrap().as_table().unwrap();
+        assert!(providers.contains_key("custom"), "用户已有 provider 必须保留");
+        let ours = providers.get("momotoken").unwrap().as_table().unwrap();
+        assert_eq!(
+            ours.get("base_url").and_then(|v| v.as_str()),
+            Some("https://momotoken.win/v1")
+        );
+        // 新版 Codex 已拒绝 wire_api = "chat"
+        assert_eq!(ours.get("wire_api").and_then(|v| v.as_str()), Some("responses"));
+        assert_eq!(ours.get("env_key").and_then(|v| v.as_str()), Some("OPENAI_API_KEY"));
+
+        // 幂等：同样的 plan 不应再产生改动
+        assert!(
+            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Claude Code / Claude Desktop 只读 settings.json 的 env 块，顶层 apiKey 不被识别
+    #[test]
+    fn claude_settings_writes_env_block_and_keeps_user_vars() {
+        let p = tmp_path("settings.json");
+        fs::write(
+            &p,
+            r#"{"includeCoAuthoredBy":false,"env":{"MY_VAR":"keep"}}"#,
+        )
+        .unwrap();
+
+        let changed = merge_json_env(
+            &p,
+            &[
+                ("ANTHROPIC_AUTH_TOKEN", "sk-abc".to_owned()),
+                ("ANTHROPIC_BASE_URL", "https://momotoken.win/v1".to_owned()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(changed.len(), 2);
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v.get("includeCoAuthoredBy").and_then(Value::as_bool), Some(false));
+        let env = v.get("env").unwrap();
+        assert_eq!(env.get("MY_VAR").and_then(Value::as_str), Some("keep"));
+        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str), Some("sk-abc"));
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(Value::as_str),
+            Some("https://momotoken.win/v1")
+        );
+
+        assert!(merge_json_env(
+            &p,
+            &[
+                ("ANTHROPIC_AUTH_TOKEN", "sk-abc".to_owned()),
+                ("ANTHROPIC_BASE_URL", "https://momotoken.win/v1".to_owned()),
+            ]
+        )
+        .unwrap()
+        .is_empty());
+    }
 }

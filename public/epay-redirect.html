@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>正在跳转支付</title>
+    <style>
+      body {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        font: 14px -apple-system, "Segoe UI", sans-serif;
+        color: #4b5563;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="tip">正在跳转到支付页…</div>
+    <script>
+      // 下单参数由 Rust 侧以 hex 编码通过 query 传入，此处解码后自动表单 POST 到收银台
+      function decodeHex(hex) {
+        const bytes = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < bytes.length; i++) {
+          bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+        }
+        return new TextDecoder().decode(bytes);
+      }
+      try {
+        const hex = new URLSearchParams(location.search).get("d") || "";
+        const payload = JSON.parse(decodeHex(hex));
+        const form = document.createElement("form");
+        form.action = payload.url;
+        form.method = "POST";
+        Object.entries(payload.params || {}).forEach(([k, v]) => {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = k;
+          input.value = String(v);
+          form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+      } catch (e) {
+        document.getElementById("tip").textContent = "跳转支付失败，请返回重试";
+      }
+    </script>
+  </body>
+</html>

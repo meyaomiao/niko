@@ -31,12 +31,13 @@ pub fn run() {
             commands::targets::apply_all_targets,
             commands::targets::check_drift_cmd,
             commands::targets::check_all_drift,
-            commands::targets::resolve_model_cmd,
             commands::diagnostics::ping,
             commands::diagnostics::verify_targets,
             commands::diagnostics::ping_diag,
             commands::diagnostics::export_log,
             commands::diagnostics::probe_compat,
+            commands::payment::open_cashier,
+            commands::payment::close_cashier,
             commands::process::check_process,
             commands::process::check_all_processes,
             commands::snapshots::list_snapshots,
@@ -60,7 +61,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
     TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        // 单色版 mark：macOS 菜单栏按模板图处理，自动适配深浅色
+        .icon(tauri::include_image!("icons/tray-mono.png"))
+        .icon_as_template(true)
         .menu(&menu)
         .tooltip("Piko")
         .on_menu_event(|app, event| match event.id.as_ref() {
