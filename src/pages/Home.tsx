@@ -7,7 +7,7 @@ import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE } from "../lib/compat";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
-import { vendorOfGroup } from "../lib/vendor";
+import { vendorOfGroup, type Vendor } from "../lib/vendor";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 
@@ -104,15 +104,20 @@ export default function Home() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: GroupOption[] = bootstrap?.groups ?? [];
-  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」
-  const vendorSections = useMemo(() => {
+  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」；只保留有分组的厂商作为页签
+  const vendorTabs = useMemo(() => {
     const buckets: Record<string, GroupOption[]> = { OpenAI: [], Anthropic: [], Google: [], 其他: [] };
     for (const g of groups) {
       buckets[vendorOfGroup(g.name)].push(g);
     }
-    return Object.entries(buckets).filter(([, list]) => list.length > 0);
+    return Object.entries(buckets).filter(([, list]) => list.length > 0) as [Vendor, GroupOption[]][];
   }, [groups]);
   const currentGroup = groups.find((g) => g.name === group);
+  // 页签跟随当前分组所属厂商，切换页签时自动选中该厂商第一个分组
+  const activeVendor: Vendor | null = currentGroup
+    ? vendorOfGroup(currentGroup.name)
+    : vendorTabs[0]?.[0] ?? null;
+  const vendorGroups = vendorTabs.find(([v]) => v === activeVendor)?.[1] ?? [];
   const groupRatio = currentGroup?.ratio ?? 1;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
   const models = useMemo(() => {
@@ -292,31 +297,37 @@ export default function Home() {
               <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
             ) : (
               <>
-                <p className={LABEL}>套餐分组</p>
-                <div className="mt-2 space-y-3">
-                  {vendorSections.map(([vendor, list]) => (
-                    <div key={vendor}>
-                      <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                        {vendor}
-                      </p>
-                      <div className="mt-1.5 flex flex-wrap gap-2">
-                        {list.map((g) => (
-                          <button
-                            key={g.name}
-                            onClick={() => pickGroup(g.name)}
-                            title={g.desc}
-                            className={`rounded-full px-3 py-1.5 text-xs transition ${
-                              g.name === group
-                                ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                                : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
-                            }`}
-                          >
-                            {g.name}
-                            <span className="ml-1.5 opacity-60">{g.ratio}x</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                <div className="flex gap-1 border-b border-black/5 dark:border-white/10">
+                  {vendorTabs.map(([vendor, list]) => (
+                    <button
+                      key={vendor}
+                      onClick={() => pickGroup(list[0].name)}
+                      className={`-mb-px border-b-2 px-3 py-2 text-xs transition ${
+                        vendor === activeVendor
+                          ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
+                          : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                      }`}
+                    >
+                      {vendor}
+                      <span className="ml-1.5 opacity-60">{list.length}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {vendorGroups.map((g) => (
+                    <button
+                      key={g.name}
+                      onClick={() => pickGroup(g.name)}
+                      title={g.desc}
+                      className={`rounded-full px-3 py-1.5 text-xs transition ${
+                        g.name === group
+                          ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                          : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
+                      }`}
+                    >
+                      {g.name}
+                      <span className="ml-1.5 opacity-60">{g.ratio}x</span>
+                    </button>
                   ))}
                 </div>
                 {currentGroup?.desc && (

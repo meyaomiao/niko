@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 import { api, REGISTER_URL, type SiteConfig } from "../api/client";
 import { saveAuth } from "../store/auth";
 
@@ -33,12 +34,26 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
 
+  const [remember, setRemember] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   // 加载站点配置
   useEffect(() => {
     api.getSite().then(setSite).catch(() => setSite({ system_name: "momo·摸摸", server_version: "" }));
+  }, []);
+
+  // 回填「记住我」保存的凭证（存在系统钥匙串，不落明文文件）
+  useEffect(() => {
+    invoke<{ username: string; password: string } | null>("load_remembered_login")
+      .then((saved) => {
+        if (!saved) return;
+        setUsername(saved.username);
+        setPassword(saved.password);
+        setRemember(true);
+      })
+      .catch(() => {});
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -81,6 +96,18 @@ export default function Login() {
   };
 
   const finishLogin = async (token: string, uname: string) => {
+    // 记住我：凭证写入系统钥匙串；未勾选则清掉历史记录
+    try {
+      if (remember) {
+        await invoke("save_remembered_login", {
+          login: { username: username.trim(), password },
+        });
+      } else {
+        await invoke("clear_remembered_login");
+      }
+    } catch {
+      // 钥匙串不可用时不阻断登录
+    }
     try {
       const bootstrap = await api.bootstrap(token);
       const provision = await api.provision(token, bootstrap.user.group);
@@ -145,6 +172,17 @@ export default function Login() {
                 disabled={loading}
               />
             </div>
+
+            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+                disabled={loading}
+                className="h-3.5 w-3.5 rounded border-black/20 accent-indigo-600 dark:border-white/25"
+              />
+              记住我
+            </label>
 
             <button
               type="submit"

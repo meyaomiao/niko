@@ -22,6 +22,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::login,
             commands::auth::logout,
+            commands::auth::save_remembered_login,
+            commands::auth::load_remembered_login,
+            commands::auth::clear_remembered_login,
             commands::bootstrap::get_bootstrap,
             commands::targets::list_targets,
             commands::targets::apply_target,
