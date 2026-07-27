@@ -18,6 +18,10 @@ pub struct ApplyPlan {
     pub model_group: Option<String>,
     /// 用户在登录器里选中的模型，写入目标配置的默认模型字段
     pub model: Option<String>,
+    /// Codex 混用模式：保留 auth.json 里的 ChatGPT 登录态，密钥改写进 provider 段。
+    /// 仅对 Codex 生效，Claude 桌面端只有 env 一条路，没有这个维度。
+    #[serde(default)]
+    pub codex_mixed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +35,12 @@ pub trait Target: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn is_installed(&self) -> bool;
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String>;
+
+    /// 本机已安装时的真实应用图标（PNG data URI）。未安装或平台不支持时返回 None，
+    /// 由前端回落到内置占位图形。
+    fn icon_data_uri(&self) -> Option<String> {
+        None
+    }
 }
 
 // ─── E5-2: TOML 保守合并 ────────────────────────────────────────────────────
@@ -45,6 +55,7 @@ fn merge_toml_codex_provider(
     path: &Path,
     base_url: &str,
     model: Option<&str>,
+    mixed_api_key: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let raw = if path.exists() {
         fs::read_to_string(path).map_err(|e| e.to_string())?
@@ -62,13 +73,24 @@ fn merge_toml_codex_provider(
         .ok_or("model_providers 字段不是 table")?;
 
     // wire_api 必须是 responses：新版 Codex 已拒绝 "chat"
-    // env_key + requires_openai_auth 让 Codex 从 auth.json 的 OPENAI_API_KEY 取密钥
     let mut provider = toml::Table::new();
     provider.insert("name".to_owned(), toml::Value::String(CODEX_PROVIDER.to_owned()));
     provider.insert("base_url".to_owned(), toml::Value::String(base_url.to_owned()));
     provider.insert("wire_api".to_owned(), toml::Value::String("responses".to_owned()));
-    provider.insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
     provider.insert("requires_openai_auth".to_owned(), toml::Value::Boolean(true));
+    match mixed_api_key {
+        // 混用模式：密钥留在 provider 段，auth.json 保持 ChatGPT 登录态
+        Some(key) => {
+            provider.insert(
+                "experimental_bearer_token".to_owned(),
+                toml::Value::String(key.to_owned()),
+            );
+        }
+        // 纯 API 模式：从 auth.json 的 OPENAI_API_KEY 取密钥
+        None => {
+            provider.insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
+        }
+    }
     let provider = toml::Value::Table(provider);
 
     if providers.get(CODEX_PROVIDER) != Some(&provider) {
@@ -129,6 +151,31 @@ fn merge_json_keys(path: &Path, updates: &[(&str, Value)]) -> Result<Vec<String>
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+
+    Ok(changed)
+}
+
+/// 删除 JSON 里的指定顶层 key，其余内容原封不动
+fn remove_json_keys(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
+
+    let mut changed = Vec::new();
+    for k in keys {
+        if obj.remove(*k).is_some() {
+            changed.push(format!("-{k}"));
+        }
+    }
+
+    if !changed.is_empty() {
+        let content = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
         let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
         snap.commit();
     }
@@ -202,9 +249,10 @@ fn dirs_home() -> PathBuf {
 //
 // 只面向桌面端：用户可能装了 App 但从未跑过 CLI，所以不能只看 ~/.codex 之类的目录。
 
-/// Codex 桌面端在不同渠道下的 bundle 名
+/// Codex 桌面端已并入 ChatGPT 桌面应用（bundle id 仍是 com.openai.codex），
+/// 老版本可能还叫 Codex.app，所以新名优先、旧名兜底。
 #[cfg(target_os = "macos")]
-const CODEX_APP_NAMES: &[&str] = &["Codex.app", "OpenAI Codex.app"];
+const CODEX_APP_NAMES: &[&str] = &["ChatGPT.app", "Codex.app", "OpenAI Codex.app"];
 
 #[cfg(target_os = "macos")]
 fn macos_app_exists(names: &[&str]) -> bool {
@@ -226,13 +274,94 @@ fn windows_app_exists(candidates: &[(&str, &str)]) -> bool {
         .any(|(dir, exe)| root.join(dir).join(exe).exists())
 }
 
+/// 已安装 App 的 bundle 路径（用于提取真实应用图标）
+#[cfg(target_os = "macos")]
+fn macos_app_path(names: &[&str]) -> Option<PathBuf> {
+    let user_apps = home_dir().join("Applications");
+    names.iter().find_map(|name| {
+        let system = Path::new("/Applications").join(name);
+        if system.exists() {
+            return Some(system);
+        }
+        let user = user_apps.join(name);
+        user.exists().then_some(user)
+    })
+}
+
+/// 从已安装的 App 里取真实图标，转成 PNG 后以 data URI 返回。
+/// 图标属于各自厂商的商标资源，不入库、不随包分发，只在运行时按需读取本机已安装的副本。
+#[cfg(target_os = "macos")]
+fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
+    let app = macos_app_path(names)?;
+    let resources = app.join("Contents").join("Resources");
+
+    // Info.plist 里的 CFBundleIconFile 可能不带 .icns 后缀
+    let declared = fs::read_to_string(app.join("Contents").join("Info.plist"))
+        .ok()
+        .and_then(|raw| {
+            let key = raw.find("<key>CFBundleIconFile</key>")?;
+            let rest = &raw[key..];
+            let start = rest.find("<string>")? + "<string>".len();
+            let end = rest[start..].find("</string>")?;
+            Some(rest[start..start + end].trim().to_owned())
+        });
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(name) = declared {
+        candidates.push(resources.join(&name));
+        if !name.ends_with(".icns") {
+            candidates.push(resources.join(format!("{name}.icns")));
+        }
+    }
+    // 兜底：AppIcon.icns 是常见默认名，Electron 应用多为 electron.icns
+    candidates.push(resources.join("AppIcon.icns"));
+    candidates.push(resources.join("electron.icns"));
+
+    let icns = candidates.into_iter().find(|p| p.exists())?;
+
+    // sips 是 macOS 自带工具，无需额外依赖
+    let out = std::env::temp_dir().join(format!("piko-icon-{}.png", std::process::id()));
+    let ok = std::process::Command::new("/usr/bin/sips")
+        .args(["-s", "format", "png", "-Z", "128"])
+        .arg(&icns)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        return None;
+    }
+
+    let png = fs::read(&out).ok()?;
+    let _ = fs::remove_file(&out);
+    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+}
+
+/// 极简 base64，避免为一张图标引入新依赖
+#[cfg(target_os = "macos")]
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 // ─── E6-1: Codex ────────────────────────────────────────────────────────────
 
 pub struct CodexTarget;
 
 impl Target for CodexTarget {
     fn id(&self) -> &'static str { "codex" }
-    fn display_name(&self) -> &'static str { "Codex 桌面端" }
+    fn display_name(&self) -> &'static str { "ChatGPT 桌面端" }
 
     fn is_installed(&self) -> bool {
         // 桌面端与 CLI 共用 ~/.codex；但只装了桌面端、没跑过 CLI 时该目录可能还不存在，
@@ -245,33 +374,58 @@ impl Target for CodexTarget {
         }
         #[cfg(target_os = "windows")]
         {
-            if windows_app_exists(&[("Programs\\Codex", "Codex.exe"), ("Codex", "Codex.exe")]) {
+            if windows_app_exists(&[
+                ("Programs\\ChatGPT", "ChatGPT.exe"),
+                ("ChatGPT", "ChatGPT.exe"),
+                ("Programs\\Codex", "Codex.exe"),
+                ("Codex", "Codex.exe"),
+            ]) {
                 return true;
             }
         }
         home_dir().join(".codex").exists()
     }
 
+    fn icon_data_uri(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            return macos_app_icon_data_uri(CODEX_APP_NAMES);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
         let codex_dir = home_dir().join(".codex");
         let mut changed = Vec::new();
 
-        // 合并 auth.json
         let auth_path = codex_dir.join("auth.json");
         // E5-5: 写入前留存备份，供设置页恢复
         let _ = save_backup(self.id(), &auth_path);
-        // Codex 只认 OPENAI_API_KEY 这个键；整体覆写会清掉桌面端已有的 ChatGPT 登录态，
-        // 所以只合并这一个键。
-        changed.append(&mut merge_json_keys(
-            &auth_path,
-            &[("OPENAI_API_KEY", Value::String(plan.api_key.clone()))],
-        )?);
+        if plan.codex_mixed {
+            // 混用模式：auth.json 里同时存在 OPENAI_API_KEY 和 ChatGPT tokens 时，Codex 优先吃
+            // api key，官方登录态就等于失效。必须把这个键移除，密钥改由 provider 段承载。
+            changed.append(&mut remove_json_keys(&auth_path, &["OPENAI_API_KEY"])?);
+        } else {
+            // 纯 API 模式：Codex 只认 OPENAI_API_KEY 这个键；整体覆写会清掉桌面端已有的
+            // ChatGPT 登录态，所以只合并这一个键。
+            changed.append(&mut merge_json_keys(
+                &auth_path,
+                &[("OPENAI_API_KEY", Value::String(plan.api_key.clone()))],
+            )?);
+        }
 
         // 保守合并 config.toml
         let config_path = codex_dir.join("config.toml");
         let _ = save_backup(self.id(), &config_path);
-        let mut toml_changed =
-            merge_toml_codex_provider(&config_path, &plan.base_url, plan.model.as_deref())?;
+        let mut toml_changed = merge_toml_codex_provider(
+            &config_path,
+            &plan.base_url,
+            plan.model.as_deref(),
+            plan.codex_mixed.then_some(plan.api_key.as_str()),
+        )?;
         changed.append(&mut toml_changed);
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
@@ -298,6 +452,17 @@ impl Target for ClaudeDesktopTarget {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             false
+        }
+    }
+
+    fn icon_data_uri(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            return macos_app_icon_data_uri(&["Claude.app"]);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
         }
     }
 
@@ -349,14 +514,22 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
     match target_id {
         "codex" => {
             let auth_path = h.join(".codex").join("auth.json");
-            if auth_path.exists() {
+            let auth: Value = if auth_path.exists() {
                 let raw = fs::read_to_string(&auth_path).unwrap_or_default();
-                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                if v.get("OPENAI_API_KEY").and_then(Value::as_str) != Some(&plan.api_key) {
+                serde_json::from_str(&raw).unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            let auth_key = auth.get("OPENAI_API_KEY").and_then(Value::as_str);
+            if plan.codex_mixed {
+                // 混用模式下 auth.json 不该残留 api key，否则会盖掉 ChatGPT 登录态
+                if auth_key.is_some() {
                     mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
                 }
-            } else {
+            } else if !auth_path.exists() {
                 mismatched.push("auth.json:missing".to_owned());
+            } else if auth_key != Some(&plan.api_key) {
+                mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
             }
             let config_path = h.join(".codex").join("config.toml");
             if config_path.exists() {
@@ -374,6 +547,14 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                 }
                 if doc.get("model_provider").and_then(|v| v.as_str()) != Some(CODEX_PROVIDER) {
                     mismatched.push("config.toml:model_provider".to_owned());
+                }
+                let bearer = provider
+                    .and_then(|t| t.get("experimental_bearer_token"))
+                    .and_then(|v| v.as_str());
+                let expected_bearer = plan.codex_mixed.then_some(plan.api_key.as_str());
+                if bearer != expected_bearer {
+                    mismatched
+                        .push(format!("config.toml:model_providers.{CODEX_PROVIDER}.experimental_bearer_token"));
                 }
             } else {
                 mismatched.push("config.toml:missing".to_owned());
@@ -438,7 +619,7 @@ mod tests {
         .unwrap();
 
         let changed =
-            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"))
+            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"), None)
                 .unwrap();
         assert!(changed.contains(&"model_providers.momotoken".to_owned()));
         assert!(changed.contains(&"model_provider".to_owned()));
@@ -465,7 +646,7 @@ mod tests {
 
         // 幂等：同样的 plan 不应再产生改动
         assert!(
-            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"))
+            merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"), None)
                 .unwrap()
                 .is_empty()
         );
@@ -495,6 +676,67 @@ mod tests {
             v.pointer("/tokens/id_token").and_then(Value::as_str),
             Some("keep")
         );
+    }
+
+    /// 混用模式：密钥走 provider 段的 experimental_bearer_token，auth.json 不留 api key，
+    /// ChatGPT 登录态必须完整保留，否则 Codex 会优先吃 api key 让官方登录失效。
+    #[test]
+    fn codex_mixed_mode_keeps_chatgpt_auth_and_moves_key_to_provider() {
+        let auth = tmp_path("auth.json");
+        fs::write(
+            &auth,
+            r#"{"OPENAI_API_KEY":"sk-old","preferred_auth_method":"chatgpt","tokens":{"id_token":"keep"}}"#,
+        )
+        .unwrap();
+        let removed = remove_json_keys(&auth, &["OPENAI_API_KEY"]).unwrap();
+        assert_eq!(removed, vec!["-OPENAI_API_KEY".to_owned()]);
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+        assert!(v.get("OPENAI_API_KEY").is_none());
+        assert_eq!(
+            v.get("preferred_auth_method").and_then(Value::as_str),
+            Some("chatgpt")
+        );
+        assert_eq!(v.pointer("/tokens/id_token").and_then(Value::as_str), Some("keep"));
+
+        let cfg = tmp_path("config.toml");
+        merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, Some("sk-new")).unwrap();
+        let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
+        let ours = doc
+            .get("model_providers")
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .get("momotoken")
+            .unwrap()
+            .as_table()
+            .unwrap();
+        assert_eq!(
+            ours.get("experimental_bearer_token").and_then(|v| v.as_str()),
+            Some("sk-new")
+        );
+        assert!(ours.get("env_key").is_none(), "混用模式不该再从 auth.json 取密钥");
+    }
+
+    /// 从混用切回纯 API 时，provider 段里的 bearer token 必须被清掉，否则残留旧密钥
+    #[test]
+    fn codex_pure_api_mode_clears_mixed_bearer_token() {
+        let cfg = tmp_path("config.toml");
+        merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, Some("sk-mixed")).unwrap();
+        merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, None).unwrap();
+
+        let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
+        let ours = doc
+            .get("model_providers")
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .get("momotoken")
+            .unwrap()
+            .as_table()
+            .unwrap();
+        assert!(ours.get("experimental_bearer_token").is_none());
+        assert_eq!(ours.get("env_key").and_then(|v| v.as_str()), Some("OPENAI_API_KEY"));
     }
 
     /// Claude Desktop 只读 settings.json 的 env 块，顶层 apiKey 不被识别

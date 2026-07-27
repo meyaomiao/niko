@@ -28,7 +28,7 @@ const ERROR_KIND_LABELS: Record<string, string> = {
 };
 
 const TARGET_LABELS: Record<string, string> = {
-  "codex": "Codex 桌面端",
+  "codex": "ChatGPT 桌面端",
   "claude-desktop": "Claude 桌面端",
 };
 

@@ -16,11 +16,15 @@ const RELAY_BASE_URL = "https://momotoken.win/v1";
 const TARGET_STORAGE_KEY = "momo_last_target";
 /// 应用选择里代表「全部已安装应用」的哨兵值
 const ALL_TARGETS = "__all__";
+/// 记住 Codex 是否用混用模式（有 ChatGPT 订阅时保留官方登录态）
+const CODEX_MIXED_STORAGE_KEY = "momo_codex_mixed";
 
 interface TargetInfo {
   id: string;
   name: string;
   installed: boolean;
+  /// 后端从本机已安装 App 提取的真实图标（data URI），取不到时为 null
+  icon?: string | null;
 }
 
 interface ApplyResult {
@@ -56,6 +60,9 @@ const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:bord
 const LABEL = "text-xs font-medium text-gray-500 dark:text-gray-400";
 const TITLE = "text-sm font-semibold text-gray-900 dark:text-gray-100";
 const SUBTLE = "text-xs text-gray-500 dark:text-gray-400";
+const INPUT =
+  "rounded-full border border-black/10 bg-transparent px-3 py-1 text-xs text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-white/15 dark:text-gray-100";
+const SELECT = `${INPUT} w-full appearance-none truncate pr-7`;
 const GHOST_BTN =
   "rounded-full border border-black/10 px-3 py-1.5 text-xs text-gray-700 transition hover:bg-black/5 disabled:opacity-40 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10";
 const PRIMARY_BTN =
@@ -81,6 +88,10 @@ export default function Home() {
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
   // 用户一旦手动挑过分组，就不再按所选应用自动推荐
   const [groupTouched, setGroupTouched] = useState(false);
+  // Codex 专属：有 ChatGPT 订阅的用户走混用模式，保留官方登录态
+  const [codexMixed, setCodexMixed] = useState(
+    () => localStorage.getItem(CODEX_MIXED_STORAGE_KEY) === "1"
+  );
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [devicesOpen, setDevicesOpen] = useState(false);
@@ -200,6 +211,13 @@ export default function Home() {
     setNotice(null);
   };
 
+  const pickCodexMixed = (mixed: boolean) => {
+    setCodexMixed(mixed);
+    localStorage.setItem(CODEX_MIXED_STORAGE_KEY, mixed ? "1" : "0");
+    setResults({});
+    setNotice(null);
+  };
+
   // 申领/切换当前分组的 Key，再写入所选应用（或全部已安装应用）
   const enable = async () => {
     if (!auth?.accessToken || !group || !targetId) return;
@@ -214,7 +232,13 @@ export default function Home() {
       if (targetId === ALL_TARGETS) {
         const applied = await invoke<Array<{ id: string; ok: boolean; changed?: string[]; error?: string }>>(
           "apply_all_targets",
-          { baseUrl: RELAY_BASE_URL, apiKey: res.api_key, modelGroup: group, model: model || null }
+          {
+            baseUrl: RELAY_BASE_URL,
+            apiKey: res.api_key,
+            modelGroup: group,
+            model: model || null,
+            codexMixed: codexMixed,
+          }
         );
         const map: Record<string, ApplyResult> = {};
         applied.forEach((r) => {
@@ -224,7 +248,7 @@ export default function Home() {
         const okCount = applied.filter((r) => r.ok).length;
         setNotice(
           applied.length === 0
-            ? { ok: false, text: "未检测到已安装的应用，请先安装 Codex 或 Claude" }
+            ? { ok: false, text: "未检测到已安装的应用，请先安装 ChatGPT 或 Claude" }
             : { ok: okCount > 0, text: `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}` }
         );
       } else {
@@ -235,6 +259,7 @@ export default function Home() {
             api_key: res.api_key,
             model_group: group || null,
             model: model || null,
+            codex_mixed: codexMixed,
           },
         });
         setResults({ [targetId]: { ok: true, changed } });
@@ -352,7 +377,7 @@ export default function Home() {
               {installedTargets.length === 0 ? (
                 <div>
                   <p className={SUBTLE}>
-                    没检测到支持的应用。先安装 Codex 桌面端或 Claude 桌面端，再回来一键接入。
+                    没检测到支持的应用。先安装 ChatGPT 桌面端或 Claude 桌面端，再回来一键接入。
                   </p>
                   <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
                     安装指引
@@ -365,8 +390,8 @@ export default function Home() {
                       const result = results[t.id];
                       const active = t.id === targetId;
                       return (
+                        <div key={t.id}>
                         <button
-                          key={t.id}
                           onClick={() => pickTarget(t.id)}
                           disabled={!t.installed}
                           className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
@@ -379,17 +404,22 @@ export default function Home() {
                         >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex min-w-0 items-center gap-2">
-                              <span>{TARGET_ICONS[t.id] ?? "🔧"}</span>
+                              {t.icon ? (
+                                <img
+                                  src={t.icon}
+                                  alt=""
+                                  className="h-6 w-6 shrink-0 rounded-md"
+                                />
+                              ) : (
+                                <span className="w-6 shrink-0 text-center">
+                                  {TARGET_ICONS[t.id] ?? "🔧"}
+                                </span>
+                              )}
                               <div className="min-w-0">
                                 <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
                                   {t.name}
                                 </p>
                                 <p className={SUBTLE}>{t.installed ? "已安装" : "未检测到安装"}</p>
-                                {t.id === "claude-desktop" && (
-                                  <p className={SUBTLE}>
-                                    仅作用于内置 Claude Code 面板，桌面端普通对话仍用你的 Anthropic 账号
-                                  </p>
-                                )}
                               </div>
                             </div>
                             {active && <span className="shrink-0 text-xs">✓</span>}
@@ -408,6 +438,44 @@ export default function Home() {
                             </p>
                           )}
                         </button>
+                        {/* Claude 的作用范围说明单独成子卡片：常驻在选项里会把卡片撑高，
+                            且未选中时并不需要这条信息。 */}
+                        {t.id === "claude-desktop" && active && t.installed && (
+                          <div className="mt-1.5 rounded-xl bg-black/[0.03] p-2 dark:bg-white/5">
+                            <p className={SUBTLE}>
+                              仅作用于内置 Claude Code 面板，桌面端普通对话仍用你的 Anthropic 账号
+                            </p>
+                          </div>
+                        )}
+                        {/* Codex 独有：有 ChatGPT 订阅时保留官方登录态，密钥走 provider 段 */}
+                        {t.id === "codex" && active && t.installed && (
+                          <div className="mt-1.5 rounded-xl bg-black/[0.03] p-2 dark:bg-white/5">
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {[
+                                { mixed: false, label: "我没有 ChatGPT 订阅" },
+                                { mixed: true, label: "我有 ChatGPT 付费订阅" },
+                              ].map((opt) => (
+                                <button
+                                  key={String(opt.mixed)}
+                                  onClick={() => pickCodexMixed(opt.mixed)}
+                                  className={`rounded-lg px-2.5 py-1.5 text-xs transition ${
+                                    codexMixed === opt.mixed
+                                      ? "bg-white font-medium text-gray-900 shadow-sm dark:bg-white/15 dark:text-gray-100"
+                                      : "text-gray-500 hover:bg-black/[0.04] dark:text-gray-400 dark:hover:bg-white/10"
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                            <p className={`mt-1.5 ${SUBTLE}`}>
+                              {codexMixed
+                                ? "保留 ChatGPT 登录态，官方额度与账号功能照常，模型走 momo"
+                                : "只用 momo 的额度，不需要 ChatGPT 账号"}
+                            </p>
+                          </div>
+                        )}
+                        </div>
                       );
                     })}
                     {installedTargets.length > 1 && (
@@ -494,15 +562,16 @@ export default function Home() {
             )}
           </div>
 
-          <div className="flex min-h-0 flex-col overflow-y-auto pr-0.5">
+          {/* 右列不设滚动：滚动只交给内部的模型列表，避免出现嵌套双层滚动条 */}
+          <div className="flex min-h-0 flex-col overflow-hidden">
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
-            <section className={CARD}>
-              <div className="mb-3 flex items-center justify-between">
+            <section className={`${CARD} flex min-h-0 flex-1 flex-col`}>
+              <div className="mb-2.5 flex shrink-0 items-center justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
                   <span className={`relative flex items-center gap-1 ${SUBTLE}`}>
-                    价格按每百万 token
+                    每百万 token · 含 {groupRatio}x 倍率
                     <button
                       type="button"
                       aria-label="什么是 token"
@@ -531,7 +600,7 @@ export default function Home() {
                 <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
               ) : (
                 <>
-                  <div className="flex gap-1 border-b border-black/5 dark:border-white/10">
+                  <div className="flex shrink-0 gap-1 border-b border-black/5 dark:border-white/10">
                     {vendorTabs.map(([vendor, list]) => (
                       <button
                         key={vendor}
@@ -550,28 +619,34 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {vendorGroups.map((g) => (
-                      <button
-                        key={g.name}
-                        onClick={() => pickGroup(g.name)}
-                        title={g.desc}
-                        className={`rounded-full px-3 py-1.5 text-xs transition ${
-                          g.name === group
-                            ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                            : "border border-black/10 text-gray-700 hover:bg-black/5 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10"
-                        }`}
+                  {/* 分组用下拉而非 chip 平铺：分组多时换行会吃掉模型列表的高度，
+                      下拉把「名称 + 倍率 + 说明」压进一行，列表高度也不再随分组数变化。 */}
+                  <div className="mt-2.5 flex shrink-0 items-center gap-3">
+                    <p className={`${LABEL} shrink-0`}>
+                      分组
+                      <span className="ml-1.5 opacity-70">{vendorGroups.length}</span>
+                    </p>
+                    <div className="relative min-w-0 flex-1">
+                      <select
+                        value={group}
+                        onChange={(e) => pickGroup(e.target.value)}
+                        aria-label="选择分组"
+                        className={SELECT}
                       >
-                        {g.name}
-                        <span className="ml-1.5 opacity-60">{g.ratio}x</span>
-                      </button>
-                    ))}
+                        {vendorGroups.map((g) => (
+                          <option key={g.name} value={g.name} className="text-gray-900">
+                            {g.name} · {g.ratio}x{g.desc ? ` · ${g.desc}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {/* appearance-none 去掉系统箭头后自己补一个，保持和输入框同一套视觉 */}
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">
+                        ▾
+                      </span>
+                    </div>
                   </div>
-                  {currentGroup?.desc && (
-                    <p className={`mt-2 ${SUBTLE}`}>{currentGroup.desc}</p>
-                  )}
 
-                  <div className="mt-4 flex items-center justify-between gap-3">
+                  <div className="mt-2.5 flex shrink-0 items-center justify-between gap-3">
                     <p className={LABEL}>
                       模型
                       <span className="ml-1.5 opacity-70">{models.length}</span>
@@ -580,10 +655,10 @@ export default function Home() {
                       value={modelFilter}
                       onChange={(e) => setModelFilter(e.target.value)}
                       placeholder="搜索模型"
-                      className="w-40 rounded-full border border-black/10 bg-transparent px-3 py-1 text-xs text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-white/15 dark:text-gray-100"
+                      className={`w-40 ${INPUT}`}
                     />
                   </div>
-                  <div className="mt-2 max-h-[19rem] space-y-1 overflow-y-auto pr-1">
+                  <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
                     {models.length === 0 && <p className={SUBTLE}>没有匹配的模型</p>}
                     {models.map((m) => {
                       const compat = compatOf(m);
@@ -617,57 +692,63 @@ export default function Home() {
                     })}
                   </div>
 
-                  {selectedPrice && (
-                    <div className="mt-3 rounded-xl bg-black/[0.03] px-3 py-2.5 dark:bg-white/5">
-                      <p className={LABEL}>
-                        {model} 价格（已含 {groupRatio}x 分组倍率）
-                      </p>
-                      {selectedPrice.perRequest ? (
-                        <p className="mt-1.5 text-xs text-gray-700 dark:text-gray-200">
-                          按次计费 {fmtUSD(selectedPrice.input)} / 次
+                  {/* 价格明细常驻：条件渲染会在选中模型时挤压上方列表，导致刚点的行跳走。
+                      倍率已在卡片标题右侧说明，这里不再重复模型名与倍率。 */}
+                  <div className="mt-2.5 min-h-[3.25rem] shrink-0 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5">
+                    {selectedPrice ? (
+                      <>
+                        {selectedPrice.perRequest ? (
+                          <p className="text-xs text-gray-700 dark:text-gray-200">
+                            按次计费 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 次
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-700 dark:text-gray-200">
+                            <span>
+                              输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
+                            </span>
+                            <span>
+                              输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
+                            </span>
+                            {selectedPrice.cache !== undefined && (
+                              <span>
+                                读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
+                              </span>
+                            )}
+                            {selectedPrice.createCache !== undefined && (
+                              <span>
+                                写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <p className={`mt-1 truncate ${SUBTLE}`}>
+                          {selectedCompat?.note || "\u00a0"}
                         </p>
-                      ) : (
-                        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-700 dark:text-gray-200">
-                          <span>
-                            输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
-                          </span>
-                          <span>
-                            输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
-                          </span>
-                          {selectedPrice.cache !== undefined && (
-                            <span>
-                              读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
-                            </span>
-                          )}
-                          {selectedPrice.createCache !== undefined && (
-                            <span>
-                              写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {selectedCompat && (
-                        <p className={`mt-2 ${SUBTLE}`}>{selectedCompat.note}</p>
-                      )}
-                    </div>
-                  )}
+                      </>
+                    ) : (
+                      <p className={`${SUBTLE} leading-9`}>选择模型后显示价格</p>
+                    )}
+                  </div>
 
                   <button
                     onClick={enable}
                     disabled={provisioning || !group || !model || !targetId}
-                    className={`mt-4 w-full rounded-xl bg-gray-900 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200`}
+                    className={`mt-2.5 w-full shrink-0 rounded-xl bg-gray-900 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200`}
                   >
                     {provisioning ? "配置中…" : targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
                   </button>
-                  {notice && (
-                    <p
-                      className={`mt-2 text-xs ${
-                        notice.ok ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"
-                      }`}
-                    >
-                      {notice.text}
-                    </p>
-                  )}
+                  {/* 常驻一行：结果提示出现时不再压缩上方列表 */}
+                  <p
+                    className={`mt-1.5 shrink-0 truncate text-xs ${
+                      notice
+                        ? notice.ok
+                          ? "text-green-600 dark:text-green-400"
+                          : "text-orange-600 dark:text-orange-400"
+                        : "text-transparent"
+                    }`}
+                  >
+                    {notice?.text || "\u00a0"}
+                  </p>
                 </>
               )}
             </section>
