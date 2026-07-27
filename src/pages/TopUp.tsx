@@ -14,6 +14,9 @@ const PRIMARY_BTN =
 const GHOST_BTN =
   "rounded-full border border-black/10 px-3 py-1.5 text-xs text-gray-700 transition hover:bg-black/5 disabled:opacity-40 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10";
 
+/** 这两种支付方式只在网页端可用，客户端不展示 */
+const LAUNCHER_UNSUPPORTED_METHODS = new Set(["alipay_official", "paypal"]);
+
 /** 充值 1 单位 = 站内 1 美元额度，与网页端换算保持一致 */
 function usd(quota: number): string {
   return (quota / 1_000_000).toFixed(2);
@@ -59,7 +62,12 @@ export default function TopUp() {
 
   const token = auth?.accessToken ?? "";
 
-  const methods: PayMethod[] = useMemo(() => info?.pay_methods ?? [], [info]);
+  // 客户端只实现了易支付收银台流程；支付宝官方（单笔≤50 元）与 PayPal 需要网页端的
+  // 独立下单/回跳链路，放在这里点了必然失败，因此直接从可选项里剔除。
+  const methods: PayMethod[] = useMemo(
+    () => (info?.pay_methods ?? []).filter((m) => !LAUNCHER_UNSUPPORTED_METHODS.has(m.type)),
+    [info],
+  );
   const options = useMemo(() => info?.amount_options ?? [], [info]);
   const minTopup = info?.min_topup ?? 1;
 
@@ -87,7 +95,9 @@ export default function TopUp() {
       try {
         const data = await api.topupInfo(token);
         setInfo(data);
-        const first = data.pay_methods?.[0];
+        const first = (data.pay_methods ?? []).find(
+          (m) => !LAUNCHER_UNSUPPORTED_METHODS.has(m.type),
+        );
         if (first) setMethod(first.type);
         const opts = data.amount_options ?? [];
         setAmount(opts.length ? opts[0] : data.min_topup);

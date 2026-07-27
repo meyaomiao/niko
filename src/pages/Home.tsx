@@ -85,6 +85,7 @@ export default function Home() {
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [tokenTipOpen, setTokenTipOpen] = useState(false);
   const [revoking, setRevoking] = useState<number | "others" | null>(null);
 
   useEffect(() => {
@@ -501,17 +502,28 @@ export default function Home() {
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
-                  <span className={`flex items-center gap-1 ${SUBTLE}`}>
+                  <span className={`relative flex items-center gap-1 ${SUBTLE}`}>
                     价格按每百万 token
-                    <span
-                      tabIndex={0}
-                      role="note"
-                      aria-label={TOKEN_TIP}
-                      title={TOKEN_TIP}
-                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-black/15 text-[10px] leading-none text-gray-500 dark:border-white/20 dark:text-gray-400"
+                    <button
+                      type="button"
+                      aria-label="什么是 token"
+                      aria-expanded={tokenTipOpen}
+                      onClick={() => setTokenTipOpen((v) => !v)}
+                      onMouseEnter={() => setTokenTipOpen(true)}
+                      onMouseLeave={() => setTokenTipOpen(false)}
+                      onBlur={() => setTokenTipOpen(false)}
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-black/15 text-[10px] leading-none text-gray-500 transition hover:border-black/35 hover:text-gray-800 dark:border-white/20 dark:text-gray-400 dark:hover:border-white/50 dark:hover:text-gray-100"
                     >
                       ?
-                    </span>
+                    </button>
+                    {tokenTipOpen && (
+                      <span
+                        role="tooltip"
+                        className="absolute right-0 top-6 z-20 w-72 rounded-xl border border-black/10 bg-white p-3 text-left text-[11px] font-normal leading-relaxed text-gray-600 shadow-lg dark:border-white/15 dark:bg-gray-900 dark:text-gray-300"
+                      >
+                        {TOKEN_TIP}
+                      </span>
+                    )}
                   </span>
                 )}
               </div>
