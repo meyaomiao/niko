@@ -51,6 +51,17 @@ pub trait Target: Send + Sync {
 /// Codex config.toml 里我们独占的 provider 段名
 const CODEX_PROVIDER: &str = "momotoken";
 
+/// 其他 Codex 切换工具写在 config.toml 顶层、会覆盖本次配置效果的键。
+/// - `model_context_window` / `model_auto_compact_token_limit`：压低桌面端上下文与自动压缩阈值
+/// - `service_tier`：OpenAI 官方专属参数，透传给第三方上游会报错
+/// - `model_catalog_json`：指向别家模型元数据表，会改写模型上下文
+const CODEX_CONFLICTING_ROOT_KEYS: &[&str] = &[
+    "model_context_window",
+    "model_auto_compact_token_limit",
+    "service_tier",
+    "model_catalog_json",
+];
+
 fn merge_toml_codex_provider(
     path: &Path,
     base_url: &str,
@@ -63,7 +74,13 @@ fn merge_toml_codex_provider(
         String::new()
     };
 
-    let mut doc: toml::Table = raw.parse::<toml::Table>().unwrap_or_default();
+    // 解析失败时必须报错退出：继续走下去会用空表覆写，等于清空用户整份 Codex 配置。
+    let mut doc: toml::Table = if raw.trim().is_empty() {
+        toml::Table::new()
+    } else {
+        raw.parse::<toml::Table>()
+            .map_err(|e| format!("~/.codex/config.toml 解析失败，未做任何修改：{e}"))?
+    };
     let mut changed = Vec::new();
 
     let providers = doc
@@ -109,6 +126,13 @@ fn merge_toml_codex_provider(
         if doc.get("model") != Some(&new_model) {
             doc.insert("model".to_owned(), new_model);
             changed.push("model".to_owned());
+        }
+    }
+
+    // 其他切换工具（CC Switch / CodexPlusPlus）留下的顶层键会盖掉本次配置，必须清掉
+    for key in CODEX_CONFLICTING_ROOT_KEYS {
+        if doc.remove(*key).is_some() {
+            changed.push(format!("-{key}"));
         }
     }
 
@@ -171,6 +195,34 @@ fn remove_json_keys(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
     for k in keys {
         if obj.remove(*k).is_some() {
             changed.push(format!("-{k}"));
+        }
+    }
+
+    if !changed.is_empty() {
+        let content = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+        let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+
+    Ok(changed)
+}
+
+/// 删除 JSON 里 env 块的指定环境变量，其余内容原封不动
+fn remove_json_env(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
+    let Some(env) = obj.get_mut("env").and_then(Value::as_object_mut) else {
+        return Ok(Vec::new());
+    };
+
+    let mut changed = Vec::new();
+    for k in keys {
+        if env.remove(*k).is_some() {
+            changed.push(format!("-env.{k}"));
         }
     }
 
@@ -436,6 +488,27 @@ impl Target for CodexTarget {
 
 pub struct ClaudeDesktopTarget;
 
+/// Claude Code 会自己在 `ANTHROPIC_BASE_URL` 后拼 `/v1/messages`，所以这里必须去掉
+/// 末尾的 `/v1`，否则请求路径变成 `/v1/v1/messages`，上游直接 404。
+fn claude_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_owned()
+}
+
+/// 会覆盖 settings.json 里 `model` 字段的模型相关环境变量。写入模型时一并清除。
+const CLAUDE_MODEL_ENV_CONFLICTS: &[&str] = &[
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+];
+
 impl Target for ClaudeDesktopTarget {
     fn id(&self) -> &'static str { "claude-desktop" }
     fn display_name(&self) -> &'static str { "Claude 桌面端" }
@@ -477,7 +550,7 @@ impl Target for ClaudeDesktopTarget {
             &settings_path,
             &[
                 ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
-                ("ANTHROPIC_BASE_URL", plan.base_url.clone()),
+                ("ANTHROPIC_BASE_URL", claude_base_url(&plan.base_url)),
             ],
         )?;
         if let Some(model) = &plan.model {
@@ -485,6 +558,10 @@ impl Target for ClaudeDesktopTarget {
                 &settings_path,
                 &[("model", Value::String(model.clone()))],
             )?);
+            // 这些环境变量优先级高于 settings 的 model 字段（ANTHROPIC_MODEL），或会把
+            // opus/sonnet/haiku/fable 别名重定向到别的模型。其他切换工具留下的残留会
+            // 直接盖掉我们刚写入的模型，必须清掉，否则用户看到的仍是旧模型。
+            changed.append(&mut remove_json_env(&settings_path, CLAUDE_MODEL_ENV_CONFLICTS)?);
         }
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
@@ -495,6 +572,164 @@ impl Target for ClaudeDesktopTarget {
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
     vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget)]
+}
+
+// ─── 连通性测试：回读磁盘上真实生效的配置 ────────────────────────────────────
+
+/// 从目标应用配置文件里读回真正生效的接入参数。
+/// 测试必须用磁盘上的值，而不是前端内存里的值，否则测的是「本该写成什么」而非「实际写成了什么」。
+#[derive(Debug, Serialize)]
+pub struct EffectiveConfig {
+    pub target_id: String,
+    /// 该应用实际会请求的完整地址
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: Option<String>,
+    /// anthropic 走 x-api-key + anthropic-version，openai 走 Bearer
+    pub auth_style: String,
+}
+
+pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
+    let h = home_dir();
+    match target_id {
+        "codex" => {
+            let config_path = h.join(".codex").join("config.toml");
+            let raw = fs::read_to_string(&config_path)
+                .map_err(|_| "未找到 ~/.codex/config.toml，请先点击启用".to_owned())?;
+            let doc: toml::Table = raw
+                .parse()
+                .map_err(|e| format!("~/.codex/config.toml 解析失败：{e}"))?;
+            if doc.get("model_provider").and_then(|v| v.as_str()) != Some(CODEX_PROVIDER) {
+                return Err("当前 Codex 配置未指向 momotoken，请先点击启用".to_owned());
+            }
+            let provider = doc
+                .get("model_providers")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get(CODEX_PROVIDER))
+                .and_then(|v| v.as_table())
+                .ok_or("配置里缺少 momotoken provider，请先点击启用")?;
+            let base_url = provider
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .ok_or("provider 缺少 base_url")?;
+            // 混用模式密钥在 provider 段，纯 API 模式在 auth.json
+            let api_key = match provider.get("experimental_bearer_token").and_then(|v| v.as_str()) {
+                Some(key) => key.to_owned(),
+                None => {
+                    let auth_raw = fs::read_to_string(h.join(".codex").join("auth.json"))
+                        .map_err(|_| "未找到 ~/.codex/auth.json，请先点击启用".to_owned())?;
+                    let auth: Value = serde_json::from_str(&auth_raw)
+                        .map_err(|e| format!("auth.json 解析失败：{e}"))?;
+                    auth.get("OPENAI_API_KEY")
+                        .and_then(Value::as_str)
+                        .ok_or("auth.json 里没有 OPENAI_API_KEY，请先点击启用")?
+                        .to_owned()
+                }
+            };
+            Ok(EffectiveConfig {
+                target_id: target_id.to_owned(),
+                endpoint: format!("{}/responses", base_url.trim_end_matches('/')),
+                api_key,
+                model: doc.get("model").and_then(|v| v.as_str()).map(str::to_owned),
+                auth_style: "openai".to_owned(),
+            })
+        }
+        "claude-desktop" => {
+            let settings_path = h.join(".claude").join("settings.json");
+            let raw = fs::read_to_string(&settings_path)
+                .map_err(|_| "未找到 ~/.claude/settings.json，请先点击启用".to_owned())?;
+            let v: Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("settings.json 解析失败：{e}"))?;
+            let env = v.get("env").ok_or("settings.json 里没有 env 配置，请先点击启用")?;
+            let base_url = env
+                .get("ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str)
+                .ok_or("settings.json 里没有 ANTHROPIC_BASE_URL，请先点击启用")?;
+            let api_key = env
+                .get("ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str)
+                .ok_or("settings.json 里没有 ANTHROPIC_AUTH_TOKEN，请先点击启用")?;
+            Ok(EffectiveConfig {
+                target_id: target_id.to_owned(),
+                endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+                api_key: api_key.to_owned(),
+                model: v.get("model").and_then(Value::as_str).map(str::to_owned),
+                auth_style: "anthropic".to_owned(),
+            })
+        }
+        other => Err(format!("未知目标: {other}")),
+    }
+}
+
+// ─── 恢复官方默认配置 ───────────────────────────────────────────────────────
+//
+// 只移除 Piko 自己写入的键，让应用回到「未接第三方中转」的状态。
+// 用户其他配置（projects / mcp_servers / sandbox / ChatGPT 登录态）一律保留。
+
+/// 移除 TOML 里 Piko 写入的 provider 段与顶层键
+fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut doc: toml::Table = raw
+        .parse::<toml::Table>()
+        .map_err(|e| format!("~/.codex/config.toml 解析失败，未做任何修改：{e}"))?;
+
+    let mut changed = Vec::new();
+    if let Some(providers) = doc.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
+        if providers.remove(CODEX_PROVIDER).is_some() {
+            changed.push(format!("-model_providers.{CODEX_PROVIDER}"));
+        }
+    }
+    // 只有仍指向我们时才移除，避免抹掉用户手动切到的其他 provider
+    if doc.get("model_provider").and_then(|v| v.as_str()) == Some(CODEX_PROVIDER) {
+        doc.remove("model_provider");
+        changed.push("-model_provider".to_owned());
+    }
+    if doc.remove("model").is_some() {
+        changed.push("-model".to_owned());
+    }
+
+    if !changed.is_empty() {
+        let content = toml::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+    Ok(changed)
+}
+
+/// 把目标应用恢复为官方默认（走官方账号登录）的配置状态
+pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
+    let h = home_dir();
+    let mut changed = Vec::new();
+
+    match target_id {
+        "codex" => {
+            let config_path = h.join(".codex").join("config.toml");
+            let auth_path = h.join(".codex").join("auth.json");
+            let _ = save_backup(target_id, &config_path);
+            let _ = save_backup(target_id, &auth_path);
+            changed.append(&mut remove_toml_codex_provider(&config_path)?);
+            // 移除中转密钥，ChatGPT 登录态（tokens / preferred_auth_method）保持不动
+            changed.append(&mut remove_json_keys(&auth_path, &["OPENAI_API_KEY"])?);
+        }
+        "claude-desktop" => {
+            let settings_path = h.join(".claude").join("settings.json");
+            let _ = save_backup(target_id, &settings_path);
+            changed.append(&mut remove_json_env(
+                &settings_path,
+                &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
+            )?);
+            changed.append(&mut remove_json_keys(&settings_path, &["model"])?);
+        }
+        other => return Err(format!("未知目标: {other}")),
+    }
+
+    Ok(ApplySummary { target_id: target_id.to_owned(), changed_keys: changed })
 }
 
 // ─── E5-4: 配置漂移检测 ──────────────────────────────────────────────────────
@@ -534,7 +769,13 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
             let config_path = h.join(".codex").join("config.toml");
             if config_path.exists() {
                 let raw = fs::read_to_string(&config_path).unwrap_or_default();
-                let doc: toml::Table = raw.parse().unwrap_or_default();
+                let Ok(doc) = raw.parse::<toml::Table>() else {
+                    return Ok(DriftReport {
+                        target_id: target_id.to_owned(),
+                        drifted: true,
+                        mismatched_keys: vec!["config.toml:parse_error".to_owned()],
+                    });
+                };
                 let provider = doc
                     .get("model_providers")
                     .and_then(|v| v.as_table())
@@ -556,6 +797,24 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                     mismatched
                         .push(format!("config.toml:model_providers.{CODEX_PROVIDER}.experimental_bearer_token"));
                 }
+                // 纯 API 模式靠 env_key 从 auth.json 取密钥，缺了就等于没配
+                let env_key = provider.and_then(|t| t.get("env_key")).and_then(|v| v.as_str());
+                let expected_env_key = (!plan.codex_mixed).then_some("OPENAI_API_KEY");
+                if env_key != expected_env_key {
+                    mismatched
+                        .push(format!("config.toml:model_providers.{CODEX_PROVIDER}.env_key"));
+                }
+                if let Some(model) = &plan.model {
+                    if doc.get("model").and_then(|v| v.as_str()) != Some(model.as_str()) {
+                        mismatched.push("config.toml:model".to_owned());
+                    }
+                }
+                // 别家工具留下的顶层键仍在，说明配置被它们的设置压制
+                for key in CODEX_CONFLICTING_ROOT_KEYS {
+                    if doc.get(*key).is_some() {
+                        mismatched.push(format!("config.toml:{key}"));
+                    }
+                }
             } else {
                 mismatched.push("config.toml:missing".to_owned());
             }
@@ -573,9 +832,20 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                     mismatched.push("settings.json:env.ANTHROPIC_AUTH_TOKEN".to_owned());
                 }
                 if env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(Value::as_str)
-                    != Some(&plan.base_url)
+                    != Some(claude_base_url(&plan.base_url).as_str())
                 {
                     mismatched.push("settings.json:env.ANTHROPIC_BASE_URL".to_owned());
+                }
+                if let Some(model) = &plan.model {
+                    if v.get("model").and_then(Value::as_str) != Some(model.as_str()) {
+                        mismatched.push("settings.json:model".to_owned());
+                    }
+                    // 残留的模型环境变量会覆盖 model 字段，等同于配置未生效
+                    for k in CLAUDE_MODEL_ENV_CONFLICTS {
+                        if env.and_then(|e| e.get(*k)).is_some() {
+                            mismatched.push(format!("settings.json:env.{k}"));
+                        }
+                    }
                 }
             } else {
                 mismatched.push("settings.json:missing".to_owned());
@@ -596,13 +866,16 @@ mod tests {
     use super::*;
 
     fn tmp_path(name: &str) -> PathBuf {
+        // 并行测试下时间戳精度不足会撞到同一目录，用递增序号保证互不干扰
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "targets_test_{}_{}",
+            "targets_test_{}_{}_{}",
             name,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
         dir.join(name)
@@ -650,6 +923,42 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// CC Switch / CodexPlusPlus 会在顶层写上下文与 service_tier，这些键会压制本次配置
+    #[test]
+    fn codex_toml_clears_conflicting_root_keys_from_other_switchers() {
+        let p = tmp_path("config.toml");
+        fs::write(
+            &p,
+            "model_provider = \"custom\"\nmodel_context_window = 128000\nmodel_auto_compact_token_limit = 120000\nservice_tier = \"priority\"\nmodel_catalog_json = \"model-catalogs/x.json\"\nmodel_reasoning_effort = \"high\"\n",
+        )
+        .unwrap();
+
+        merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("gpt-5.6"), None).unwrap();
+
+        let doc: toml::Table = fs::read_to_string(&p).unwrap().parse().unwrap();
+        for key in CODEX_CONFLICTING_ROOT_KEYS {
+            assert!(doc.get(*key).is_none(), "{key} 必须被清除");
+        }
+        // 与本次配置无冲突的用户偏好要保留
+        assert_eq!(
+            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some("high")
+        );
+    }
+
+    /// config.toml 语法错误时必须报错，绝不能用空表覆写用户整份配置
+    #[test]
+    fn codex_toml_refuses_to_overwrite_unparsable_config() {
+        let p = tmp_path("config.toml");
+        let broken = "model_provider = \"custom\nthis is not toml";
+        fs::write(&p, broken).unwrap();
+
+        let err = merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("gpt-5.6"), None)
+            .unwrap_err();
+        assert!(err.contains("解析失败"), "错误信息应说明解析失败: {err}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), broken, "原文件必须保持不变");
     }
 
     /// Codex 桌面端可能已有 ChatGPT 登录态，写 API Key 不能清掉它
@@ -778,5 +1087,30 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    /// 其他切换工具写在 env 里的模型别名变量优先级高于 settings 的 model 字段，
+    /// 不清掉就会让登录器选的模型不生效；同时不能碰用户自己的其他变量。
+    #[test]
+    fn claude_settings_clears_conflicting_model_env_vars() {
+        let p = tmp_path("settings.json");
+        fs::write(
+            &p,
+            r#"{"model":"old-model","env":{"MY_VAR":"keep","ANTHROPIC_MODEL":"old-model","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-8","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME":"claude-opus-4-8","ANTHROPIC_AUTH_TOKEN":"sk-abc"}}"#,
+        )
+        .unwrap();
+
+        let changed = remove_json_env(&p, CLAUDE_MODEL_ENV_CONFLICTS).unwrap();
+        assert_eq!(changed.len(), 3);
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        let env = v.get("env").unwrap();
+        assert_eq!(env.get("MY_VAR").and_then(Value::as_str), Some("keep"));
+        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str), Some("sk-abc"));
+        assert!(env.get("ANTHROPIC_MODEL").is_none());
+        assert!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
+        assert!(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME").is_none());
+
+        assert!(remove_json_env(&p, CLAUDE_MODEL_ENV_CONFLICTS).unwrap().is_empty());
     }
 }

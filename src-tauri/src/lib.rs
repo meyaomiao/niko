@@ -31,6 +31,8 @@ pub fn run() {
             commands::targets::apply_all_targets,
             commands::targets::check_drift_cmd,
             commands::targets::check_all_drift,
+            commands::targets::test_connectivity,
+            commands::targets::restore_target_defaults,
             commands::diagnostics::ping,
             commands::diagnostics::verify_targets,
             commands::diagnostics::ping_diag,

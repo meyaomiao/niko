@@ -93,6 +93,11 @@ export default function Home() {
     () => localStorage.getItem(CODEX_MIXED_STORAGE_KEY) === "1"
   );
 
+  // 连通性测试 / 恢复默认：都直读磁盘配置，只在有已配置目标时可用
+  const [testing, setTesting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [tokenTipOpen, setTokenTipOpen] = useState(false);
@@ -270,6 +275,65 @@ export default function Home() {
       setNotice({ ok: false, text: String(e instanceof Error ? e.message : e) });
     } finally {
       setProvisioning(false);
+    }
+  };
+
+  // 应用到「全部」时，逐个已安装应用处理
+  const actionTargetIds = () =>
+    targetId === ALL_TARGETS ? installedTargets.map((t) => t.id) : targetId ? [targetId] : [];
+
+  const testConnectivity = async () => {
+    const ids = actionTargetIds();
+    if (ids.length === 0) return;
+    setTesting(true);
+    setNotice(null);
+    try {
+      const lines: string[] = [];
+      let okCount = 0;
+      for (const id of ids) {
+        const name = targets.find((t) => t.id === id)?.name ?? id;
+        try {
+          const r = await invoke<{ ok: boolean; detail: string }>("test_connectivity", { targetId: id });
+          if (r.ok) okCount += 1;
+          lines.push(`${name}：${r.detail}`);
+        } catch (e) {
+          lines.push(`${name}：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      setNotice({ ok: okCount === ids.length, text: lines.join("；") });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const restoreDefaults = async () => {
+    const ids = actionTargetIds();
+    if (ids.length === 0) return;
+    // 二次确认：这会移除中转配置，用户可能只是误点
+    if (!confirmRestore) {
+      setConfirmRestore(true);
+      setNotice({ ok: false, text: "将移除 Piko 写入的中转配置，恢复用官方账号登录，再点一次确认" });
+      window.setTimeout(() => setConfirmRestore(false), 5000);
+      return;
+    }
+    setConfirmRestore(false);
+    setRestoring(true);
+    setNotice(null);
+    try {
+      let total = 0;
+      for (const id of ids) {
+        const changed = await invoke<string[]>("restore_target_defaults", { targetId: id });
+        total += changed.length;
+      }
+      setResults({});
+      setNotice({
+        ok: true,
+        text: total === 0 ? "本就是官方默认配置，无需改动" : `已恢复官方默认，重启应用后用官方账号登录`,
+      });
+    } catch (e) {
+      setNotice({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -737,8 +801,26 @@ export default function Home() {
                   >
                     {provisioning ? "配置中…" : targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
                   </button>
+                  {/* 配置后自检与回退：直读磁盘配置，不改内存状态 */}
+                  <div className="mt-1.5 flex shrink-0 gap-1.5">
+                    <button
+                      onClick={testConnectivity}
+                      disabled={provisioning || testing || restoring || !targetId}
+                      className={`${GHOST_BTN} flex-1`}
+                    >
+                      {testing ? "检测中…" : "检测连通性"}
+                    </button>
+                    <button
+                      onClick={restoreDefaults}
+                      disabled={provisioning || testing || restoring || !targetId}
+                      className={`${GHOST_BTN} flex-1 ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
+                    >
+                      {restoring ? "恢复中…" : confirmRestore ? "再点确认恢复" : "恢复官方默认"}
+                    </button>
+                  </div>
                   {/* 常驻一行：结果提示出现时不再压缩上方列表 */}
                   <p
+                    title={notice?.text || undefined}
                     className={`mt-1.5 shrink-0 truncate text-xs ${
                       notice
                         ? notice.ok
