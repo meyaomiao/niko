@@ -7,6 +7,7 @@ import {
   type UsageSummary,
   type GroupOption,
   type UsageDimension,
+  type UsageDayBucket,
 } from "../api/client";
 import { VENDORS, vendorOfGroup, vendorOfModel, type Vendor } from "../lib/vendor";
 
@@ -59,6 +60,88 @@ function rangeToTimestamps(range: RangeId, from: string, to: string): [number, n
   if (conf.days === 0) return [dayStart(now), dayStart(now) + 86399];
   const start = dayStart(new Date(now.getTime() - (conf.days - 1) * 86400_000));
   return [start, dayStart(now) + 86399];
+}
+
+const METRICS = [
+  { id: "quota", label: "消费" },
+  { id: "tokens", label: "token" },
+  { id: "requests", label: "请求" },
+] as const;
+
+type MetricId = (typeof METRICS)[number]["id"];
+
+function formatMetric(id: MetricId, v: number): string {
+  return id === "quota" ? usd(v) : num(v);
+}
+
+function TrendChart({ buckets }: { buckets: UsageDayBucket[] }) {
+  const [metric, setMetric] = useState<MetricId>("quota");
+  if (buckets.length === 0) return null;
+  const values = buckets.map((b) => b[metric]);
+  const max = Math.max(...values, 1);
+  const points = buckets.map((_, i) => {
+    const x = buckets.length === 1 ? 50 : (i / (buckets.length - 1)) * 100;
+    const y = 100 - (values[i] / max) * 92 - 4;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+  const line = buckets.length === 1 ? `0,${points[0].split(",")[1]} 100,${points[0].split(",")[1]}` : points.join(" ");
+
+  return (
+    <div className={CARD}>
+      <div className="flex items-center justify-between gap-3">
+        <p className={TITLE}>趋势变化</p>
+        <div className="flex gap-1">
+          {METRICS.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setMetric(m.id)}
+              className={`rounded-full px-2.5 py-1 text-xs transition ${
+                metric === m.id
+                  ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                  : "border border-black/10 text-gray-600 hover:bg-black/5 dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/10"
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative mt-4 h-32">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
+          <polyline
+            points={`0,100 ${line} 100,100`}
+            fill="rgb(99 102 241 / 0.12)"
+            stroke="none"
+          />
+          <polyline
+            points={line}
+            fill="none"
+            stroke="rgb(99 102 241)"
+            strokeWidth="2"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <div className="absolute inset-0 flex">
+          {buckets.map((b, i) => (
+            <div
+              key={b.date}
+              title={`${b.date} · ${formatMetric(metric, values[i])}`}
+              className="flex-1 rounded transition hover:bg-black/5 dark:hover:bg-white/10"
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-2 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+        <span>{buckets[0].date.slice(5)}</span>
+        <span>峰值 {formatMetric(metric, max)}</span>
+        <span>{buckets[buckets.length - 1].date.slice(5)}</span>
+      </div>
+    </div>
+  );
 }
 
 function DimensionList({ title, items }: { title: string; items: UsageDimension[] }) {
@@ -167,11 +250,22 @@ export default function Usage() {
 
   const tokensTotal = (summary?.prompt_tokens ?? 0) + (summary?.completion_tokens ?? 0);
   const requests = summary?.requests ?? 0;
-  const avgLatency = requests > 0 ? (summary!.total_use_time / requests).toFixed(1) : "—";
   const avgCost = requests > 0 ? usd(summary!.quota / requests) : "—";
   const streamRate = requests > 0 ? `${Math.round((summary!.stream_requests / requests) * 100)}%` : "—";
-  const byDay = summary?.by_day ?? [];
-  const maxDayQuota = Math.max(...byDay.map((d) => d.quota), 1);
+
+  // 折线图按所选周期补齐没有消费的日期，避免时间轴被压缩
+  const trendBuckets = useMemo(() => {
+    const raw = summary?.by_day ?? [];
+    if (!startTimestamp || !endTimestamp) return raw;
+    const byDate = new Map(raw.map((d) => [d.date, d]));
+    const out: UsageDayBucket[] = [];
+    for (let ts = dayStart(new Date(startTimestamp * 1000)); ts <= endTimestamp; ts += 86400) {
+      const date = toDateInput(ts);
+      out.push(byDate.get(date) ?? { date, quota: 0, tokens: 0, requests: 0 });
+      if (out.length > 366) break;
+    }
+    return out;
+  }, [summary, startTimestamp, endTimestamp]);
 
   return (
     <div className="flex h-screen flex-col bg-transparent">
@@ -296,46 +390,9 @@ export default function Usage() {
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">流式 {streamRate}</p>
                 </div>
-                <div className={CARD}>
-                  <p className={LABEL}>平均响应</p>
-                  <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
-                    {avgLatency}
-                    <span className="ml-1 text-xs font-normal text-gray-500">秒</span>
-                  </p>
-                </div>
-                <div className={CARD}>
-                  <p className={LABEL}>使用模型数</p>
-                  <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
-                    {num((summary.by_model ?? []).length)}
-                  </p>
-                </div>
-                <div className={CARD}>
-                  <p className={LABEL}>使用分组数</p>
-                  <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
-                    {num((summary.by_group ?? []).length)}
-                  </p>
-                </div>
               </div>
 
-              {byDay.length > 1 && (
-                <div className={CARD}>
-                  <p className={TITLE}>每日消费趋势</p>
-                  <div className="mt-4 flex h-24 items-end gap-1">
-                    {byDay.map((d) => (
-                      <div
-                        key={d.date}
-                        title={`${d.date} · ${usd(d.quota)} · ${num(d.requests)} 次`}
-                        className="flex-1 rounded-t bg-indigo-500/70"
-                        style={{ height: `${Math.max(3, (d.quota / maxDayQuota) * 100)}%` }}
-                      />
-                    ))}
-                  </div>
-                  <div className="mt-2 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                    <span>{byDay[0].date.slice(5)}</span>
-                    <span>{byDay[byDay.length - 1].date.slice(5)}</span>
-                  </div>
-                </div>
-              )}
+              <TrendChart buckets={trendBuckets} />
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <DimensionList title="模型消费排行" items={summary.by_model ?? []} />
