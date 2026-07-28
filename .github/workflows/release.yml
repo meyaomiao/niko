@@ -65,12 +65,20 @@ jobs:
             -P "$APPLE_CERTIFICATE_PASSWORD" \
             -T /usr/bin/codesign
           security set-key-partition-list \
-            -S apple-tool:,apple: \
+            -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm /tmp/certificate.p12
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | grep "Developer ID Application" | head -1 | sed -n 's/.*"\(.*\)".*/\1/p')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No Developer ID Application identity found in build.keychain"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
       - name: Build (universal) & Notarize
         env:
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
