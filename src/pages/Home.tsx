@@ -96,6 +96,7 @@ export default function Home() {
   // 连通性测试 / 恢复默认：都直读磁盘配置，只在有已配置目标时可用
   const [testing, setTesting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [confirmRestore, setConfirmRestore] = useState(false);
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
@@ -281,6 +282,31 @@ export default function Home() {
   // 应用到「全部」时，逐个已安装应用处理
   const actionTargetIds = () =>
     targetId === ALL_TARGETS ? installedTargets.map((t) => t.id) : targetId ? [targetId] : [];
+
+  // 目标应用只在启动时读一次配置，所以改完必须重启才生效
+  const restartTargets = async () => {
+    const ids = actionTargetIds();
+    if (ids.length === 0) return;
+    setRestarting(true);
+    setNotice(null);
+    try {
+      const lines: string[] = [];
+      let okCount = 0;
+      for (const id of ids) {
+        const name = targets.find((t) => t.id === id)?.name ?? id;
+        try {
+          const detail = await invoke<string>("restart_target", { targetId: id });
+          okCount += 1;
+          lines.push(`${name}：${detail}`);
+        } catch (e) {
+          lines.push(`${name}：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      setNotice({ ok: okCount === ids.length, text: lines.join("；") });
+    } finally {
+      setRestarting(false);
+    }
+  };
 
   const testConnectivity = async () => {
     const ids = actionTargetIds();
@@ -801,18 +827,30 @@ export default function Home() {
                   >
                     {provisioning ? "配置中…" : targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
                   </button>
+                  {/* 配置只在应用启动时读取，所以紧跟启用按钮给一个重启入口 */}
+                  <button
+                    onClick={restartTargets}
+                    disabled={provisioning || testing || restoring || restarting || !targetId}
+                    className={`${GHOST_BTN} mt-1.5 w-full shrink-0`}
+                  >
+                    {restarting
+                      ? "重启中…"
+                      : targetLabel
+                        ? `启动 / 重启 ${targetLabel}`
+                        : "选择应用后可重启"}
+                  </button>
                   {/* 配置后自检与回退：直读磁盘配置，不改内存状态 */}
                   <div className="mt-1.5 flex shrink-0 gap-1.5">
                     <button
                       onClick={testConnectivity}
-                      disabled={provisioning || testing || restoring || !targetId}
+                      disabled={provisioning || testing || restoring || restarting || !targetId}
                       className={`${GHOST_BTN} flex-1`}
                     >
                       {testing ? "检测中…" : "检测连通性"}
                     </button>
                     <button
                       onClick={restoreDefaults}
-                      disabled={provisioning || testing || restoring || !targetId}
+                      disabled={provisioning || testing || restoring || restarting || !targetId}
                       className={`${GHOST_BTN} flex-1 ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
                     >
                       {restoring ? "恢复中…" : confirmRestore ? "再点确认恢复" : "恢复官方默认"}

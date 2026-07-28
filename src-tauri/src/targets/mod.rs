@@ -340,6 +340,46 @@ fn macos_app_path(names: &[&str]) -> Option<PathBuf> {
     })
 }
 
+/// Windows 下已安装可执行文件的完整路径
+#[cfg(target_os = "windows")]
+fn windows_app_path(candidates: &[(&str, &str)]) -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var("LOCALAPPDATA").ok()?);
+    candidates.iter().find_map(|(dir, exe)| {
+        let p = root.join(dir).join(exe);
+        p.exists().then_some(p)
+    })
+}
+
+/// 某个 target 对应的、本机可直接启动的应用路径。未安装或平台不支持时返回 None。
+pub fn app_launch_path(target_id: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        match target_id {
+            "codex" => macos_app_path(CODEX_APP_NAMES),
+            "claude-desktop" => macos_app_path(&["Claude.app"]),
+            _ => None,
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        match target_id {
+            "codex" => windows_app_path(&[
+                ("Programs\\ChatGPT", "ChatGPT.exe"),
+                ("ChatGPT", "ChatGPT.exe"),
+                ("Programs\\Codex", "Codex.exe"),
+                ("Codex", "Codex.exe"),
+            ]),
+            "claude-desktop" => windows_app_path(&[("AnthropicClaude", "claude.exe")]),
+            _ => None,
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = target_id;
+        None
+    }
+}
+
 /// 从已安装的 App 里取真实图标，转成 PNG 后以 data URI 返回。
 /// 图标属于各自厂商的商标资源，不入库、不随包分发，只在运行时按需读取本机已安装的副本。
 #[cfg(target_os = "macos")]

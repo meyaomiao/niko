@@ -42,6 +42,7 @@ pub fn run() {
             commands::payment::close_cashier,
             commands::process::check_process,
             commands::process::check_all_processes,
+            commands::process::restart_target,
             commands::snapshots::list_snapshots,
             commands::snapshots::restore_snapshot,
             autostart_enable,
