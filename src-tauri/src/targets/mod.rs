@@ -495,6 +495,158 @@ fn claude_base_url(base_url: &str) -> String {
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_owned()
 }
 
+// Claude 桌面端在 3p（第三方网关）部署模式下，Claude Code 面板不读 ~/.claude/settings.json 的
+// env，而是读自己的托管配置 `Claude-3p/configLibrary/`：启动子进程时按托管配置生成临时凭证并
+// 注入 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 环境变量，优先级高于 settings.json。
+// 因此只写 settings.json 会被托管配置完全压制，必须同时写这里。
+
+/// Niko 在 configLibrary 里独占的条目 id（固定值，避免每次启用都新建一条）
+const CLAUDE_3P_ENTRY_ID: &str = "6e696b6f-0000-4000-8000-000000000001";
+/// 条目在桌面端配置列表里显示的名字
+const CLAUDE_3P_ENTRY_NAME: &str = "Niko";
+
+/// Claude 桌面端 3p 托管配置目录。未安装 / 不支持的平台返回 None。
+fn claude_3p_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(
+            home_dir()
+                .join("Library")
+                .join("Application Support")
+                .join("Claude-3p")
+                .join("configLibrary"),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .ok()
+            .map(|appdata| PathBuf::from(appdata).join("Claude-3p").join("configLibrary"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// 写入 Niko 的托管网关条目并设为生效项。其他工具（CC Switch 等）的条目保留不动。
+fn claude_managed_apply(dir: &Path, base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let entry_path = dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"));
+    let _ = save_backup("claude-desktop", &entry_path);
+    let mut changed: Vec<String> = merge_json_keys(
+        &entry_path,
+        &[
+            ("inferenceProvider", Value::String("gateway".to_owned())),
+            ("inferenceGatewayBaseUrl", Value::String(base_url.to_owned())),
+            ("inferenceGatewayApiKey", Value::String(api_key.to_owned())),
+            ("inferenceGatewayAuthScheme", Value::String("bearer".to_owned())),
+        ],
+    )?
+    .into_iter()
+    .map(|k| format!("configLibrary/{CLAUDE_3P_ENTRY_ID}.json:{k}"))
+    .collect();
+
+    let meta_path = dir.join("_meta.json");
+    let _ = save_backup("claude-desktop", &meta_path);
+    let mut meta: Value = if meta_path.exists() {
+        let raw = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(Default::default()))
+    } else {
+        Value::Object(Default::default())
+    };
+    let obj = meta.as_object_mut().ok_or("_meta.json root 不是 object")?;
+
+    let mut meta_changed = false;
+    let entries = obj
+        .entry("entries")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or("_meta.json entries 不是数组")?;
+    if !entries
+        .iter()
+        .any(|e| e.get("id").and_then(Value::as_str) == Some(CLAUDE_3P_ENTRY_ID))
+    {
+        entries.push(serde_json::json!({
+            "id": CLAUDE_3P_ENTRY_ID,
+            "name": CLAUDE_3P_ENTRY_NAME,
+        }));
+        meta_changed = true;
+        changed.push("configLibrary/_meta.json:entries".to_owned());
+    }
+    if obj.get("appliedId").and_then(Value::as_str) != Some(CLAUDE_3P_ENTRY_ID) {
+        obj.insert("appliedId".to_owned(), Value::String(CLAUDE_3P_ENTRY_ID.to_owned()));
+        meta_changed = true;
+        changed.push("configLibrary/_meta.json:appliedId".to_owned());
+    }
+    if meta_changed {
+        let content = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let snap =
+            fsx::write_with_snapshot(&meta_path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+
+    Ok(changed)
+}
+
+/// 读回托管配置里当前真正生效的网关地址与密钥
+fn claude_managed_effective(dir: &Path) -> Option<(String, String)> {
+    let meta: Value = serde_json::from_str(&fs::read_to_string(dir.join("_meta.json")).ok()?).ok()?;
+    let applied = meta.get("appliedId")?.as_str()?;
+    let entry: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join(format!("{applied}.json"))).ok()?).ok()?;
+    if entry.get("inferenceProvider").and_then(Value::as_str) != Some("gateway") {
+        return None;
+    }
+    let base_url = entry.get("inferenceGatewayBaseUrl")?.as_str()?.to_owned();
+    let api_key = entry.get("inferenceGatewayApiKey")?.as_str()?.to_owned();
+    Some((base_url, api_key))
+}
+
+/// 摘掉 Niko 的托管条目，让桌面端回到原来的选择（其他条目与配置保留）
+fn claude_managed_restore(dir: &Path) -> Result<Vec<String>, String> {
+    let mut changed = Vec::new();
+    let meta_path = dir.join("_meta.json");
+    if meta_path.exists() {
+        let _ = save_backup("claude-desktop", &meta_path);
+        let raw = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
+        let mut meta: Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(Default::default()));
+        if let Some(obj) = meta.as_object_mut() {
+            let mut meta_changed = false;
+            if obj.get("appliedId").and_then(Value::as_str) == Some(CLAUDE_3P_ENTRY_ID) {
+                obj.remove("appliedId");
+                meta_changed = true;
+                changed.push("-configLibrary/_meta.json:appliedId".to_owned());
+            }
+            if let Some(entries) = obj.get_mut("entries").and_then(Value::as_array_mut) {
+                let before = entries.len();
+                entries
+                    .retain(|e| e.get("id").and_then(Value::as_str) != Some(CLAUDE_3P_ENTRY_ID));
+                if entries.len() != before {
+                    meta_changed = true;
+                    changed.push("-configLibrary/_meta.json:entries".to_owned());
+                }
+            }
+            if meta_changed {
+                let content = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+                let snap = fsx::write_with_snapshot(&meta_path, content.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                snap.commit();
+            }
+        }
+    }
+
+    let entry_path = dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"));
+    if entry_path.exists() {
+        let _ = save_backup("claude-desktop", &entry_path);
+        fs::remove_file(&entry_path).map_err(|e| e.to_string())?;
+        changed.push(format!("-configLibrary/{CLAUDE_3P_ENTRY_ID}.json"));
+    }
+
+    Ok(changed)
+}
+
 /// 会覆盖 settings.json 里 `model` 字段的模型相关环境变量。写入模型时一并清除。
 const CLAUDE_MODEL_ENV_CONFLICTS: &[&str] = &[
     "ANTHROPIC_MODEL",
@@ -562,6 +714,15 @@ impl Target for ClaudeDesktopTarget {
             // opus/sonnet/haiku/fable 别名重定向到别的模型。其他切换工具留下的残留会
             // 直接盖掉我们刚写入的模型，必须清掉，否则用户看到的仍是旧模型。
             changed.append(&mut remove_json_env(&settings_path, CLAUDE_MODEL_ENV_CONFLICTS)?);
+        }
+
+        // 3p 模式下托管配置注入的环境变量优先级高于 settings.json，必须一并写入才会真正生效
+        if let Some(dir) = claude_3p_config_dir() {
+            changed.append(&mut claude_managed_apply(
+                &dir,
+                &claude_base_url(&plan.base_url),
+                &plan.api_key,
+            )?);
         }
 
         Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
@@ -635,6 +796,22 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
             })
         }
         "claude-desktop" => {
+            // 托管配置存在时它才是真正生效的来源，settings.json 只是 CLI 的兜底
+            if let Some((base_url, api_key)) =
+                claude_3p_config_dir().as_deref().and_then(claude_managed_effective)
+            {
+                let model = fs::read_to_string(h.join(".claude").join("settings.json"))
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned));
+                return Ok(EffectiveConfig {
+                    target_id: target_id.to_owned(),
+                    endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+                    api_key,
+                    model,
+                    auth_style: "anthropic".to_owned(),
+                });
+            }
             let settings_path = h.join(".claude").join("settings.json");
             let raw = fs::read_to_string(&settings_path)
                 .map_err(|_| "未找到 ~/.claude/settings.json，请先点击启用".to_owned())?;
@@ -725,6 +902,11 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
                 &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
             )?);
             changed.append(&mut remove_json_keys(&settings_path, &["model"])?);
+            if let Some(dir) = claude_3p_config_dir() {
+                if dir.exists() {
+                    changed.append(&mut claude_managed_restore(&dir)?);
+                }
+            }
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -849,6 +1031,23 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                 }
             } else {
                 mismatched.push("settings.json:missing".to_owned());
+            }
+            // 托管配置若仍指向别家网关，桌面端注入的环境变量会盖掉 settings.json
+            if let Some(dir) = claude_3p_config_dir() {
+                if dir.join("_meta.json").exists() {
+                    match claude_managed_effective(&dir) {
+                        Some((base_url, api_key)) => {
+                            if base_url != claude_base_url(&plan.base_url) {
+                                mismatched
+                                    .push("configLibrary:inferenceGatewayBaseUrl".to_owned());
+                            }
+                            if api_key != plan.api_key {
+                                mismatched.push("configLibrary:inferenceGatewayApiKey".to_owned());
+                            }
+                        }
+                        None => mismatched.push("configLibrary:missing".to_owned()),
+                    }
+                }
             }
         }
         other => return Err(format!("未知目标: {other}")),
@@ -1112,5 +1311,95 @@ mod tests {
         assert!(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME").is_none());
 
         assert!(remove_json_env(&p, CLAUDE_MODEL_ENV_CONFLICTS).unwrap().is_empty());
+    }
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let p = tmp_path(name);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// 3p 模式下桌面端按托管配置注入环境变量，优先级高于 settings.json，
+    /// 所以启用必须改写 appliedId，且不能删掉别家工具留下的条目。
+    #[test]
+    fn claude_managed_apply_takes_over_applied_entry_and_keeps_others() {
+        let dir = tmp_dir("claude_3p_apply");
+        fs::write(
+            dir.join("_meta.json"),
+            r#"{"appliedId":"cc-switch-id","entries":[{"id":"cc-switch-id","name":"CC Switch"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cc-switch-id.json"),
+            r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://other.example","inferenceGatewayApiKey":"sk-other"}"#,
+        )
+        .unwrap();
+
+        let changed =
+            claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+        assert!(!changed.is_empty());
+
+        let meta: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("_meta.json")).unwrap()).unwrap();
+        assert_eq!(meta.get("appliedId").and_then(Value::as_str), Some(CLAUDE_3P_ENTRY_ID));
+        let entries = meta.get("entries").unwrap().as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .any(|e| e.get("id").and_then(Value::as_str) == Some("cc-switch-id")));
+
+        let effective = claude_managed_effective(&dir).unwrap();
+        assert_eq!(effective, ("https://momotoken.win".to_owned(), "sk-niko".to_owned()));
+
+        // 幂等：再次启用不产生变更
+        assert!(claude_managed_apply(&dir, "https://momotoken.win", "sk-niko")
+            .unwrap()
+            .is_empty());
+    }
+
+    /// 恢复官方默认要摘掉我们的条目，别家条目与其配置文件必须留着
+    #[test]
+    fn claude_managed_restore_removes_only_our_entry() {
+        let dir = tmp_dir("claude_3p_restore");
+        fs::write(
+            dir.join("_meta.json"),
+            r#"{"appliedId":"cc-switch-id","entries":[{"id":"cc-switch-id","name":"CC Switch"}]}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("cc-switch-id.json"), r#"{"inferenceProvider":"gateway"}"#).unwrap();
+        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+
+        let changed = claude_managed_restore(&dir).unwrap();
+        assert!(!changed.is_empty());
+
+        let meta: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("_meta.json")).unwrap()).unwrap();
+        assert!(meta.get("appliedId").is_none());
+        let entries = meta.get("entries").unwrap().as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].get("id").and_then(Value::as_str), Some("cc-switch-id"));
+        assert!(!dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json")).exists());
+        assert!(dir.join("cc-switch-id.json").exists());
+        assert!(claude_managed_restore(&dir).unwrap().is_empty());
+    }
+
+    /// 生效值只认 appliedId 指向的条目：别家工具切回去后必须能被检测出来
+    #[test]
+    fn claude_managed_effective_follows_applied_id() {
+        let dir = tmp_dir("claude_3p_effective");
+        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+        fs::write(
+            dir.join("cc-switch-id.json"),
+            r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://deepkey.top","inferenceGatewayApiKey":"sk-other"}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("_meta.json"),
+            r#"{"appliedId":"cc-switch-id","entries":[{"id":"cc-switch-id","name":"CC Switch"}]}"#,
+        )
+        .unwrap();
+
+        let effective = claude_managed_effective(&dir).unwrap();
+        assert_eq!(effective, ("https://deepkey.top".to_owned(), "sk-other".to_owned()));
     }
 }
