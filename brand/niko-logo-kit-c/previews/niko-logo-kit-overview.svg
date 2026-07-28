@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1400" role="img" aria-labelledby="title desc">
+  <title id="title">Niko Logo Kit overview</title>
+  <desc id="desc">Overview of the Niko Option C logo system and core color palette.</desc>
+  <defs>
+    <linearGradient id="niko-gradient" x1="210" y1="490" x2="824" y2="490" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#78C5DF"/>
+      <stop offset="0.42" stop-color="#F3D47F"/>
+      <stop offset="0.70" stop-color="#F5AD78"/>
+      <stop offset="1" stop-color="#EE9288"/>
+    </linearGradient>
+  </defs>
+  <rect width="1800" height="1400" fill="#F3F5F8"/>
+  <text x="80" y="105" fill="#22304A" font-family="Arial, sans-serif" font-size="58" font-weight="700">Niko Logo Kit</text>
+  <text x="80" y="155" fill="#667085" font-family="Arial, sans-serif" font-size="24">Option C · Production master · 2026</text>
+  <rect x="80" y="205" width="1080" height="390" rx="40" fill="#FFF8F0"/>
+  <path fill="url(#niko-gradient)" transform="translate(25 150) scale(.40)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <g transform="translate(455 295) scale(1.05)" fill="none" stroke="#22304A" stroke-width="38" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 208V52L210 208V52"/>
+    <path d="M286 112V208"/>
+    <circle cx="286" cy="62" r="20" fill="#22304A" stroke="none"/>
+    <path d="M365 52V208M377 150L454 96M377 150L462 210"/>
+    <ellipse cx="555" cy="154" rx="63" ry="58"/>
+  </g>
+  <text x="120" y="550" fill="#8A7B73" font-family="Arial, sans-serif" font-size="20">PRIMARY · LIGHT</text>
+  <rect x="1200" y="205" width="520" height="390" rx="40" fill="#162038"/>
+  <path fill="url(#niko-gradient)" transform="translate(1180 155) scale(.46)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <text x="1240" y="565" fill="#C4CAD6" font-family="Arial, sans-serif" font-size="20">MARK · DARK</text>
+  <rect x="80" y="635" width="510" height="405" rx="40" fill="#FFFFFF"/>
+  <path fill="#000000" transform="translate(40 570) scale(.48)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <text x="120" y="995" fill="#667085" font-family="Arial, sans-serif" font-size="20">BLACK</text>
+  <rect x="625" y="635" width="510" height="405" rx="40" fill="#162038"/>
+  <path fill="#FFFFFF" transform="translate(585 570) scale(.48)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <text x="665" y="995" fill="#C4CAD6" font-family="Arial, sans-serif" font-size="20">WHITE</text>
+  <rect x="1170" y="635" width="550" height="405" rx="40" fill="#FFFFFF"/>
+  <rect x="1220" y="680" width="250" height="250" rx="62" fill="#FFF8F0"/>
+  <path fill="url(#niko-gradient)" transform="translate(1192 660) scale(.31)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <circle cx="1580" cy="805" r="125" fill="#162038"/>
+  <path fill="url(#niko-gradient)" transform="translate(1484 710) scale(.19)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <text x="1210" y="995" fill="#667085" font-family="Arial, sans-serif" font-size="20">APP ICON · SOCIAL</text>
+  <text x="80" y="1125" fill="#22304A" font-family="Arial, sans-serif" font-size="28" font-weight="700">Core palette</text>
+  <g transform="translate(80 1170)"><rect width="280" height="110" rx="24" fill="#78C5DF"/><text x="0" y="148" fill="#22304A" font-family="Arial, sans-serif" font-size="18" font-weight="700">SKY BLUE</text><text x="0" y="175" fill="#667085" font-family="Arial, sans-serif" font-size="17">#78C5DF</text></g>
+  <g transform="translate(410 1170)"><rect width="280" height="110" rx="24" fill="#F3D47F"/><text x="0" y="148" fill="#22304A" font-family="Arial, sans-serif" font-size="18" font-weight="700">WARM YELLOW</text><text x="0" y="175" fill="#667085" font-family="Arial, sans-serif" font-size="17">#F3D47F</text></g>
+  <g transform="translate(740 1170)"><rect width="280" height="110" rx="24" fill="#F5AD78"/><text x="0" y="148" fill="#22304A" font-family="Arial, sans-serif" font-size="18" font-weight="700">APRICOT</text><text x="0" y="175" fill="#667085" font-family="Arial, sans-serif" font-size="17">#F5AD78</text></g>
+  <g transform="translate(1070 1170)"><rect width="280" height="110" rx="24" fill="#EE9288"/><text x="0" y="148" fill="#22304A" font-family="Arial, sans-serif" font-size="18" font-weight="700">CORAL</text><text x="0" y="175" fill="#667085" font-family="Arial, sans-serif" font-size="17">#EE9288</text></g>
+  <g transform="translate(1400 1170)"><rect width="280" height="110" rx="24" fill="#22304A"/><text x="0" y="148" fill="#22304A" font-family="Arial, sans-serif" font-size="18" font-weight="700">INK</text><text x="0" y="175" fill="#667085" font-family="Arial, sans-serif" font-size="17">#22304A</text></g>
+</svg>

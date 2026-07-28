@@ -8,8 +8,9 @@ import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
-import { BRAND } from "../lib/brand";
 import Logo from "../components/Logo";
+import { LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
+import TargetAppIcon from "../components/TargetAppIcon";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -33,11 +34,6 @@ interface ApplyResult {
   error?: string;
 }
 
-const TARGET_ICONS: Record<string, string> = {
-  codex: "🖥️",
-  "claude-desktop": "🖥️",
-};
-
 function quotaToUSD(quota: number): string {
   return (quota / 1_000_000).toFixed(2);
 }
@@ -56,17 +52,14 @@ function formatTime(ts: number): string {
 const TOKEN_TIP =
   "token 是模型计费的最小文本单位。中文约 1 个字 ≈ 1.5 token，英文约 1 个单词 ≈ 1.3 token。100 万 token 大致相当于 60~70 万汉字，约等于一本长篇小说的量。输入（你发的内容）和输出（模型回复）分别计价。";
 
-const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5";
-const LABEL = "text-xs font-medium text-gray-500 dark:text-gray-400";
-const TITLE = "text-sm font-semibold text-gray-900 dark:text-gray-100";
-const SUBTLE = "text-xs text-gray-500 dark:text-gray-400";
-const INPUT =
-  "rounded-full border border-black/10 bg-transparent px-3 py-1 text-xs text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-white/15 dark:text-gray-100";
-const SELECT = `${INPUT} w-full appearance-none truncate pr-7`;
-const GHOST_BTN =
-  "rounded-full border border-black/10 px-3 py-1.5 text-xs text-gray-700 transition hover:bg-black/5 disabled:opacity-40 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10";
-const PRIMARY_BTN =
-  "rounded-full bg-gray-900 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200";
+const CARD = "nk-card";
+const LABEL = "nk-label";
+const TITLE = "nk-title";
+const SUBTLE = "nk-muted";
+const INPUT = "nk-input py-1 text-xs";
+const SELECT = "nk-select w-full";
+const GHOST_BTN = "nk-btn-secondary";
+const PRIMARY_BTN = "nk-btn-primary";
 
 export default function Home() {
   const navigate = useNavigate();
@@ -338,7 +331,7 @@ export default function Home() {
     // 二次确认：这会移除中转配置，用户可能只是误点
     if (!confirmRestore) {
       setConfirmRestore(true);
-      setNotice({ ok: false, text: "将移除 Niko 写入的中转配置，恢复用官方账号登录，再点一次确认" });
+      setNotice({ ok: false, text: "将移除本应用写入的中转配置，恢复用官方账号登录，再点一次确认" });
       window.setTimeout(() => setConfirmRestore(false), 5000);
       return;
     }
@@ -402,8 +395,13 @@ export default function Home() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <span className={SUBTLE}>加载中…</span>
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex h-screen flex-col items-center justify-center gap-3"
+      >
+        <span className="nk-spinner" aria-hidden="true" />
+        <span className={SUBTLE}>正在同步账户信息…</span>
       </div>
     );
   }
@@ -412,35 +410,34 @@ export default function Home() {
   const otherDevices = devices.filter((d) => !d.is_current).length;
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-black/5 px-6 py-3 dark:border-white/10">
-        <span className={`flex items-center gap-2 ${TITLE}`}>
-          <Logo size={20} />
-          {BRAND.name}
-        </span>
+    <div className="nk-shell">
+      <header className="nk-header justify-between">
+        <Logo size={24} />
         <div className="flex items-center gap-2">
-          <button onClick={toggle} className={GHOST_BTN} aria-label="切换主题">
-            {theme === "dark" ? "☀️" : "🌙"}
+          <button onClick={toggle} className="nk-btn-ghost px-2.5" aria-label="切换主题">
+            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
           </button>
           <button onClick={() => navigate("/settings")} className={GHOST_BTN}>
+            <SettingsIcon />
             设置
           </button>
           <button onClick={logout} className={GHOST_BTN}>
+            <LogOutIcon />
             退出
           </button>
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden px-5 py-4">
+      <main className="flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         {/* 双列：左侧账户与应用，右侧模型选择，避免宽窗口下大量留白 */}
-        <div className="mx-auto grid h-full max-w-5xl grid-cols-1 gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
-          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-0.5">
+        <div className="mx-auto grid min-h-full max-w-5xl grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+          <div className="flex min-h-0 flex-col gap-3 pr-0.5 md:overflow-y-auto">
             {/* 余额 */}
             <section className={CARD}>
               <div className="flex items-end justify-between">
                 <div>
                   <p className={LABEL}>{auth?.username ?? "已登录"}</p>
-                  <p className="mt-1 text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">
+                  <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
                     ${quotaToUSD(quota)}
                   </p>
                   <p className={`mt-1 ${SUBTLE}`}>可用余额</p>
@@ -484,27 +481,21 @@ export default function Home() {
                         <button
                           onClick={() => pickTarget(t.id)}
                           disabled={!t.installed}
-                          className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
+                          className={`nk-row w-full text-left ${
                             active
-                              ? "bg-gray-900/5 ring-1 ring-gray-900/20 dark:bg-white/10 dark:ring-white/25"
+                              ? "nk-row-selected"
                               : t.installed
-                                ? "bg-black/[0.03] hover:bg-black/[0.06] dark:bg-white/5 dark:hover:bg-white/10"
-                                : "bg-black/[0.02] opacity-60 dark:bg-white/[0.03]"
+                                ? ""
+                                : "opacity-60"
                           }`}
                         >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex min-w-0 items-center gap-2">
-                              {t.icon ? (
-                                <img
-                                  src={t.icon}
-                                  alt=""
-                                  className="h-6 w-6 shrink-0 rounded-md"
-                                />
-                              ) : (
-                                <span className="w-6 shrink-0 text-center">
-                                  {TARGET_ICONS[t.id] ?? "🔧"}
-                                </span>
-                              )}
+                              <TargetAppIcon
+                                targetId={t.id}
+                                name={t.name}
+                                icon={t.icon}
+                              />
                               <div className="min-w-0">
                                 <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
                                   {t.name}
@@ -533,7 +524,7 @@ export default function Home() {
                         {/* Claude 的作用范围说明单独成子卡片：常驻在选项里会把卡片撑高，
                             且未选中时并不需要这条信息。 */}
                         {t.id === "claude-desktop" && active && t.installed && (
-                          <div className="mt-1.5 rounded-xl bg-black/[0.03] p-2 dark:bg-white/5">
+                          <div className="nk-inset mt-1.5 p-2">
                             <p className={SUBTLE}>
                               仅作用于内置 Claude Code 面板，桌面端普通对话仍用你的 Anthropic 账号
                             </p>
@@ -541,7 +532,7 @@ export default function Home() {
                         )}
                         {/* Codex 独有：有 ChatGPT 订阅时保留官方登录态，密钥走 provider 段 */}
                         {t.id === "codex" && active && t.installed && (
-                          <div className="mt-1.5 rounded-xl bg-black/[0.03] p-2 dark:bg-white/5">
+                          <div className="nk-inset mt-1.5 p-2">
                             <div className="grid grid-cols-2 gap-1.5">
                               {[
                                 { mixed: false, label: "我没有 ChatGPT 订阅" },
@@ -573,10 +564,10 @@ export default function Home() {
                     {installedTargets.length > 1 && (
                       <button
                         onClick={() => pickTarget(ALL_TARGETS)}
-                        className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${
+                        className={`nk-row w-full text-left text-xs ${
                           targetId === ALL_TARGETS
-                            ? "bg-gray-900/5 ring-1 ring-gray-900/20 dark:bg-white/10 dark:ring-white/25"
-                            : "bg-black/[0.03] hover:bg-black/[0.06] dark:bg-white/5 dark:hover:bg-white/10"
+                            ? "nk-row-selected"
+                            : ""
                         }`}
                       >
                         <span className="font-medium text-gray-900 dark:text-gray-100">全部已安装应用</span>
@@ -607,7 +598,7 @@ export default function Home() {
               {devicesOpen && (
                 <div className="mt-3 space-y-2">
                   {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
-                    <p className="rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                    <p className="nk-alert-warning">
                       已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
                     </p>
                   )}
@@ -615,7 +606,7 @@ export default function Home() {
                   {devices.map((d) => (
                     <div
                       key={d.id}
-                      className="flex items-center justify-between gap-3 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5"
+                      className="nk-row flex items-center justify-between gap-3"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
@@ -655,10 +646,10 @@ export default function Home() {
           </div>
 
           {/* 右列不设滚动：滚动只交给内部的模型列表，避免出现嵌套双层滚动条 */}
-          <div className="flex min-h-0 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-col md:overflow-hidden">
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
-            <section className={`${CARD} flex min-h-0 flex-1 flex-col`}>
+            <section className={`${CARD} flex min-h-[28rem] flex-1 flex-col md:min-h-0`}>
               <div className="mb-2.5 flex shrink-0 items-center justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
@@ -679,7 +670,7 @@ export default function Home() {
                     {tokenTipOpen && (
                       <span
                         role="tooltip"
-                        className="absolute right-0 top-6 z-20 w-72 rounded-xl border border-black/10 bg-white p-3 text-left text-[11px] font-normal leading-relaxed text-gray-600 shadow-lg dark:border-white/15 dark:bg-gray-900 dark:text-gray-300"
+                        className="absolute right-0 top-6 z-20 w-[min(18rem,calc(100vw-3rem))] rounded-xl border bg-white p-3 text-left text-[11px] font-normal leading-relaxed text-gray-600 shadow-lg [border-color:var(--nk-line)] dark:bg-gray-900 dark:text-gray-300"
                       >
                         {TOKEN_TIP}
                       </span>
@@ -692,7 +683,7 @@ export default function Home() {
                 <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
               ) : (
                 <>
-                  <div className="flex shrink-0 gap-1 border-b border-black/5 dark:border-white/10">
+                  <div className="flex shrink-0 gap-1 overflow-x-auto border-b [border-color:var(--nk-line)]">
                     {vendorTabs.map(([vendor, list]) => (
                       <button
                         key={vendor}
@@ -750,18 +741,18 @@ export default function Home() {
                       className={`w-40 ${INPUT}`}
                     />
                   </div>
-                  <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-                    {models.length === 0 && <p className={SUBTLE}>没有匹配的模型</p>}
+                  <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 max-md:max-h-80">
+                    {models.length === 0 && <p className="nk-empty">没有匹配的模型</p>}
                     {models.map((m) => {
                       const compat = compatOf(m);
                       return (
                       <button
                         key={m}
                         onClick={() => setModel(m)}
-                        className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition ${
+                        className={`nk-row flex w-full items-center justify-between text-left text-xs ${
                           m === model
-                            ? "bg-gray-900/5 text-gray-900 dark:bg-white/10 dark:text-white"
-                            : "text-gray-600 hover:bg-black/5 dark:text-gray-300 dark:hover:bg-white/5"
+                            ? "nk-row-selected text-gray-900 dark:text-white"
+                            : "text-gray-600 dark:text-gray-300"
                         }`}
                       >
                         <span className="truncate font-mono">{m}</span>
@@ -786,7 +777,7 @@ export default function Home() {
 
                   {/* 价格明细常驻：条件渲染会在选中模型时挤压上方列表，导致刚点的行跳走。
                       倍率已在卡片标题右侧说明，这里不再重复模型名与倍率。 */}
-                  <div className="mt-2.5 min-h-[3.25rem] shrink-0 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5">
+                  <div className="nk-inset mt-2.5 min-h-[3.25rem] shrink-0 px-3 py-2">
                     {selectedPrice ? (
                       <>
                         {selectedPrice.perRequest ? (
@@ -823,12 +814,12 @@ export default function Home() {
                   </div>
 
                   {/* 四个动作挤在一行：主操作占宽，其余三个短名等分，避免堆四行把卡片撑高 */}
-                  <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
+                  <div className="mt-2.5 flex shrink-0 flex-wrap items-center gap-1.5">
                     <button
                       onClick={enable}
                       disabled={provisioning || !group || !model || !targetId}
                       title={targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
-                      className="flex-1 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                      className="nk-btn-primary min-w-24 flex-1"
                     >
                       {provisioning ? "配置中…" : "启用"}
                     </button>
@@ -851,7 +842,7 @@ export default function Home() {
                     <button
                       onClick={restoreDefaults}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title="移除 Niko 写入的中转配置，恢复用官方账号登录"
+                      title="移除本应用写入的中转配置，恢复用官方账号登录"
                       className={`${GHOST_BTN} ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
                     >
                       {restoring ? "恢复中…" : confirmRestore ? "再点确认" : "恢复默认"}

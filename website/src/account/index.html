@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>个人中心 — Niko</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles-wordmark.css" />
+    <link rel="stylesheet" href="/account.css" />
+    <script
+      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+      async
+      defer
+    ></script>
+    <script type="module" src="/js/account.js"></script>
+  </head>
+  <body class="account-body">
+    <a class="skip-link" href="#main">跳到个人中心</a>
+    <header class="account-header">
+      <a class="brand" href="/" aria-label="Niko 首页">
+        <img src="/assets/niko-lockup-horizontal.svg" alt="Niko" width="168" height="60" />
+      </a>
+      <div class="account-header-actions">
+        <a class="text-link" href="/">返回首页</a>
+        <button class="text-link" type="button" data-logout hidden>退出登录</button>
+      </div>
+    </header>
+
+    <main class="account-main" id="main">
+      <section class="account-loading" data-account-loading>
+        <div>
+          <div class="spinner" aria-hidden="true"></div>
+          <p>正在读取账户信息…</p>
+        </div>
+      </section>
+
+      <section class="access-state" data-account-error hidden>
+        <img src="/assets/niko-mark.svg" alt="" width="58" height="58" />
+        <p class="account-eyebrow">个人中心</p>
+        <h1 data-access-title>需要先登录</h1>
+        <p data-access-message>登录后可查看余额、充值记录和消费明细。</p>
+        <a class="button button-primary" href="/login/?next=/account/" data-access-action>前往登录</a>
+      </section>
+
+      <div data-account-content hidden>
+        <section class="account-overview" aria-labelledby="account-title">
+          <div>
+            <p class="account-eyebrow">个人中心</p>
+            <h1 id="account-title">你好，<span data-username>用户</span></h1>
+            <p class="account-identity">账户 ID：<span data-user-id>—</span></p>
+          </div>
+          <div class="balance-block" aria-live="polite">
+            <span class="balance-label">当前余额</span>
+            <strong class="balance-value" data-balance>—</strong>
+            <span class="balance-updated">更新于 <span data-balance-updated>—</span></span>
+          </div>
+          <div class="overview-actions">
+            <button class="command-button primary" type="button" data-open-topup>充值</button>
+            <button class="command-button" type="button" data-refresh-account>刷新数据</button>
+          </div>
+        </section>
+
+        <p class="page-notice" data-page-notice role="status" aria-live="polite"></p>
+
+        <section class="profile-strip" aria-label="账户资料">
+          <div class="profile-item">
+            <span>用户名</span>
+            <strong data-profile-username>—</strong>
+          </div>
+          <div class="profile-item">
+            <span>邮箱</span>
+            <strong data-profile-email>未绑定</strong>
+            <button class="inline-action" type="button" data-open-email>绑定邮箱</button>
+          </div>
+          <div class="profile-item">
+            <span>账户创建时间</span>
+            <strong data-created-at>—</strong>
+          </div>
+        </section>
+
+        <section class="account-data" aria-labelledby="records-title">
+          <h2 id="records-title" class="visually-hidden">账户记录</h2>
+          <div class="data-tabs" role="tablist" aria-label="账户记录">
+            <button
+              class="data-tab"
+              type="button"
+              role="tab"
+              id="topups-tab"
+              aria-controls="topups-panel"
+              aria-selected="true"
+              data-tab="topups"
+            >充值记录</button>
+            <button
+              class="data-tab"
+              type="button"
+              role="tab"
+              id="consumptions-tab"
+              aria-controls="consumptions-panel"
+              aria-selected="false"
+              tabindex="-1"
+              data-tab="consumptions"
+            >消费明细</button>
+          </div>
+
+          <div
+            class="data-panel"
+            id="topups-panel"
+            role="tabpanel"
+            aria-labelledby="topups-tab"
+            data-panel="topups"
+          >
+            <div class="data-state" data-state="topups"><p>正在加载充值记录…</p></div>
+            <ol class="record-list" data-list="topups" hidden></ol>
+            <button class="load-more" type="button" data-load-more="topups" hidden>加载更多</button>
+          </div>
+
+          <div
+            class="data-panel"
+            id="consumptions-panel"
+            role="tabpanel"
+            aria-labelledby="consumptions-tab"
+            data-panel="consumptions"
+            hidden
+          >
+            <div class="data-state" data-state="consumptions"><p>正在加载消费明细…</p></div>
+            <ol class="record-list" data-list="consumptions" hidden></ol>
+            <button class="load-more" type="button" data-load-more="consumptions" hidden>加载更多</button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <dialog data-topup-dialog aria-labelledby="topup-dialog-title">
+      <div class="dialog-body">
+        <div class="dialog-header">
+          <div>
+            <h2 id="topup-dialog-title">账户充值</h2>
+            <p>选择金额和支付方式。最终到账以支付平台回调为准。</p>
+          </div>
+          <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+        </div>
+        <form data-topup-form>
+          <div class="data-state" data-topup-loading><p>正在读取可用充值方式…</p></div>
+          <div data-topup-fields hidden>
+            <fieldset class="field fieldset-reset">
+              <legend class="field-label">充值金额</legend>
+              <div class="option-list" data-topup-options></div>
+            </fieldset>
+            <label class="field">
+              <span class="field-label">支付方式</span>
+              <select name="payment_channel" data-payment-channels required></select>
+            </label>
+          </div>
+          <p class="form-status" data-topup-status role="status" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button class="command-button" type="button" data-cancel-dialog>取消</button>
+            <button class="command-button primary" type="submit" data-topup-submit disabled>前往支付</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog data-email-dialog aria-labelledby="email-dialog-title">
+      <div class="dialog-body">
+        <div class="dialog-header">
+          <div>
+            <h2 id="email-dialog-title">绑定邮箱</h2>
+            <p>验证码发送后短时间内有效，请使用本人邮箱。</p>
+          </div>
+          <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+        </div>
+        <form data-email-form>
+          <label class="field">
+            <span class="field-label">邮箱</span>
+            <input name="email" type="email" autocomplete="email" maxlength="254" required />
+          </label>
+          <div class="turnstile-field" data-email-turnstile>
+            <div class="turnstile-loading">正在准备安全验证…</div>
+          </div>
+          <label class="field">
+            <span class="field-label">
+              验证码
+              <button class="inline-action" type="button" data-send-email-code>发送验证码</button>
+            </span>
+            <input
+              name="code"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="12"
+              required
+            />
+          </label>
+          <p class="form-status" data-email-status role="status" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button class="command-button" type="button" data-cancel-dialog>取消</button>
+            <button class="command-button primary" type="submit" data-email-submit>确认绑定</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  </body>
+</html>

@@ -10,12 +10,12 @@ import {
   type UsageDayBucket,
 } from "../api/client";
 import { VENDORS, vendorOfGroup, vendorOfModel, type Vendor } from "../lib/vendor";
+import { ArrowLeftIcon } from "../components/Icons";
 
-const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5";
-const LABEL = "text-xs font-medium text-gray-500 dark:text-gray-400";
-const TITLE = "text-sm font-semibold text-gray-900 dark:text-gray-100";
-const SELECT =
-  "rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs text-gray-700 dark:border-white/15 dark:bg-white/5 dark:text-gray-200";
+const CARD = "nk-card";
+const LABEL = "nk-label";
+const TITLE = "nk-title";
+const SELECT = "nk-select";
 
 const RANGES = [
   { id: "today", label: "今天", days: 0 },
@@ -85,11 +85,11 @@ function Sparkline({
     <div className="mt-3">
       <div className="relative h-10">
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
-          <polyline points={`0,100 ${points} 100,100`} fill="rgb(99 102 241 / 0.12)" stroke="none" />
+          <polyline points={`0,100 ${points} 100,100`} fill="var(--nk-info-soft)" stroke="none" />
           <polyline
             points={points}
             fill="none"
-            stroke="rgb(99 102 241)"
+            stroke="var(--nk-accent)"
             strokeWidth="1.5"
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -239,18 +239,19 @@ export default function Usage() {
   }, [summary, startTimestamp, endTimestamp]);
 
   return (
-    <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 px-5 py-3 dark:border-white/10">
+    <div className="nk-shell">
+      <header className="nk-header">
         <button
           onClick={() => navigate("/home")}
-          className="text-gray-500 transition hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+          className="nk-btn-ghost px-2.5"
+          aria-label="返回首页"
         >
-          ←
+          <ArrowLeftIcon />
         </button>
-        <h1 className="text-sm font-semibold text-gray-900 dark:text-white">用量明细</h1>
+        <h1 className={TITLE}>用量明细</h1>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-5 py-4">
+      <main className="nk-page">
         <div className="mx-auto max-w-5xl space-y-3">
           <div className={CARD}>
             <div className="flex flex-wrap items-center gap-2">
@@ -258,10 +259,10 @@ export default function Usage() {
                 <button
                   key={r.id}
                   onClick={() => setRange(r.id)}
-                  className={`rounded-full px-3 py-1.5 text-xs transition ${
+                  className={`nk-btn ${
                     range === r.id
-                      ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                      : "border border-black/10 text-gray-600 hover:bg-black/5 dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/10"
+                      ? "nk-btn-primary"
+                      : "nk-btn-secondary"
                   }`}
                 >
                   {r.label}
@@ -269,10 +270,10 @@ export default function Usage() {
               ))}
               <button
                 onClick={() => setRange("custom")}
-                className={`rounded-full px-3 py-1.5 text-xs transition ${
+                className={`nk-btn ${
                   range === "custom"
-                    ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                    : "border border-black/10 text-gray-600 hover:bg-black/5 dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/10"
+                    ? "nk-btn-primary"
+                    : "nk-btn-secondary"
                 }`}
               >
                 自定义
@@ -332,12 +333,21 @@ export default function Usage() {
             </div>
           </div>
 
-          {error && <p className="text-center text-sm text-red-600 dark:text-red-400">{error}</p>}
-          {loading && <p className="text-center text-sm text-gray-500 dark:text-gray-400">加载中…</p>}
+          {error && <p className="nk-alert-danger text-center text-sm">{error}</p>}
+          {loading && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center justify-center gap-2 py-6"
+            >
+              <span className="nk-spinner" aria-hidden="true" />
+              <span className="nk-muted">正在加载用量…</span>
+            </div>
+          )}
 
           {!loading && summary && (
             <>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className={CARD}>
                   <p className={LABEL}>累计消费</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
@@ -382,25 +392,26 @@ export default function Usage() {
                 一次提问通常对应多条记录：Claude Code 与 Codex 会在内部拆成读文件、调用工具等多次请求，各自单独计费。
               </p>
               {visibleLogs.length === 0 ? (
-                <p className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
+                <p className="nk-empty mt-3">
                   当前筛选条件下暂无用量记录
                 </p>
               ) : (
-                <table className="mt-3 w-full text-xs text-gray-700 dark:text-gray-300">
+                <div className="nk-table-wrap">
+                <table className="nk-table">
                   <thead>
-                    <tr className="border-b border-black/5 text-left text-gray-500 dark:border-white/10 dark:text-gray-400">
-                      <th className="pb-2 pr-3">时间</th>
-                      <th className="pb-2 pr-3">模型</th>
-                      <th className="pb-2 pr-3">分组</th>
-                      <th className="pb-2 pr-3 text-right">输入</th>
-                      <th className="pb-2 pr-3 text-right">输出</th>
-                      <th className="pb-2 text-right">消费</th>
+                    <tr>
+                      <th>时间</th>
+                      <th>模型</th>
+                      <th>分组</th>
+                      <th className="text-right">输入</th>
+                      <th className="text-right">输出</th>
+                      <th className="text-right">消费</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visibleLogs.map((l) => (
-                      <tr key={l.id} className="border-b border-black/5 dark:border-white/10">
-                        <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">
+                      <tr key={l.id}>
+                        <td className="whitespace-nowrap text-gray-500 dark:text-gray-400">
                           {new Date(l.created_at * 1000).toLocaleString("zh-CN", {
                             month: "2-digit",
                             day: "2-digit",
@@ -408,17 +419,18 @@ export default function Usage() {
                             minute: "2-digit",
                           })}
                         </td>
-                        <td className="py-2 pr-3 font-mono">{l.model_name}</td>
-                        <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{l.group || "—"}</td>
-                        <td className="py-2 pr-3 text-right">{num(l.prompt_tokens)}</td>
-                        <td className="py-2 pr-3 text-right">{num(l.completion_tokens)}</td>
-                        <td className="py-2 text-right text-indigo-600 dark:text-indigo-400">
+                        <td className="font-mono">{l.model_name}</td>
+                        <td className="text-gray-500 dark:text-gray-400">{l.group || "—"}</td>
+                        <td className="text-right">{num(l.prompt_tokens)}</td>
+                        <td className="text-right">{num(l.completion_tokens)}</td>
+                        <td className="text-right font-semibold text-indigo-600 dark:text-indigo-400">
                           {usd(l.quota)}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           )}

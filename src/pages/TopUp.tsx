@@ -4,15 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, saveAuth } from "../store/auth";
 import { api, type PayMethod, type TopUpInfo, type TopUpRecord } from "../api/client";
 import { useSession } from "../hooks/useSession";
+import { ArrowLeftIcon } from "../components/Icons";
 
-const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5";
-const LABEL = "text-xs font-medium text-gray-500 dark:text-gray-400";
-const TITLE = "text-sm font-semibold text-gray-900 dark:text-gray-100";
-const SUBTLE = "text-xs text-gray-500 dark:text-gray-400";
-const PRIMARY_BTN =
-  "rounded-full bg-gray-900 px-4 py-2 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200";
-const GHOST_BTN =
-  "rounded-full border border-black/10 px-3 py-1.5 text-xs text-gray-700 transition hover:bg-black/5 disabled:opacity-40 dark:border-white/15 dark:text-gray-200 dark:hover:bg-white/10";
+const CARD = "nk-card";
+const LABEL = "nk-label";
+const TITLE = "nk-title";
+const SUBTLE = "nk-muted";
+const PRIMARY_BTN = "nk-btn-primary";
+const GHOST_BTN = "nk-btn-secondary";
 
 /** 这两种支付方式只在网页端可用，客户端不展示 */
 const LAUNCHER_UNSUPPORTED_METHODS = new Set(["alipay_official", "paypal"]);
@@ -169,23 +168,26 @@ export default function TopUp() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 px-5 py-3 dark:border-white/10">
+    <div className="nk-shell">
+      <header className="nk-header">
         <button
           onClick={() => navigate("/home")}
           aria-label="返回首页"
-          className="text-gray-500 transition hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+          className="nk-btn-ghost px-2.5"
         >
-          ←
+          <ArrowLeftIcon />
         </button>
-        <h1 className="text-sm font-semibold text-gray-900 dark:text-white">充值</h1>
+        <h1 className={TITLE}>充值</h1>
         <span className={`ml-auto ${SUBTLE}`}>可用余额 ${usd(quota)}</span>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-5 py-4">
+      <main className="nk-page">
         <div className="mx-auto max-w-3xl space-y-3">
           {loading ? (
-            <div className={`${CARD} ${SUBTLE}`}>加载中…</div>
+            <div role="status" className={`${CARD} flex items-center justify-center gap-2 py-8`}>
+              <span className="nk-spinner" aria-hidden="true" />
+              <span className={SUBTLE}>正在加载充值方式…</span>
+            </div>
           ) : !info?.enable_online_topup || methods.length === 0 ? (
             <div className={CARD}>
               <p className={TITLE}>站内充值暂不可用</p>
@@ -209,8 +211,8 @@ export default function TopUp() {
                         }}
                         className={`rounded-xl border px-3 py-2 text-left transition ${
                           active
-                            ? "border-gray-900 bg-gray-900 text-white dark:border-white dark:bg-white dark:text-gray-900"
-                            : "border-black/10 hover:bg-black/5 dark:border-white/15 dark:hover:bg-white/10"
+                            ? "border-transparent bg-[var(--nk-action)] text-[var(--nk-on-action)] shadow-sm"
+                            : "border-[var(--nk-line)] bg-[var(--nk-surface-muted)] hover:border-[var(--nk-line-strong)] hover:bg-[var(--nk-surface-hover)]"
                         }`}
                       >
                         <span className="block text-sm font-semibold">${opt}</span>
@@ -234,7 +236,7 @@ export default function TopUp() {
                     value={custom}
                     onChange={(e) => setCustom(e.target.value)}
                     placeholder={`≥ ${minTopup}`}
-                    className="w-28 rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs text-gray-700 dark:border-white/15 dark:bg-white/5 dark:text-gray-200"
+                    className="nk-input w-28 py-1.5 text-xs"
                   />
                 </div>
               </div>
@@ -248,13 +250,13 @@ export default function TopUp() {
                       onClick={() => setMethod(m.type)}
                       className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
                         method === m.type
-                          ? "border-gray-900 dark:border-white"
-                          : "border-black/10 hover:bg-black/5 dark:border-white/15 dark:hover:bg-white/10"
+                          ? "border-[var(--nk-focus)] bg-[var(--nk-info-soft)]"
+                          : "border-[var(--nk-line)] bg-[var(--nk-surface-muted)] hover:border-[var(--nk-line-strong)]"
                       }`}
                     >
                       <span
                         className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: m.color || "#6366F1" }}
+                        style={{ backgroundColor: m.color || "#78C5DF" }}
                       />
                       <span className="font-medium text-gray-900 dark:text-gray-100">{m.name}</span>
                       {m.tag && <span className={SUBTLE}>{m.tag}</span>}
@@ -283,7 +285,7 @@ export default function TopUp() {
               </div>
 
               {!amountValid && (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
+                <p className="nk-alert-warning">
                   金额需不低于 {Math.max(minTopup, methodMin)}
                 </p>
               )}
@@ -292,7 +294,7 @@ export default function TopUp() {
                   已打开支付窗口，完成付款后余额会自动刷新，请勿关闭本页。
                 </p>
               )}
-              {error && <p className="text-xs text-rose-600 dark:text-rose-400">{error}</p>}
+              {error && <p className="nk-alert-danger">{error}</p>}
             </>
           )}
 
@@ -304,13 +306,13 @@ export default function TopUp() {
               </button>
             </div>
             {records.length === 0 ? (
-              <p className={`mt-2 ${SUBTLE}`}>暂无充值记录</p>
+              <p className="nk-empty mt-3">暂无充值记录</p>
             ) : (
               <ul className="mt-2 divide-y divide-black/5 dark:divide-white/10">
                 {records.map((r) => {
                   const s = statusLabel(r.status);
                   return (
-                    <li key={r.id} className="flex items-center gap-3 py-2 text-xs">
+                    <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-xs">
                       <span className="font-medium text-gray-900 dark:text-gray-100">${r.amount}</span>
                       <span className={SUBTLE}>¥{r.money.toFixed(2)}</span>
                       <span className={SUBTLE}>{r.payment_method}</span>

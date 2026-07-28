@@ -1,0 +1,8 @@
+name,hex,r,g,b,usage
+Sky Blue,#78C5DF,120,197,223,Gradient start
+Warm Yellow,#F3D47F,243,212,127,Gradient center
+Apricot,#F5AD78,245,173,120,Gradient transition
+Coral,#EE9288,238,146,136,Gradient end and monochrome accent
+Ink,#22304A,34,48,74,Wordmark on light backgrounds
+Cream,#FFF8F0,255,248,240,Light brand background
+Night,#162038,22,32,56,Dark brand background

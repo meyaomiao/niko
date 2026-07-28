@@ -3,44 +3,180 @@
 @tailwind utilities;
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
-}
-
-html {
   color-scheme: light;
+  font-family:
+    ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --nk-canvas: #fff8f0;
+  --nk-surface: #fffefd;
+  --nk-surface-muted: #f9eee6;
+  --nk-surface-hover: #f6e9df;
+  --nk-ink: #22304a;
+  --nk-ink-soft: #3c4860;
+  --nk-muted: #6e6462;
+  --nk-faint: #9b8f8b;
+  --nk-line: #e9ded5;
+  --nk-line-strong: #d4c5ba;
+  --nk-action: #22304a;
+  --nk-action-hover: #162038;
+  --nk-on-action: #ffffff;
+  --nk-accent: #a84435;
+  --nk-focus: #277c90;
+  --nk-success: #2f765f;
+  --nk-warning: #91601c;
+  --nk-danger: #a84435;
+  --nk-info: #277c90;
+  --nk-success-soft: #e4f3ec;
+  --nk-warning-soft: #fff0d3;
+  --nk-danger-soft: #fde8e4;
+  --nk-info-soft: #e4f3f7;
+  --nk-shadow:
+    0 1px 2px rgba(81, 58, 46, 0.04),
+    0 14px 34px rgba(81, 58, 46, 0.08);
+  --nk-shadow-hover:
+    0 2px 4px rgba(81, 58, 46, 0.05),
+    0 18px 42px rgba(81, 58, 46, 0.11);
+
+  /* Tailwind color channels are backed by the same brand tokens. */
+  --nk-gray-50: 255 254 253;
+  --nk-gray-100: 255 248 240;
+  --nk-gray-200: 242 233 226;
+  --nk-gray-300: 212 197 186;
+  --nk-gray-400: 155 143 139;
+  --nk-gray-500: 110 100 98;
+  --nk-gray-600: 83 78 82;
+  --nk-gray-700: 60 72 96;
+  --nk-gray-800: 45 59 84;
+  --nk-gray-900: 34 48 74;
+  --nk-gray-950: 22 32 56;
+  --nk-indigo-300: 242 177 168;
+  --nk-indigo-400: 238 146 136;
+  --nk-indigo-500: 198 91 77;
+  --nk-indigo-600: 168 68 53;
+  --nk-indigo-700: 139 53 41;
 }
 
 html.dark {
   color-scheme: dark;
+  --nk-canvas: #121a2c;
+  --nk-surface: #1a263e;
+  --nk-surface-muted: #202e49;
+  --nk-surface-hover: #293752;
+  --nk-ink: #fffaf5;
+  --nk-ink-soft: #eee5de;
+  --nk-muted: #c7bab4;
+  --nk-faint: #948b8b;
+  --nk-line: rgba(255, 248, 240, 0.13);
+  --nk-line-strong: rgba(255, 248, 240, 0.22);
+  --nk-action: #ee9288;
+  --nk-action-hover: #f3aaa1;
+  --nk-on-action: #162038;
+  --nk-accent: #f3aaa1;
+  --nk-focus: #78c5df;
+  --nk-success: #80c6ac;
+  --nk-warning: #f3d47f;
+  --nk-danger: #f1a39a;
+  --nk-info: #91d3e6;
+  --nk-success-soft: rgba(80, 166, 132, 0.16);
+  --nk-warning-soft: rgba(243, 212, 127, 0.14);
+  --nk-danger-soft: rgba(238, 146, 136, 0.15);
+  --nk-info-soft: rgba(120, 197, 223, 0.14);
+  --nk-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 16px 38px rgba(0, 0, 0, 0.2);
+  --nk-shadow-hover:
+    0 2px 4px rgba(0, 0, 0, 0.24),
+    0 20px 44px rgba(0, 0, 0, 0.26);
+
+  --nk-gray-50: 255 250 245;
+  --nk-gray-100: 246 239 233;
+  --nk-gray-200: 230 220 214;
+  --nk-gray-300: 199 186 180;
+  --nk-gray-400: 157 146 145;
+  --nk-gray-500: 123 119 124;
+  --nk-gray-600: 83 91 111;
+  --nk-gray-700: 52 65 91;
+  --nk-gray-800: 32 46 73;
+  --nk-gray-900: 26 38 62;
+  --nk-gray-950: 18 26 44;
+  --nk-indigo-300: 246 185 177;
+  --nk-indigo-400: 243 170 161;
+  --nk-indigo-500: 238 146 136;
+  --nk-indigo-600: 224 126 115;
+  --nk-indigo-700: 198 91 77;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-color: color-mix(in srgb, var(--nk-muted) 35%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
 }
 
 body {
   margin: 0;
-  background: #f5f5f7;
-  color: #1d1d1f;
+  background: var(--nk-canvas);
+  color: var(--nk-ink);
+  -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
-  -webkit-font-smoothing: antialiased;
 }
 
 html.dark body {
-  background: #0b0b0f;
-  color: #f5f5f7;
+  background: var(--nk-canvas);
 }
 
-/* 滚动条做成细的悬浮样式：WebView 默认样式比 macOS 原生更抢眼，会显得界面很挤 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+button,
+input,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
 }
 
-html.dark * {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--nk-focus);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgba(120, 197, 223, 0.3);
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
@@ -48,18 +184,254 @@ html.dark * {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 3px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--nk-muted) 36%, transparent);
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
+  background: color-mix(in srgb, var(--nk-muted) 58%, transparent);
+  background-clip: padding-box;
 }
 
-html.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+@layer components {
+  .nk-shell {
+    @apply flex h-screen min-h-0 flex-col;
+    background: transparent;
+    color: var(--nk-ink);
+  }
+
+  .nk-header {
+    @apply flex min-h-14 shrink-0 items-center gap-3 border-b px-5 py-2.5;
+    border-color: var(--nk-line);
+    background: color-mix(in srgb, var(--nk-canvas) 88%, transparent);
+    backdrop-filter: blur(18px);
+  }
+
+  .nk-page {
+    @apply flex-1 overflow-y-auto px-5 py-4;
+  }
+
+  .nk-card {
+    @apply rounded-2xl border p-4;
+    border-color: var(--nk-line);
+    background: color-mix(in srgb, var(--nk-surface) 96%, transparent);
+    box-shadow: var(--nk-shadow);
+  }
+
+  .nk-inset {
+    @apply rounded-xl;
+    background: var(--nk-surface-muted);
+  }
+
+  .nk-title {
+    @apply text-sm font-semibold;
+    color: var(--nk-ink);
+    letter-spacing: 0;
+  }
+
+  .nk-label {
+    @apply text-xs font-semibold;
+    color: var(--nk-muted);
+  }
+
+  .nk-overline {
+    @apply text-xs font-semibold uppercase;
+    color: var(--nk-muted);
+    letter-spacing: 0;
+  }
+
+  .nk-muted {
+    @apply text-xs;
+    color: var(--nk-muted);
+  }
+
+  .nk-btn {
+    @apply inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition;
+    transition-duration: 160ms;
+  }
+
+  .nk-btn-primary {
+    @apply nk-btn;
+    border-color: transparent;
+    background: var(--nk-action);
+    color: var(--nk-on-action);
+    box-shadow: 0 8px 22px rgba(34, 48, 74, 0.15);
+  }
+
+  .nk-btn-primary:hover:not(:disabled) {
+    background: var(--nk-action-hover);
+    transform: translateY(-1px);
+  }
+
+  .nk-btn-secondary {
+    @apply nk-btn;
+    border-color: var(--nk-line);
+    background: color-mix(in srgb, var(--nk-surface) 82%, transparent);
+    color: var(--nk-ink-soft);
+  }
+
+  .nk-btn-secondary:hover:not(:disabled) {
+    border-color: var(--nk-line-strong);
+    background: var(--nk-surface);
+  }
+
+  .nk-btn-ghost {
+    @apply nk-btn;
+    border-color: transparent;
+    background: transparent;
+    color: var(--nk-muted);
+  }
+
+  .nk-btn-ghost:hover:not(:disabled) {
+    background: var(--nk-surface-muted);
+    color: var(--nk-ink);
+  }
+
+  .nk-btn-danger {
+    @apply nk-btn;
+    border-color: transparent;
+    background: var(--nk-danger-soft);
+    color: var(--nk-danger);
+  }
+
+  .nk-btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--nk-danger-soft) 72%, var(--nk-danger));
+  }
+
+  .nk-btn:disabled,
+  .nk-btn-primary:disabled,
+  .nk-btn-secondary:disabled,
+  .nk-btn-ghost:disabled,
+  .nk-btn-danger:disabled {
+    opacity: 0.42;
+    transform: none;
+  }
+
+  .nk-input {
+    @apply min-h-9 rounded-xl border px-3 py-2 text-sm outline-none transition;
+    border-color: var(--nk-line);
+    background: var(--nk-surface);
+    color: var(--nk-ink);
+    box-shadow: inset 0 1px 1px rgba(81, 58, 46, 0.03);
+  }
+
+  .nk-input::placeholder {
+    color: var(--nk-faint);
+  }
+
+  .nk-input:hover:not(:disabled) {
+    border-color: var(--nk-line-strong);
+  }
+
+  .nk-input:focus {
+    border-color: var(--nk-focus);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nk-focus) 16%, transparent);
+  }
+
+  .nk-select {
+    @apply nk-input appearance-none truncate pr-8 text-xs;
+  }
+
+  .nk-row {
+    @apply rounded-xl px-3 py-2.5 transition;
+    background: var(--nk-surface-muted);
+  }
+
+  .nk-row:hover {
+    background: var(--nk-surface-hover);
+  }
+
+  .nk-row-selected {
+    background: color-mix(in srgb, var(--nk-info-soft) 68%, var(--nk-surface));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nk-focus) 45%, transparent);
+  }
+
+  .nk-pill {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold;
+    background: var(--nk-surface-muted);
+    color: var(--nk-muted);
+  }
+
+  .nk-alert {
+    @apply rounded-xl px-3 py-2 text-xs leading-5;
+  }
+
+  .nk-alert-success {
+    @apply nk-alert;
+    background: var(--nk-success-soft);
+    color: var(--nk-success);
+  }
+
+  .nk-alert-warning {
+    @apply nk-alert;
+    background: var(--nk-warning-soft);
+    color: var(--nk-warning);
+  }
+
+  .nk-alert-danger {
+    @apply nk-alert;
+    background: var(--nk-danger-soft);
+    color: var(--nk-danger);
+  }
+
+  .nk-alert-info {
+    @apply nk-alert;
+    background: var(--nk-info-soft);
+    color: var(--nk-info);
+  }
+
+  .nk-status-dot {
+    @apply h-2 w-2 shrink-0 rounded-full;
+    background: currentColor;
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+  }
+
+  .nk-empty {
+    @apply rounded-xl px-4 py-6 text-center text-sm;
+    background: var(--nk-surface-muted);
+    color: var(--nk-muted);
+  }
+
+  .nk-spinner {
+    @apply h-5 w-5 animate-spin rounded-full border-2 motion-reduce:animate-none;
+    border-color: var(--nk-line-strong);
+    border-top-color: var(--nk-accent);
+  }
+
+  .nk-table-wrap {
+    @apply mt-3 overflow-x-auto rounded-xl border;
+    border-color: var(--nk-line);
+  }
+
+  .nk-table {
+    @apply w-full min-w-[42rem] text-xs;
+    color: var(--nk-ink-soft);
+  }
+
+  .nk-table thead {
+    background: var(--nk-surface-muted);
+    color: var(--nk-muted);
+  }
+
+  .nk-table th {
+    @apply px-3 py-2 text-left font-semibold;
+  }
+
+  .nk-table td {
+    @apply border-t px-3 py-2;
+    border-color: var(--nk-line);
+  }
 }
 
-html.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

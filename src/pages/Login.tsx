@@ -5,7 +5,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, DeviceLimitError, REGISTER_URL, type DeviceItem } from "../api/client";
 import { saveAuth } from "../store/auth";
 import { BRAND } from "../lib/brand";
+import {
+  getTargetRenderState,
+  mapLoginTargets,
+  type DetectionStatus,
+  type LoginTarget,
+  type TargetInfo,
+} from "../lib/loginTargets";
 import Logo from "../components/Logo";
+import TargetAppIcon from "../components/TargetAppIcon";
 
 // 设备信息
 function getDeviceId(): string {
@@ -36,6 +44,399 @@ function formatDeviceTime(ts: number): string {
   });
 }
 
+function RefreshIcon({ spinning = false }: { spinning?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+      className={`h-3.5 w-3.5 ${spinning ? "animate-spin motion-reduce:animate-none" : ""}`}
+    >
+      <path
+        d="M16.25 6.75A7 7 0 1 0 17 10"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16.25 3.75v3h-3"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
+      <path
+        d="M6 4h-2.5A1.5 1.5 0 0 0 2 5.5v7A1.5 1.5 0 0 0 3.5 14h7a1.5 1.5 0 0 0 1.5-1.5V10M8.5 2H14v5.5M13.5 2.5 7 9"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+type InstallGuideIconName = "download" | "install" | "launch" | "detect";
+type InstallPlatform = "macOS" | "Windows";
+
+interface InstallGuideStep {
+  title: string;
+  description: string;
+  icon: InstallGuideIconName;
+  tone: string;
+}
+
+function InstallGuideIcon({ name }: { name: InstallGuideIconName }) {
+  const paths: Record<InstallGuideIconName, React.ReactNode> = {
+    download: (
+      <>
+        <path d="M12 3v11" />
+        <path d="m8 10 4 4 4-4" />
+        <path d="M5 19h14" />
+      </>
+    ),
+    install: (
+      <>
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <path d="M3 8h18" />
+        <path d="m9 14 2 2 4-4" />
+      </>
+    ),
+    launch: (
+      <>
+        <rect x="3" y="3" width="18" height="18" rx="4" />
+        <path d="m10 8 6 4-6 4Z" />
+      </>
+    ),
+    detect: (
+      <>
+        <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+        <path d="M20 5v6h-6" />
+      </>
+    ),
+  };
+
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="h-5 w-5"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
+function detectInstallPlatform(): InstallPlatform {
+  return navigator.userAgent.includes("Windows") ? "Windows" : "macOS";
+}
+
+function getTargetShortName(target: LoginTarget): string {
+  return target.id === "codex" ? "ChatGPT" : target.id === "claude-desktop" ? "Claude" : target.name;
+}
+
+function getInstallGuideSteps(target: LoginTarget, platform: InstallPlatform): InstallGuideStep[] {
+  const shortName = getTargetShortName(target);
+  const installDescription =
+    platform === "macOS"
+      ? `打开下载的安装包，将 ${shortName} 放入“应用程序”文件夹`
+      : `运行下载的安装程序，按照系统提示完成 ${shortName} 安装`;
+
+  return [
+    {
+      title: "打开官方下载页",
+      description: `点击下方按钮，进入 ${shortName} 官方下载页面。`,
+      icon: "download",
+      tone: "bg-[var(--nk-info-soft)] text-[var(--nk-info)]",
+    },
+    {
+      title: `下载 ${platform} 版本`,
+      description: `在官网选择适合当前电脑的版本，等待安装包下载完成。`,
+      icon: "install",
+      tone: "bg-[var(--nk-warning-soft)] text-[var(--nk-warning)]",
+    },
+    {
+      title: "完成安装并打开",
+      description: `${installDescription}，安装后启动一次应用。`,
+      icon: "launch",
+      tone: "bg-[var(--nk-danger-soft)] text-[var(--nk-accent)]",
+    },
+    {
+      title: "回到 Niko 重新检测",
+      description: "应用打开后回到这里点击“重新检测”，显示“已安装”即可继续。",
+      icon: "detect",
+      tone: "bg-[var(--nk-success-soft)] text-[var(--nk-success)]",
+    },
+  ];
+}
+
+interface TargetPreparationProps {
+  targets: LoginTarget[];
+  detectionStatus: DetectionStatus;
+  detectionError: string;
+  actionError: string;
+  onDetect: () => void;
+  onOpenInstaller: (target: LoginTarget) => void;
+}
+
+function TargetPreparation({
+  targets,
+  detectionStatus,
+  detectionError,
+  actionError,
+  onDetect,
+  onOpenInstaller,
+}: TargetPreparationProps) {
+  const [selectedTargetId, setSelectedTargetId] = useState("codex");
+  const installedCount = targets.filter((target) => target.installed).length;
+  const missingTargets = targets.filter((target) => !target.installed);
+  const selectedTarget =
+    missingTargets.find((target) => target.id === selectedTargetId) ??
+    missingTargets[0] ??
+    targets[0];
+  const platform = detectInstallPlatform();
+  const guideSteps = selectedTarget ? getInstallGuideSteps(selectedTarget, platform) : [];
+  const allInstalled = detectionStatus === "success" && installedCount === targets.length;
+  const showGuide = detectionStatus === "success" && !allInstalled && selectedTarget;
+  const statusLabel = detectionStatus === "checking"
+    ? "正在检测本机应用"
+    : detectionStatus === "error"
+      ? "检测失败"
+      : allInstalled
+        ? "应用已准备好"
+        : `检测完成 · 还需安装 ${missingTargets.length} 个应用`;
+  const statusDot =
+    detectionStatus === "checking"
+      ? "text-indigo-600 dark:text-indigo-400"
+      : detectionStatus === "success"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-red-600 dark:text-red-400";
+
+  return (
+    <section
+      aria-labelledby="target-preparation-title"
+      className="min-w-0 p-5 sm:p-7 md:flex md:min-h-0 md:flex-col md:overflow-y-auto md:p-8 lg:p-10"
+    >
+      <div className="mx-auto my-auto w-full max-w-5xl">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2
+            id="target-preparation-title"
+            className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+          >
+            先把要接入的应用装好
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-gray-500 dark:text-gray-400">
+            Niko 会自动检查 ChatGPT 和 Claude。未安装时，跟着下面四步操作即可。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDetect}
+          disabled={detectionStatus === "checking"}
+          className="nk-btn-secondary"
+        >
+          <RefreshIcon spinning={detectionStatus === "checking"} />
+          {detectionStatus === "checking" ? "检测中" : "重新检测"}
+        </button>
+      </div>
+
+      <div
+        role="status"
+        aria-live="polite"
+        className={`mt-4 flex items-center gap-2 text-xs font-medium ${statusDot}`}
+      >
+        <span className="nk-status-dot" />
+        {statusLabel}
+      </div>
+
+      {detectionError && (
+        <p
+          role="alert"
+          className="nk-alert-danger mt-3"
+        >
+          {detectionError}
+        </p>
+      )}
+
+      <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {targets.map((target) => {
+          const renderState = getTargetRenderState(detectionStatus, target.installed);
+          const selected = renderState === "missing" && selectedTarget?.id === target.id;
+          return (
+            <button
+              key={target.id}
+              type="button"
+              onClick={() => setSelectedTargetId(target.id)}
+              disabled={renderState !== "missing"}
+              aria-pressed={selected}
+              className={`nk-row min-w-0 text-left transition ${
+                selected
+                  ? "nk-row-selected"
+                  : renderState === "installed"
+                    ? "bg-[var(--nk-success-soft)]"
+                    : ""
+              }`}
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <TargetAppIcon
+                  targetId={target.id}
+                  name={target.name}
+                  icon={target.icon}
+                  size="md"
+                />
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
+                    {target.name}
+                  </h3>
+                  {renderState === "installed" ? (
+                    <p className="mt-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      已安装 · 准备就绪
+                    </p>
+                  ) : renderState === "missing" ? (
+                    <p className="mt-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                      未检测到安装
+                    </p>
+                  ) : renderState === "checking" ? (
+                    <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      正在读取安装状态…
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      暂未获得安装状态
+                    </p>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {actionError && (
+        <p
+          role="alert"
+          className="nk-alert-warning mt-3 break-words"
+        >
+          {actionError}
+        </p>
+      )}
+
+      {detectionStatus === "checking" && (
+        <div className="mt-6 flex min-h-72 flex-col items-center justify-center text-center">
+          <span className="nk-spinner" aria-hidden="true" />
+          <p className="mt-4 text-sm font-medium text-gray-800 dark:text-gray-200">正在查找已安装的应用</p>
+          <p className="mt-1 max-w-sm text-xs leading-5 text-gray-500 dark:text-gray-400">
+            通常只需要几秒钟，请稍候。
+          </p>
+        </div>
+      )}
+
+      {detectionStatus === "error" && (
+        <div className="mt-6 flex min-h-72 flex-col items-center justify-center text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--nk-danger-soft)] text-[var(--nk-danger)]">
+            <RefreshIcon />
+          </div>
+          <p className="mt-4 text-sm font-medium text-gray-800 dark:text-gray-200">暂时没能读取安装状态</p>
+          <p className="mt-1 max-w-sm text-xs leading-5 text-gray-500 dark:text-gray-400">
+            确认应用已经安装后，再点击右上角“重新检测”。
+          </p>
+        </div>
+      )}
+
+      {showGuide && selectedTarget && (
+        <div className="mt-6 border-t pt-6 [border-color:var(--nk-line)]">
+          <div className="flex items-center gap-4">
+            <TargetAppIcon
+              targetId={selectedTarget.id}
+              name={selectedTarget.name}
+              icon={selectedTarget.icon}
+              size="lg"
+            />
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                安装 {selectedTarget.name}
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-gray-500 dark:text-gray-400">
+                当前设备是 {platform}。整个过程通常只需几分钟，安装完成后无需关闭 Niko。
+              </p>
+            </div>
+          </div>
+
+          <ol className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 min-[1120px]:grid-cols-4">
+            {guideSteps.map((step, index) => (
+              <li
+                key={step.title}
+                className="min-w-0 border-l-2 pl-4 [border-color:var(--nk-line)]"
+              >
+                <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${step.tone}`}>
+                  <InstallGuideIcon name={step.icon} />
+                </div>
+                <p className="mt-3 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                  第 {index + 1} 步
+                </p>
+                <h4 className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {step.title}
+                </h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                  {step.description}
+                </p>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-6 flex flex-col gap-3 border-t pt-4 [border-color:var(--nk-line)] sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs leading-5 text-gray-500 dark:text-gray-400">
+              下载与安装都在 {getTargetShortName(selectedTarget)} 官方页面完成。
+            </p>
+            <button
+              type="button"
+              onClick={() => onOpenInstaller(selectedTarget)}
+              className="nk-btn-primary w-full sm:w-auto"
+            >
+              打开 {getTargetShortName(selectedTarget)} 官方下载页
+              <ExternalLinkIcon />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {allInstalled && (
+        <div className="mt-6 flex min-h-72 flex-col items-center justify-center text-center">
+          <div className="flex items-center gap-3">
+            {targets.map((target) => (
+              <TargetAppIcon
+                key={target.id}
+                targetId={target.id}
+                name={target.name}
+                icon={target.icon}
+                size="lg"
+              />
+            ))}
+          </div>
+          <p className="mt-5 text-base font-semibold text-gray-900 dark:text-gray-100">应用已经准备好了</p>
+          <p className="mt-1 max-w-md text-sm leading-6 text-gray-500 dark:text-gray-400">
+            现在可以在右侧登录 Niko。登录后选择应用和模型，即可完成接入。
+          </p>
+        </div>
+      )}
+      </div>
+    </section>
+  );
+}
+
 export default function Login() {
   const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("login");
@@ -46,6 +447,11 @@ export default function Login() {
   const [code, setCode] = useState("");
 
   const [remember, setRemember] = useState(false);
+
+  const [targets, setTargets] = useState<LoginTarget[]>(() => mapLoginTargets([]));
+  const [detectionStatus, setDetectionStatus] = useState<DetectionStatus>("checking");
+  const [detectionError, setDetectionError] = useState("");
+  const [targetActionError, setTargetActionError] = useState("");
 
   // 设备数达上限：登录页当场列出旧设备供用户勾选退出，避免被挡在门外
   const [devices, setDevices] = useState<DeviceItem[]>([]);
@@ -68,6 +474,34 @@ export default function Login() {
       })
       .catch(() => {});
   }, []);
+
+  const detectTargets = async () => {
+    setDetectionStatus("checking");
+    setDetectionError("");
+    setTargetActionError("");
+    setTargets(mapLoginTargets([]));
+    try {
+      const list = await invoke<TargetInfo[]>("list_targets");
+      setTargets(mapLoginTargets(list));
+      setDetectionStatus("success");
+    } catch {
+      setDetectionStatus("error");
+      setDetectionError("未能读取本机应用状态，请重新检测。");
+    }
+  };
+
+  useEffect(() => {
+    void detectTargets();
+  }, []);
+
+  const handleOpenInstaller = async (target: LoginTarget) => {
+    setTargetActionError("");
+    try {
+      await open(target.downloadUrl);
+    } catch {
+      setTargetActionError(`无法打开浏览器，请手动访问：${target.downloadUrl}`);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,13 +626,27 @@ export default function Login() {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-transparent">
-      <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-white/5 p-8 shadow-xl">
-        <div className="mb-8 text-center">
+    <main className="min-h-screen overflow-y-auto md:h-screen md:overflow-hidden">
+      <div className="grid min-h-screen w-full md:h-full md:min-h-0 md:grid-cols-[minmax(0,1fr)_minmax(320px,360px)]">
+        <TargetPreparation
+          targets={targets}
+          detectionStatus={detectionStatus}
+          detectionError={detectionError}
+          actionError={targetActionError}
+          onDetect={() => void detectTargets()}
+          onOpenInstaller={(target) => void handleOpenInstaller(target)}
+        />
+
+        <section
+          aria-labelledby="login-title"
+          className="flex min-w-0 flex-col border-t bg-white/55 p-6 [border-color:var(--nk-line)] dark:bg-white/[0.025] sm:p-8 md:min-h-0 md:overflow-y-auto md:border-l md:border-t-0"
+        >
+          <div className="mx-auto my-auto w-full max-w-sm">
+        <div className="mb-7 text-center">
           <div className="mb-3 flex justify-center">
             <Logo size={56} />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{BRAND.name}</h1>
+          <h1 id="login-title" className="sr-only">{BRAND.name}</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             {stage === "login"
               ? BRAND.tagline
@@ -209,7 +657,10 @@ export default function Login() {
         </div>
 
         {error && (
-          <div className="mb-4 rounded-lg bg-red-500/10 px-4 py-2 text-sm text-red-600 dark:text-red-300">
+          <div
+            role="alert"
+            className="nk-alert-danger mb-4 text-sm"
+          >
             {error}
           </div>
         )}
@@ -220,13 +671,13 @@ export default function Login() {
               已登录 {devices.length}
               {deviceLimit > 0 && ` / ${deviceLimit}`} 台。勾选不再使用的设备，退出后即可继续登录。
             </p>
-            <div className="max-h-56 space-y-2 overflow-y-auto">
+            <div className="max-h-44 space-y-2 overflow-y-auto">
               {devices.map((d) => {
                 const checked = selectedDevices.includes(d.id);
                 return (
                   <label
                     key={d.id}
-                    className="flex cursor-pointer items-center gap-3 rounded-xl bg-black/[0.03] px-3 py-2 dark:bg-white/5"
+                    className="nk-row flex cursor-pointer items-center gap-3"
                   >
                     <input
                       type="checkbox"
@@ -255,7 +706,7 @@ export default function Login() {
               type="button"
               onClick={handleRevokeAndLogin}
               disabled={loading || selectedDevices.length === 0}
-              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="nk-btn-primary w-full py-2 text-sm"
             >
               {loading
                 ? "处理中…"
@@ -265,7 +716,7 @@ export default function Login() {
               type="button"
               onClick={() => { setStage(limitFrom); setError(""); }}
               disabled={loading}
-              className="w-full text-sm text-gray-500 transition hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+              className="nk-btn-ghost w-full text-sm"
             >
               ← 返回
             </button>
@@ -273,24 +724,24 @@ export default function Login() {
         ) : stage === "login" ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">账号</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">账号</label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="nk-input w-full"
                 placeholder="用户名或邮箱"
                 autoComplete="username"
                 disabled={loading}
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">密码</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">密码</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="nk-input w-full"
                 placeholder="••••••••"
                 autoComplete="current-password"
                 disabled={loading}
@@ -311,7 +762,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="nk-btn-primary w-full py-2 text-sm"
             >
               {loading ? "登录中…" : "登录"}
             </button>
@@ -320,7 +771,7 @@ export default function Login() {
             <button
               type="button"
               onClick={() => open(REGISTER_URL)}
-              className="w-full text-center text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400 transition hover:text-gray-800 dark:text-gray-200"
+              className="nk-btn-ghost w-full text-center"
             >
               还没有账号？前往官网注册
             </button>
@@ -328,7 +779,7 @@ export default function Login() {
         ) : (
           <form onSubmit={handle2FA} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">6 位验证码</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">6 位验证码</label>
               <input
                 type="text"
                 inputMode="numeric"
@@ -336,7 +787,7 @@ export default function Login() {
                 maxLength={6}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                className="w-full rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-center text-lg tracking-widest text-gray-900 dark:text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500"
+                className="nk-input w-full text-center text-lg"
                 placeholder="000000"
                 autoFocus
                 disabled={loading}
@@ -345,20 +796,22 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="nk-btn-primary w-full py-2 text-sm"
             >
               {loading ? "验证中…" : "确认"}
             </button>
             <button
               type="button"
               onClick={() => { setStage("login"); setCode(""); setError(""); }}
-              className="w-full text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400 hover:text-gray-800 dark:text-gray-200"
+              className="nk-btn-ghost w-full text-sm"
             >
               ← 返回登录
             </button>
           </form>
         )}
+          </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }

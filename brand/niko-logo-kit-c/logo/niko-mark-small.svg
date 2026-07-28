@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Niko small-size mark</title>
+  <desc id="desc">An optically simplified Niko mark for display at 16 to 32 pixels.</desc>
+  <defs>
+    <linearGradient id="niko-small-gradient" x1="210" y1="490" x2="824" y2="490" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#78C5DF"/>
+      <stop offset="0.5" stop-color="#F3D47F"/>
+      <stop offset="1" stop-color="#EE9288"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#niko-small-gradient)" d="M314 166C257 166 216 207 216 265V721C216 785 245 824 289 824C335 824 358 785 357 725L352 500C351 449 369 414 398 414C439 414 470 467 505 530L565 638C622 741 677 824 739 824C784 824 812 782 812 721V244C812 192 785 162 748 162C706 162 681 196 682 243L687 444C688 493 671 520 640 520C607 520 575 476 540 422L438 266C393 196 354 166 314 166Z"/>
+</svg>

@@ -10,10 +10,9 @@ import InstallGuide from "./pages/InstallGuide";
 import { loadAuth, saveAuth } from "./store/auth";
 import { api } from "./api/client";
 import { initTheme } from "./hooks/useTheme";
+import { APP_VERSION } from "./lib/version";
 
 initTheme();
-
-const APP_VERSION = "0.1.0";
 
 /** semver: a < b → true */
 function semverLt(a: string, b: string): boolean {
@@ -65,8 +64,13 @@ function VersionGate({ children }: { children: React.ReactNode }) {
 
   if (!checked) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <span className="text-sm text-gray-500 dark:text-gray-400">加载中…</span>
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex h-screen flex-col items-center justify-center gap-3"
+      >
+        <span className="nk-spinner" aria-hidden="true" />
+        <span className="nk-muted">正在准备 Niko…</span>
       </div>
     );
   }

@@ -1,0 +1,7 @@
+Refine the supplied Niko "Option C" logo into a production-quality flat vector-style master reference.
+
+Preserve its unmistakable identity: one continuous, rounded uppercase N silhouette; a friendly pastel gradient flowing left-to-right from soft sky blue through warm butter yellow into apricot coral; welcoming to children, adults, and older users.
+
+Improve only the craft: make the silhouette a single coherent ribbon-like form with clean optical balance, smooth continuous Bézier-like curvature, coordinated rounded end caps, harmonious left/right proportions, and elegant transitions through the central diagonal. Remove any seams, overlaps, bumps, dents, gaps, pinches, or abrupt changes of direction. The N should remain immediately readable at small sizes.
+
+Render one isolated centered mark only on a pure white background, with generous even margins. Flat 2D identity design, crisp antialiased edges, no outline, no border, no wordmark, no extra icon, no texture, no grain, no gloss, no shadow, no glow, no mockup, no 3D, and no background decoration. Keep the gradient subtle and luminous rather than neon.

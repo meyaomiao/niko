@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Niko — 一键接入 AI 助手的桌面工具</title>
+    <meta
+      name="description"
+      content="Niko 是一款轻量桌面工具，帮你把可用模型接入 ChatGPT 与 Claude 桌面端，无需手动寻找配置文件或复制密钥。"
+    />
+    <meta name="theme-color" content="#fffaf5" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://niko-ai.cc/" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="/assets/niko-app-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles-wordmark.css" />
+    <script type="module" src="/js/site-session.js"></script>
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Niko" />
+    <meta property="og:title" content="Niko — 把模型接进你已经在用的 AI 应用" />
+    <meta
+      property="og:description"
+      content="选择应用、分组和模型，Niko 自动完成配置，并在写入前保存快照。"
+    />
+    <meta property="og:url" content="https://niko-ai.cc/" />
+    <meta property="og:image" content="https://niko-ai.cc/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Niko 桌面端 AI 接入工具" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Niko — 把模型接进你已经在用的 AI 应用" />
+    <meta
+      name="twitter:description"
+      content="无需手动找配置文件、复制接口地址或密钥。"
+    />
+    <meta name="twitter:image" content="https://niko-ai.cc/og.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Niko",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 12+, Windows 10+",
+        "description": "将可用模型配置接入 ChatGPT 与 Claude 桌面端的轻量桌面工具。",
+        "url": "https://niko-ai.cc/",
+        "downloadUrl": "https://github.com/meyaomiao/niko/releases",
+        "softwareVersion": "0.1.1"
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Niko 首页">
+        <img
+          src="/assets/niko-lockup-horizontal.svg"
+          alt="Niko"
+          width="168"
+          height="60"
+        />
+      </a>
+      <nav aria-label="主导航">
+        <a href="#features">功能</a>
+        <a href="#principles">理念</a>
+        <a href="#download">安装</a>
+        <a href="#roadmap">未来</a>
+      </nav>
+      <div class="header-actions">
+        <a
+          class="header-source"
+          href="https://github.com/meyaomiao/niko"
+          target="_blank"
+          rel="noreferrer"
+        >GitHub <span aria-hidden="true">↗</span></a>
+        <div class="account-nav" data-session-nav aria-busy="true">
+          <span class="account-auth-links" data-logged-out hidden>
+            <a href="/login/">登录</a>
+            <a class="account-register" href="/register/">注册</a>
+          </span>
+          <a class="account-center" href="/account/" data-logged-in hidden>
+            <span data-account-name>个人中心</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span> 桌面端 AI 接入工具</p>
+          <h1>
+            <img
+              class="hero-wordmark"
+              src="/assets/niko-wordmark.svg"
+              alt="Niko"
+              width="680"
+              height="260"
+            />
+            <span>把模型接进你已经在用的 AI 应用。</span>
+          </h1>
+          <p class="hero-text">
+            登录账号，选择应用、分组和模型。Niko 会自动把需要的配置写入
+            ChatGPT 或 Claude 桌面端，不用找配置文件，也不用复制 API 地址和密钥。
+          </p>
+          <div class="hero-actions">
+            <a
+              class="button button-primary"
+              href="https://github.com/meyaomiao/niko/releases"
+              target="_blank"
+              rel="noreferrer"
+            >查看 Releases <span aria-hidden="true">↗</span></a>
+            <a
+              class="button button-secondary"
+              href="https://github.com/meyaomiao/niko"
+              target="_blank"
+              rel="noreferrer"
+            >查看源码</a>
+          </div>
+          <p class="platform-note">支持 macOS 12+ 与 Windows 10+ · 当前公开版本正在准备中</p>
+        </div>
+
+        <div class="product-stage" aria-label="Niko 产品工作流示意">
+          <div class="app-window">
+            <div class="window-bar">
+              <div class="window-brand">
+                <img src="/assets/niko-mark.svg" alt="" width="30" height="30" />
+                <strong>Niko</strong>
+              </div>
+              <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+            </div>
+            <div class="workflow-intro">
+              <span>准备接入</span>
+              <strong>三步完成配置</strong>
+            </div>
+            <ol class="workflow-list">
+              <li>
+                <span class="step-number">1</span>
+                <div><small>选择应用</small><strong>ChatGPT 或 Claude</strong></div>
+                <span class="step-state detected">已检测</span>
+              </li>
+              <li>
+                <span class="step-number">2</span>
+                <div><small>选择模型</small><strong>按分组查看可用模型</strong></div>
+                <span class="step-state">选择</span>
+              </li>
+              <li>
+                <span class="step-number">3</span>
+                <div><small>安全写入</small><strong>保存快照后更新配置</strong></div>
+                <span class="step-state protected">可恢复</span>
+              </li>
+            </ol>
+            <div class="window-action">
+              <span>原有设置会尽量保留</span>
+              <span class="mock-button">启用</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="intro-band" aria-labelledby="intro-title">
+        <p class="section-kicker">为什么有 Niko</p>
+        <div>
+          <h2 id="intro-title">它不是另一个聊天窗口。</h2>
+          <p>
+            Niko 只负责把账号和模型安全地接入官方应用。真正的对话、代码与工具调用，仍然发生在
+            ChatGPT 或 Claude 里。少一层界面，也少一套需要维护的配置。
+          </p>
+        </div>
+      </section>
+
+      <section class="features section" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="section-kicker">真实功能</p>
+          <h2 id="features-title">从“想用”到“已经能用”，都放在一个流程里。</h2>
+        </div>
+        <div class="feature-list">
+          <article>
+            <p class="feature-index">01</p>
+            <h3>自动找到应用</h3>
+            <p>检测本机已安装的 ChatGPT 与 Claude 桌面端，选中一个或全部应用后再接入。</p>
+          </article>
+          <article>
+            <p class="feature-index">02</p>
+            <h3>选分组，也选模型</h3>
+            <p>登录 Niko 账号后查看可用分组、模型、价格与兼容情况，再把选择写入目标应用。</p>
+          </article>
+          <article>
+            <p class="feature-index">03</p>
+            <h3>写入前先留后路</h3>
+            <p>修改配置前保存快照；需要退出接入时，可以恢复历史快照或官方默认配置。</p>
+          </article>
+          <article>
+            <p class="feature-index">04</p>
+            <h3>配置后立即检查</h3>
+            <p>启动或重启目标应用，并通过连通性测试确认当前配置是否真的可以请求模型。</p>
+          </article>
+          <article>
+            <p class="feature-index">05</p>
+            <h3>日常信息不再分散</h3>
+            <p>查看余额、用量与设备，完成充值、更新、主题切换、开机启动、托盘和脱敏日志导出。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="principles section" id="principles" aria-labelledby="principles-title">
+        <div class="principles-copy">
+          <p class="section-kicker">设计理念</p>
+          <h2 id="principles-title">尽量少动，随时能退。</h2>
+          <p>
+            Niko 不在本地运行代理服务。协议适配由账户服务完成，客户端只修改接入所需字段，并尽量保留原有设置。
+          </p>
+        </div>
+        <dl class="principle-list">
+          <div>
+            <dt>简单</dt>
+            <dd>登录、选应用、选模型、启用，一条清楚的主路径。</dd>
+          </div>
+          <div>
+            <dt>轻量</dt>
+            <dd>没有常驻本地网关，不再多维护一层代理。</dd>
+          </div>
+          <div>
+            <dt>可恢复</dt>
+            <dd>写入前保存快照，失败时回滚，也能恢复官方默认。</dd>
+          </div>
+          <div>
+            <dt>少暴露密钥</dt>
+            <dd>无需查看或复制 API Key；登录信息保存在系统凭证存储中。</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="download section" id="download" aria-labelledby="download-title">
+        <div class="download-copy">
+          <p class="section-kicker">开始使用</p>
+          <h2 id="download-title">安装 Niko，然后把配置交给它。</h2>
+          <p>
+            正式安装包将通过 GitHub Releases 提供。当前公开版本仍在准备中；发布后同一入口会提供
+            macOS 的 <code>.dmg</code> 与 Windows 的 <code>.msi</code> / <code>.exe</code>。
+          </p>
+          <a
+            class="button button-primary"
+            href="https://github.com/meyaomiao/niko/releases"
+            target="_blank"
+            rel="noreferrer"
+          >前往 GitHub Releases <span aria-hidden="true">↗</span></a>
+        </div>
+        <ol class="install-steps">
+          <li><span>1</span><div><strong>安装并打开</strong><p>macOS 12+ 或 Windows 10+</p></div></li>
+          <li><span>2</span><div><strong>登录 Niko</strong><p>官网与桌面端使用同一账号</p></div></li>
+          <li><span>3</span><div><strong>选择并启用</strong><p>按提示重启应用，再做连通性测试</p></div></li>
+        </ol>
+      </section>
+
+      <section class="roadmap section" id="roadmap" aria-labelledby="roadmap-title">
+        <div class="section-heading compact">
+          <p class="section-kicker">未来方向</p>
+          <h2 id="roadmap-title">继续把复杂留在工具里。</h2>
+        </div>
+        <div class="roadmap-line">
+          <p><span>下一步</span> 支持更多官方 AI 客户端与命令行工具</p>
+          <p><span>持续</span> 完善不同客户端版本的兼容检测</p>
+          <p><span>持续</span> 改进诊断、故障提示与配置恢复</p>
+          <p><span>计划</span> 完善 Windows 代码签名与安装体验</p>
+        </div>
+      </section>
+
+      <section class="final-cta" aria-labelledby="final-title">
+        <img src="/assets/niko-mark.svg" alt="" width="84" height="84" />
+        <p class="section-kicker">Niko</p>
+        <h2 id="final-title">配置少一点，开始快一点。</h2>
+        <div class="hero-actions">
+          <a
+            class="button button-primary"
+            href="https://github.com/meyaomiao/niko/releases"
+            target="_blank"
+            rel="noreferrer"
+          >查看 Releases</a>
+          <a
+            class="button button-secondary"
+            href="https://github.com/meyaomiao/niko/issues"
+            target="_blank"
+            rel="noreferrer"
+          >提交问题</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-brand">
+        <img src="/assets/niko-mark.svg" alt="" width="36" height="36" />
+        <div><strong>Niko</strong><span>桌面端 AI 接入工具</span></div>
+      </div>
+      <p>账号、余额、充值与模型消费在 Niko 的统一账户中管理。</p>
+      <div class="footer-links">
+        <a href="https://github.com/meyaomiao/niko" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/meyaomiao/niko/issues" target="_blank" rel="noreferrer">问题反馈</a>
+        <a href="/account/">个人中心</a>
+      </div>
+      <p class="copyright">© 2026 Niko</p>
+    </footer>
+  </body>
+</html>

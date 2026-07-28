@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1400" role="img" aria-labelledby="title desc">
+  <title id="title">Niko logo usage guide</title>
+  <desc id="desc">Clear space, minimum sizes, and incorrect usage guidance.</desc>
+  <defs>
+    <linearGradient id="niko-gradient" x1="210" y1="490" x2="824" y2="490" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#78C5DF"/>
+      <stop offset="0.42" stop-color="#F3D47F"/>
+      <stop offset="0.70" stop-color="#F5AD78"/>
+      <stop offset="1" stop-color="#EE9288"/>
+    </linearGradient>
+    <filter id="wrong-shadow"><feDropShadow dx="18" dy="18" stdDeviation="12" flood-color="#162038" flood-opacity="0.45"/></filter>
+  </defs>
+  <rect width="1800" height="1400" fill="#F7F9FC"/>
+  <text x="90" y="110" fill="#22304A" font-family="Arial, sans-serif" font-size="54" font-weight="700">Niko Logo Usage Guide</text>
+  <text x="90" y="160" fill="#667085" font-family="Arial, sans-serif" font-size="24">Clear space · minimum size · incorrect use</text>
+  <rect x="90" y="220" width="780" height="640" rx="36" fill="#FFFFFF"/>
+  <text x="140" y="290" fill="#22304A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Clear space</text>
+  <rect x="225" y="350" width="510" height="420" fill="none" stroke="#78C5DF" stroke-width="4" stroke-dasharray="14 12"/>
+  <path fill="none" stroke="#EE9288" stroke-width="3" d="M225 325V350M735 325V350M200 350H225M200 770H225"/>
+  <text x="465" y="335" text-anchor="middle" fill="#EE9288" font-family="Arial, sans-serif" font-size="22">x</text>
+  <path fill="url(#niko-gradient)" transform="translate(205 275) scale(.54)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/>
+  <text x="140" y="820" fill="#667085" font-family="Arial, sans-serif" font-size="22">Keep x = ¼ mark width clear on all sides.</text>
+  <rect x="920" y="220" width="790" height="300" rx="36" fill="#FFFFFF"/>
+  <text x="970" y="290" fill="#22304A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Minimum digital size</text>
+  <g transform="translate(975 340)"><path fill="url(#niko-gradient)" transform="scale(.0625)" d="M314 166C257 166 216 207 216 265V721C216 785 245 824 289 824C335 824 358 785 357 725L352 500C351 449 369 414 398 414C439 414 470 467 505 530L565 638C622 741 677 824 739 824C784 824 812 782 812 721V244C812 192 785 162 748 162C706 162 681 196 682 243L687 444C688 493 671 520 640 520C607 520 575 476 540 422L438 266C393 196 354 166 314 166Z"/></g>
+  <text x="1007" y="445" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">16 px small</text>
+  <g transform="translate(1160 320)"><path fill="url(#niko-gradient)" transform="scale(.09375)" d="M314 166C257 166 216 207 216 265V721C216 785 245 824 289 824C335 824 358 785 357 725L352 500C351 449 369 414 398 414C439 414 470 467 505 530L565 638C622 741 677 824 739 824C784 824 812 782 812 721V244C812 192 785 162 748 162C706 162 681 196 682 243L687 444C688 493 671 520 640 520C607 520 575 476 540 422L438 266C393 196 354 166 314 166Z"/></g>
+  <text x="1208" y="445" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">24 px mark</text>
+  <g transform="translate(1375 295)"><path fill="url(#niko-gradient)" transform="scale(.14)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/></g>
+  <text x="1447" y="445" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">32 px preferred</text>
+  <text x="970" y="490" fill="#667085" font-family="Arial, sans-serif" font-size="20">Horizontal lockup: 120 px wide · Print mark: 8 mm</text>
+  <rect x="920" y="560" width="790" height="650" rx="36" fill="#FFFFFF"/>
+  <text x="970" y="630" fill="#22304A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Incorrect use</text>
+  <g transform="translate(980 680)"><path fill="url(#niko-gradient)" transform="rotate(12 512 512) scale(.19)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/></g>
+  <path d="M980 680L1175 875M1175 680L980 875" stroke="#E5484D" stroke-width="12"/>
+  <text x="1078" y="920" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">Do not rotate</text>
+  <g transform="translate(1250 695) scale(.28 .17)"><path fill="url(#niko-gradient)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/></g>
+  <path d="M1250 680L1535 875M1535 680L1250 875" stroke="#E5484D" stroke-width="12"/>
+  <text x="1392" y="920" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">Do not distort</text>
+  <g transform="translate(980 940)"><path fill="#F3D47F" transform="scale(.19)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/></g>
+  <path d="M980 940L1175 1135M1175 940L980 1135" stroke="#E5484D" stroke-width="12"/>
+  <text x="1078" y="1180" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">Do not recolor</text>
+  <g transform="translate(1250 940)" filter="url(#wrong-shadow)"><path fill="url(#niko-gradient)" transform="scale(.19)" d="M310 152C256 152 210 197 210 260V724C210 789 240 834 286 834C333 834 356 792 355 730C354 651 350 564 348 494C347 442 365 404 394 404C439 404 468 458 503 523L566 638C624 744 678 834 744 834C792 834 824 788 824 722V234C824 179 793 146 750 146C703 146 674 182 675 238C676 301 678 383 679 446C680 496 664 525 635 525C600 525 568 478 534 425L435 270C389 197 350 152 310 152Z"/></g>
+  <path d="M1250 940L1445 1135M1445 940L1250 1135" stroke="#E5484D" stroke-width="12"/>
+  <text x="1348" y="1180" text-anchor="middle" fill="#667085" font-family="Arial, sans-serif" font-size="20">No effects or outlines</text>
+  <text x="90" y="1325" fill="#667085" font-family="Arial, sans-serif" font-size="22">Never crop, crowd, rebuild, or place the full-color mark on low-contrast imagery.</text>
+</svg>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>注册 Niko</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles-wordmark.css" />
+    <link rel="stylesheet" href="/account.css" />
+    <script
+      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+      async
+      defer
+    ></script>
+    <script type="module" src="/js/auth.js"></script>
+  </head>
+  <body class="account-body" data-auth-page="register">
+    <a class="skip-link" href="#main">跳到注册表单</a>
+    <header class="account-header">
+      <a class="brand" href="/" aria-label="Niko 首页">
+        <img src="/assets/niko-lockup-horizontal.svg" alt="Niko" width="168" height="60" />
+      </a>
+      <a class="text-link" href="/">返回首页</a>
+    </header>
+
+    <main class="auth-layout" id="main">
+      <section class="auth-intro" aria-labelledby="auth-intro-title">
+        <img class="auth-intro-mark" src="/assets/niko-mark.svg" alt="" width="64" height="64" />
+        <p class="account-eyebrow">创建账号</p>
+        <h1 id="auth-intro-title">从 Niko 开始，账号仍然是同一个。</h1>
+        <p>
+          你在官网创建的账号也可用于 Niko 桌面端。注册完成后登录，即可绑定邮箱、充值并查看统一账单。
+        </p>
+        <ul class="trust-points">
+          <li><span>✓</span><p>官网与桌面端共用一套账号</p></li>
+          <li><span>✓</span><p>邮箱可在个人中心完成绑定</p></li>
+          <li><span>✓</span><p>注册完成后由你主动登录</p></li>
+        </ul>
+      </section>
+
+      <section class="auth-panel" aria-labelledby="form-title">
+        <div class="auth-panel-header">
+          <h2 id="form-title">注册</h2>
+          <p>创建用户名与密码，邮箱稍后可以在个人中心绑定。</p>
+        </div>
+        <form data-auth-form novalidate>
+          <label class="field">
+            <span class="field-label">
+              用户名
+              <span class="field-help">2–32 个字符</span>
+            </span>
+            <input
+              name="username"
+              type="text"
+              autocomplete="username"
+              minlength="2"
+              maxlength="32"
+              required
+              placeholder="设置用户名"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">
+              密码
+              <span class="field-help">至少 8 个字符</span>
+            </span>
+            <span class="input-wrap">
+              <input
+                class="password-input"
+                name="password"
+                type="password"
+                autocomplete="new-password"
+                minlength="8"
+                maxlength="128"
+                required
+                placeholder="设置密码"
+              />
+              <button class="password-toggle" type="button" data-password-toggle>显示</button>
+            </span>
+          </label>
+          <label class="field">
+            <span class="field-label">确认密码</span>
+            <span class="input-wrap">
+              <input
+                class="password-input"
+                name="password_confirmation"
+                type="password"
+                autocomplete="new-password"
+                minlength="8"
+                maxlength="128"
+                required
+                placeholder="再次输入密码"
+              />
+              <button class="password-toggle" type="button" data-password-toggle>显示</button>
+            </span>
+          </label>
+          <div class="turnstile-field" data-turnstile-container>
+            <div class="turnstile-loading">正在准备安全验证…</div>
+          </div>
+          <p class="form-status" data-form-status role="status" aria-live="polite"></p>
+          <button class="form-submit" type="submit" data-submit>创建账号</button>
+        </form>
+        <p class="auth-switch">已经有账号？<a href="/login/">直接登录</a></p>
+      </section>
+    </main>
+  </body>
+</html>

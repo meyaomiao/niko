@@ -1,5 +1,7 @@
 // momotoken 登录器 API 客户端
 
+import { APP_VERSION } from "../lib/version";
+
 const BASE_URL = "https://momotoken.win";
 
 /** 网页端注册页，登录器无注册功能，引导用户去官网注册 */
@@ -211,7 +213,7 @@ export const api = {
       device_id: params.deviceId,
       device_name: params.deviceName,
       platform: params.platform,
-      app_version: "0.1.0",
+      app_version: APP_VERSION,
       revoke_session_ids: params.revokeSessionIds,
     });
   },

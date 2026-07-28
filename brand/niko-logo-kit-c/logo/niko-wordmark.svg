@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 260" role="img" aria-labelledby="title desc">
+  <title id="title">Niko wordmark</title>
+  <desc id="desc">A custom rounded geometric Niko wordmark with no font dependency.</desc>
+  <g fill="none" stroke="#22304A" stroke-width="38" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 208V52L210 208V52"/>
+    <path d="M286 112V208"/>
+    <circle cx="286" cy="62" r="20" fill="#22304A" stroke="none"/>
+    <path d="M365 52V208M377 150L454 96M377 150L462 210"/>
+    <ellipse cx="555" cy="154" rx="63" ry="58"/>
+  </g>
+</svg>

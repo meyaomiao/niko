@@ -3,11 +3,13 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Logo from "../components/Logo";
 import { BRAND } from "../lib/brand";
+import { ArrowLeftIcon } from "../components/Icons";
 
-const CARD = "rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5";
-const SUBTLE = "text-xs text-gray-500 dark:text-gray-400";
-const CODE = "rounded bg-black/[0.04] px-1 text-gray-700 dark:bg-white/10 dark:text-gray-300";
+const CARD = "nk-card";
+const SUBTLE = "nk-muted";
+const CODE = "rounded-md bg-[var(--nk-surface-muted)] px-1.5 py-0.5 text-gray-700 dark:text-gray-300";
 const STRONG = "mx-1 font-medium text-gray-800 dark:text-gray-200";
 
 type Platform = "macos" | "windows";
@@ -22,35 +24,34 @@ export default function InstallGuide() {
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
 
   return (
-    <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 px-5 py-3 dark:border-white/10">
+    <div className="nk-shell">
+      <header className="nk-header">
         <button
           onClick={() => navigate("/home")}
           aria-label="返回首页"
-          className="text-gray-500 transition hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+          className="nk-btn-ghost px-2.5"
         >
-          ←
+          <ArrowLeftIcon />
         </button>
-        <h1 className="text-sm font-semibold text-gray-900 dark:text-white">
-          {BRAND.name} 安装说明
-        </h1>
+        <Logo size={24} />
+        <h1 className="nk-title">安装说明</h1>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-5 py-4">
+      <main className="nk-page">
         <div className="mx-auto max-w-3xl space-y-3">
           <div className={CARD}>
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               为什么系统会拦一下？
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              {BRAND.fullName} 目前没有购买代码签名证书，macOS 的 Gatekeeper 和 Windows 的
+              本应用目前没有购买代码签名证书，macOS 的 Gatekeeper 和 Windows 的
               SmartScreen 都会对未知发布者的安装包弹一次提示。这是系统的标准行为，不代表程序有安全风险。
               所有版本都在 GitHub Actions 公开构建，可用 SHA256 校验和自行核验下载文件。
             </p>
           </div>
 
-          <div className="flex gap-1 border-b border-black/5 dark:border-white/10">
-            {([["macos", "🍎 macOS"], ["windows", "🪟 Windows"]] as const).map(([id, label]) => (
+          <div className="flex gap-1 border-b [border-color:var(--nk-line)]">
+            {([["macos", "macOS"], ["windows", "Windows"]] as const).map(([id, label]) => (
               <button
                 key={id}
                 onClick={() => setPlatform(id)}
@@ -77,7 +78,7 @@ export default function InstallGuide() {
                 </Step>
 
                 <Step num={2} title="首次启动会提示无法验证开发者">
-                  <Note title="📘 提示">
+                  <Note title="提示">
                     弹窗文字通常是「无法打开“{BRAND.name}”，因为 Apple 无法检查其是否包含恶意软件」，
                     此时只有「移到废纸篓」和「好」两个按钮，直接双击是打不开的。
                   </Note>
@@ -87,7 +88,7 @@ export default function InstallGuide() {
                   <p className={SUBTLE}>
                     在「应用程序」里
                     <span className={STRONG}>按住 Control 点击</span>
-                    （或右键）{BRAND.name} 图标，选择
+                    （或右键）应用图标，选择
                     <span className={STRONG}>打开</span>，
                     在新弹窗里再点一次「打开」即可。这一步只需做一次，之后正常双击启动。
                   </p>
@@ -114,7 +115,7 @@ export default function InstallGuide() {
                 </Step>
 
                 <Step num={2} title="运行安装包，出现 SmartScreen 弹窗">
-                  <Note title="📘 提示">
+                  <Note title="提示">
                     弹窗标题通常为「Windows 已保护你的电脑」，这是 Windows
                     对未知发布者安装包的标准提示，不代表程序存在安全风险。
                   </Note>
@@ -144,9 +145,9 @@ export default function InstallGuide() {
               还没装 ChatGPT 桌面端或 Claude 桌面端？
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              {BRAND.name} 负责把账号和模型配置写进这些应用，本身不替代它们。请先从官网装好
+              本应用负责把账号和模型配置写进这些应用，本身不替代它们。请先从官网装好
               ChatGPT 桌面端或 Claude 桌面端，再回到首页选择应用并一键接入，
-              {BRAND.name} 会自动检测到已安装的应用。
+              本应用会自动检测到已安装的应用。
             </p>
           </div>
         </div>
@@ -157,9 +158,9 @@ export default function InstallGuide() {
 
 function Note({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mt-2 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
-      <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">{title}</p>
-      <p className="mt-1 text-xs text-blue-700 dark:text-blue-200">{children}</p>
+    <div className="nk-alert-info mt-2 p-4">
+      <p className="text-xs font-semibold">{title}</p>
+      <p className="mt-1 text-xs">{children}</p>
     </div>
   );
 }
@@ -167,7 +168,7 @@ function Note({ title, children }: { title: string; children: React.ReactNode })
 function Step({ num, title, children }: { num: number; title: string; children: React.ReactNode }) {
   return (
     <li className="flex gap-4">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-500/10 text-xs font-bold text-indigo-600 dark:text-indigo-400">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--nk-info-soft)] text-xs font-bold text-[var(--nk-info)]">
         {num}
       </div>
       <div className="min-w-0 pt-0.5">

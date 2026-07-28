@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
-import { BRAND } from "../lib/brand";
+import Logo from "../components/Logo";
+import { UpdateIcon } from "../components/Icons";
 
 interface ForceUpgradeProps {
   currentVersion: string;
@@ -23,15 +24,17 @@ export default function ForceUpgrade({
   };
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center bg-transparent px-8">
-      <div className="w-full max-w-sm space-y-6 text-center">
+    <main className="flex min-h-screen flex-col items-center justify-center px-6 py-8">
+      <div className="nk-card w-full max-w-sm space-y-6 text-center">
         {/* 图标 */}
-        <div className="text-5xl">⬆️</div>
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[var(--nk-info-soft)] text-[var(--nk-info)]">
+          <UpdateIcon className="h-7 w-7" />
+        </div>
 
         {/* 标题 */}
         <div>
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white">需要更新</h1>
-          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-400">
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
             当前版本 <span className="text-gray-900 dark:text-white">v{currentVersion}</span> 已过旧，
             请升级至 <span className="text-gray-900 dark:text-white">v{minVersion}</span> 或以上版本继续使用。
           </p>
@@ -39,8 +42,8 @@ export default function ForceUpgrade({
 
         {/* 更新说明（可选） */}
         {announcement && (
-          <div className="rounded-xl bg-white dark:bg-white/5 p-4 text-left">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          <div className="nk-inset p-4 text-left">
+            <p className="mb-1 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
               更新说明
             </p>
             <p className="text-sm text-gray-700 dark:text-gray-300">{announcement}</p>
@@ -50,14 +53,17 @@ export default function ForceUpgrade({
         {/* 下载按钮 */}
         <button
           onClick={handleDownload}
-          className="w-full rounded-xl bg-indigo-600 py-3 text-sm font-medium text-gray-900 dark:text-white transition hover:bg-indigo-500"
+          className="nk-btn-primary w-full py-3 text-sm"
         >
           下载新版本
         </button>
 
         {/* 版本信息 */}
-        <p className="text-xs text-gray-500 dark:text-gray-500">{BRAND.name} · v{currentVersion}</p>
+        <div className="flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          <Logo size={24} />
+          <span>v{currentVersion}</span>
+        </div>
       </div>
-    </div>
+    </main>
   );
 }

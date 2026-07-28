@@ -37,7 +37,7 @@ pub trait Target: Send + Sync {
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String>;
 
     /// 本机已安装时的真实应用图标（PNG data URI）。未安装或平台不支持时返回 None，
-    /// 由前端回落到内置占位图形。
+    /// 由前端回落到随应用提供的目标应用图标。
     fn icon_data_uri(&self) -> Option<String> {
         None
     }
@@ -381,9 +381,12 @@ pub fn app_launch_path(target_id: &str) -> Option<PathBuf> {
 }
 
 /// 从已安装的 App 里取真实图标，转成 PNG 后以 data URI 返回。
-/// 图标属于各自厂商的商标资源，不入库、不随包分发，只在运行时按需读取本机已安装的副本。
+/// 已安装时优先使用本机应用包里的图标，确保与用户实际安装的版本一致。
 #[cfg(target_os = "macos")]
 fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
+    static ICON_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     let app = macos_app_path(names)?;
     let resources = app.join("Contents").join("Resources");
 
@@ -412,7 +415,11 @@ fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
     let icns = candidates.into_iter().find(|p| p.exists())?;
 
     // sips 是 macOS 自带工具，无需额外依赖
-    let out = std::env::temp_dir().join(format!("niko-icon-{}.png", std::process::id()));
+    let sequence = ICON_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out = std::env::temp_dir().join(format!(
+        "niko-icon-{}-{sequence}.png",
+        std::process::id()
+    ));
     let ok = std::process::Command::new("/usr/bin/sips")
         .args(["-s", "format", "png", "-Z", "128"])
         .arg(&icns)

@@ -4,6 +4,11 @@ import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
 import { BRAND } from "../lib/brand";
 import Logo from "../components/Logo";
+import { ArrowLeftIcon } from "../components/Icons";
+
+const CARD = "nk-card";
+const OVERLINE = "nk-overline";
+const SECONDARY_BTN = "nk-btn-secondary";
 
 interface SnapshotEntry {
   target_id: string;
@@ -189,43 +194,44 @@ export default function Settings() {
   const hasAnySnapshot = Object.keys(snapshots).length > 0;
 
   return (
-    <div className="flex h-screen flex-col bg-transparent">
-      <header className="flex items-center gap-3 border-b border-black/5 dark:border-white/10 px-5 py-3">
+    <div className="nk-shell">
+      <header className="nk-header">
         <button
           onClick={() => navigate("/home")}
-          className="text-gray-500 dark:text-gray-400 transition hover:text-gray-900 dark:text-white"
+          className="nk-btn-ghost px-2.5"
+          aria-label="返回首页"
         >
-          ←
+          <ArrowLeftIcon />
         </button>
-        <h1 className="text-sm font-semibold text-gray-900 dark:text-white">设置</h1>
+        <h1 className="nk-title">设置</h1>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-5 py-4">
+      <main className="nk-page">
         {/* 宽窗口下分两列，避免长单列造成左右大片留白 */}
         <div className="mx-auto max-w-5xl columns-1 gap-4 md:columns-2 [&>section]:mb-4 [&>section]:break-inside-avoid">
 
           {/* 当前账户 */}
-          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">当前账户</h2>
+          <section className={CARD}>
+            <h2 className={`mb-3 ${OVERLINE}`}>当前账户</h2>
             <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
               <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
               <p>分组：<span className="text-gray-900 dark:text-white">{auth?.group ?? "—"}</span></p>
             </div>
             <button
               onClick={logout}
-              className="mt-4 rounded-lg bg-red-500/10 px-4 py-2 text-xs text-red-600 dark:text-red-400 transition hover:bg-red-500/20"
+              className="nk-btn-danger mt-4"
             >
               退出登录
             </button>
           </section>
 
           {/* 开机自启 */}
-          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">启动设置</h2>
+          <section className={CARD}>
+            <h2 className={`mb-3 ${OVERLINE}`}>启动设置</h2>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-800 dark:text-gray-200">开机自启</p>
-                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">登录时自动启动 {BRAND.name}</p>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">登录时自动启动此应用</p>
               </div>
               <button
                 onClick={toggleAutostart}
@@ -235,6 +241,7 @@ export default function Settings() {
                 }`}
                 role="switch"
                 aria-checked={autostart ?? false}
+                aria-label="开机自启"
               >
                 <span
                   className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
@@ -246,28 +253,28 @@ export default function Settings() {
           </section>
 
           {/* E5-5: 快照恢复 */}
-          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
+          <section className={CARD}>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">配置快照恢复</h2>
+              <h2 className={OVERLINE}>配置快照恢复</h2>
               <button
                 onClick={loadSnapshots}
                 disabled={snapshotLoading}
-                className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
+                className="nk-btn-ghost"
               >
                 {snapshotLoading ? "刷新中…" : "刷新"}
               </button>
             </div>
 
             {restoreMsg && (
-              <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${
-                restoreMsg.ok ? "bg-green-500/10 text-green-600 dark:text-green-400" : "bg-red-500/10 text-red-600 dark:text-red-400"
+              <div className={`mb-3 ${
+                restoreMsg.ok ? "nk-alert-success" : "nk-alert-danger"
               }`}>
                 {restoreMsg.text}
               </div>
             )}
 
             {!hasAnySnapshot && !snapshotLoading && (
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="nk-empty">
                 暂无备份。首次配置接入目标后会自动创建快照。
               </p>
             )}
@@ -288,7 +295,7 @@ export default function Settings() {
                       return (
                         <div
                           key={snap.filename}
-                          className="flex items-center justify-between rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2"
+                          className="nk-row flex items-center justify-between gap-3"
                         >
                           <div>
                             <p className="text-xs text-gray-800 dark:text-gray-200">{snap.original_name}</p>
@@ -297,7 +304,7 @@ export default function Settings() {
                           <button
                             onClick={() => restoreSnapshot(targetId, snap.filename)}
                             disabled={isRestoring || restoring !== null}
-                            className="rounded-md bg-black/[0.06] dark:bg-white/10 px-3 py-1 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
+                            className={SECONDARY_BTN}
                           >
                             {isRestoring ? "恢复中…" : "恢复"}
                           </button>
@@ -311,30 +318,30 @@ export default function Settings() {
           </section>
 
           {/* 连通性检测 */}
-          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">连通性自检</h2>
+          <section className={CARD}>
+            <h2 className={`mb-3 ${OVERLINE}`}>连通性自检</h2>
             <div className="flex gap-2">
               <input
                 value={pingUrl}
                 onChange={(e) => setPingUrl(e.target.value)}
-                className="flex-1 rounded-lg bg-black/[0.04] dark:bg-white/10 px-3 py-2 text-xs text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500"
+                className="nk-input min-w-0 flex-1 text-xs"
                 placeholder="https://..."
               />
               <button
                 onClick={doPing}
                 disabled={pinging}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs text-gray-900 dark:text-white transition hover:bg-indigo-500 disabled:opacity-40"
+                className="nk-btn-primary"
               >
                 {pinging ? "检测中…" : "检测"}
               </button>
             </div>
             {pingResult && (
               pingResult.reachable ? (
-                <div className="mt-3 rounded-lg bg-green-500/10 px-3 py-2 text-xs text-green-600 dark:text-green-400">
+                <div className="nk-alert-success mt-3">
                   ✓ 可达，延迟 {pingResult.latency_ms ?? "?"}ms
                 </div>
               ) : (
-                <div className="mt-3 space-y-1.5 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
+                <div className="nk-alert-danger mt-3 space-y-1.5">
                   <p className="font-medium text-red-600 dark:text-red-400">
                     ✗ {ERROR_KIND_LABELS[pingResult.error_kind ?? "unknown"]}
                   </p>
@@ -348,29 +355,29 @@ export default function Settings() {
               )
             )}
 
-            <div className="mt-4 border-t border-black/5 dark:border-white/10 pt-4">
+            <div className="mt-4 border-t pt-4 [border-color:var(--nk-line)]">
               <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
                 导出的日志已对 API Key 做脱敏处理，不含完整密钥。
               </p>
               <button
                 onClick={exportLog}
                 disabled={exporting}
-                className="rounded-lg bg-black/[0.06] dark:bg-white/10 px-4 py-2 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
+                className={SECONDARY_BTN}
               >
                 {exporting ? "导出中…" : "导出日志"}
               </button>
-              {exportMsg && <p className="mt-2 break-all text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">{exportMsg}</p>}
+              {exportMsg && <p className="nk-muted mt-2 break-all">{exportMsg}</p>}
             </div>
           </section>
 
           {/* 版本与更新 */}
-          <section className="rounded-2xl border border-black/5 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
-            <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 dark:text-gray-400">关于 / 更新</h2>
+          <section className={CARD}>
+            <h2 className={`mb-3 ${OVERLINE}`}>关于 / 更新</h2>
             <div className="flex items-center gap-2">
               <Logo size={24} />
               <div>
                 <p className="text-xs text-gray-700 dark:text-gray-200">
-                  {BRAND.fullName} v{BRAND.version}
+                  登录器 v{BRAND.version}
                 </p>
                 <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-500">{BRAND.tagline}</p>
               </div>
@@ -378,12 +385,12 @@ export default function Settings() {
             <button
               onClick={checkUpdate}
               disabled={checkingUpdate}
-              className="mt-4 rounded-lg bg-black/[0.06] dark:bg-white/10 px-4 py-2 text-xs text-gray-800 dark:text-gray-200 transition hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-40"
+              className={`${SECONDARY_BTN} mt-4`}
             >
               {checkingUpdate ? "检查中…" : "检查更新"}
             </button>
             {updateStatus && (
-              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 dark:text-gray-400">{updateStatus}</p>
+              <p className="nk-muted mt-2">{updateStatus}</p>
             )}
           </section>
 
