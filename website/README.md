@@ -29,7 +29,7 @@ npm run dev
 - `MOMOTOKEN_NIKO_API_ORIGIN`：上游地址，只接受 HTTPS 生产地址。
 - `NIKO_BFF_SECRET`：与 momotoken 相同的 HMAC 密钥，至少 32 字节，必须使用 Pages Secret。
 - `NIKO_TURNSTILE_SITE_KEY`：前端公开的 Turnstile Site Key。
-- `NIKO_PAYMENT_ALLOWED_ORIGINS`：允许返回给浏览器的支付页 Origin，逗号分隔，必须包含协议，例如 `https://pay.example.com`。
+- `NIKO_PAYMENT_ALLOWED_ORIGINS`：允许返回给浏览器并接收支付表单的 HTTPS Origin，逗号分隔，只能填写 Origin（不能带路径、查询或凭据），例如 `https://pay.example.com`。
 
 可选配置：
 
@@ -115,13 +115,40 @@ npm run dev
 - 充值记录：`id` 或 `order_id`、`display_amount`、`display_currency`、`payment_channel`、`status`、`created_at`、`paid_at`。
 - 消费明细：`id`、`model`、`amount_quota` 字符串、`display_amount`、`display_currency`、`prompt_tokens`、`completion_tokens`、`created_at`。
 - 充值选项：`options[]` 至少包含 `id`、`display_amount`，`channels[]` 包含 `id/code` 与 `name/label`。
-- 创建订单：返回 `order_id` 和 `payment_url`；`payment_url` 必须是 HTTPS 且 Origin 在 BFF 白名单。
+- 创建订单：返回 `order`、`payment_url` 和 `payment_params`；`payment_url` 必须是 HTTPS 且 Origin 在 BFF 白名单。
 - 查询订单：返回 `order_id`、`status`；状态为 `pending`、`success`、`failed`、`expired`、`partially_refunded` 或 `refunded`。
 
-创建充值订单必须带 `Idempotency-Key`。浏览器只能提交 `option_id`，或 `amount + currency`，以及 `payment_channel`；BFF 将十进制金额精确转换为 `amount_minor`，并拒绝余额、到账额度、`quota_to_add` 和浏览器传入的 `return_url`。momotoken 固定生成 Niko 的 `/payment/return/` 地址；回跳页面只按 `order_id` 查询，上游订单状态只能由可信支付回调更新。
+创建充值订单必须带 `Idempotency-Key`。浏览器只能提交 `option_id`，或 `amount + currency`，以及 `payment_channel`；BFF 将十进制金额精确转换为 `amount_minor`，并拒绝余额、到账额度、`quota_to_add` 和浏览器传入的 `return_url`。同一页面内的失败重试对相同充值参数复用一个 Key；金额、币种或渠道变化时生成新 Key；创建成功后清理。Key 不写入持久存储，刷新页面不会复用旧订单。
+
+momotoken 的易支付响应示例：
+
+```json
+{
+  "data": {
+    "order": { "order_id": "NKO...", "status": "pending" },
+    "payment_url": "https://pay.example.com/submit.php",
+    "payment_params": {
+      "pid": "10001",
+      "type": "alipay",
+      "out_trade_no": "NKO...",
+      "notify_url": "https://momotoken.example/api/user/epay/notify",
+      "name": "Niko 余额充值",
+      "money": "10.00",
+      "device": "pc",
+      "sign_type": "MD5",
+      "return_url": "https://niko-ai.cc/payment/return/?order_id=NKO...",
+      "sign": "..."
+    }
+  }
+}
+```
+
+BFF 只接受上述 10 个 `payment_params` 字段，要求普通对象和有界字符串值，并拒绝额外字段、缺失字段、嵌套值及原型污染字段。浏览器收到已校验响应后创建隐藏表单，把全部参数以 `POST` 提交到 `payment_url`；不得用 GET 跳转或把参数拼入 URL。momotoken 固定生成 Niko 的 `/payment/return/` 地址；回跳页面只按 `order_id` 查询，上游订单状态只能由可信支付回调更新。
 
 Turnstile action 固定为：注册 `niko_register`、登录 `niko_login`、发送邮箱验证码 `niko_email_code`。momotoken 同时校验 action 和 hostname。
 
 ## 构建与部署
 
 构建脚本从 `brand/niko-logo-kit-c` 复制品牌资产并生成 Open Graph 图片。部署命令仍为 `npm run deploy`，但开发和联调阶段不要运行该命令。
+
+根 Pages Function middleware 会从 `NIKO_PAYMENT_ALLOWED_ORIGINS` 动态生成 CSP `form-action`；静态 `_headers` 不再保存 CSP，避免两条策略叠加后阻断外部 POST。Cloudflare Pages 的 Production 和 Preview 环境都必须配置同一变量，否则 BFF 会拒绝支付地址且 CSP 仅允许同源表单。网站改动由独立的 `Niko Website CI` 在单个 Ubuntu job 中执行 `npm run check`，不会启动桌面端检查或手动触发的 `Niko Release`。

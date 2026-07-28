@@ -127,7 +127,8 @@ nav a:hover,
 }
 
 .header-actions,
-.account-auth-links {
+.account-auth-links,
+.account-logged-in {
   display: flex;
   align-items: center;
 }
@@ -155,6 +156,31 @@ nav a:hover,
 
 .account-auth-links {
   gap: 0.8rem;
+}
+
+.account-logged-in {
+  gap: 0.65rem;
+}
+
+.account-logout {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.account-logout:hover,
+.account-logout:focus-visible {
+  color: var(--coral-dark);
+}
+
+.account-logout:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .account-register,
@@ -856,6 +882,10 @@ footer {
 
   .account-auth-links {
     gap: 0.55rem;
+  }
+
+  .account-logged-in {
+    gap: 0.45rem;
   }
 
   .account-register,

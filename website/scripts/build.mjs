@@ -58,6 +58,7 @@ for (const filename of [
   "js/api.js",
   "js/auth.js",
   "js/account.js",
+  "js/payment.js",
   "js/site-session.js",
   "js/payment-return.js",
   "robots.txt",

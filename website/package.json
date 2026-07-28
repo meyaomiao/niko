@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test tests/*.test.js",
-    "check": "npm test && node --check src/js/api.js && node --check src/js/auth.js && node --check src/js/account.js && node --check src/js/site-session.js && node --check src/js/payment-return.js && node --check functions/_lib/security.js && node --check functions/_lib/routes.js && node --check 'functions/api/niko/v1/[[path]].js' && npm run build",
+    "check": "npm test && node --check src/js/api.js && node --check src/js/auth.js && node --check src/js/account.js && node --check src/js/payment.js && node --check src/js/site-session.js && node --check src/js/payment-return.js && node --check functions/_middleware.js && node --check functions/_lib/security.js && node --check functions/_lib/routes.js && node --check 'functions/api/niko/v1/[[path]].js' && npm run build",
     "dev": "npm run build && wrangler pages dev dist",
     "deploy": "npm run build && wrangler pages deploy dist --project-name niko-ai --branch main"
   },

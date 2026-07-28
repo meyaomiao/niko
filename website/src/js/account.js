@@ -1,12 +1,12 @@
 import {
   ApiError,
   apiRequest,
-  createIdempotencyKey,
   displayMoney,
   formatDate,
   getPublicConfig,
   unwrap,
 } from "./api.js";
+import { createTopupIdempotencyState, submitPaymentForm } from "./payment.js";
 
 const elements = {
   loading: document.querySelector("[data-account-loading]"),
@@ -27,6 +27,7 @@ const recordState = {
   topups: { loaded: false, loading: false, nextCursor: "" },
   consumptions: { loaded: false, loading: false, nextCursor: "" },
 };
+const topupIdempotency = createTopupIdempotencyState();
 
 let account = null;
 let emailTurnstileWidget;
@@ -460,18 +461,11 @@ async function submitTopup(event) {
     const payload = await apiRequest("/wallet/topup-orders", {
       method: "POST",
       body,
-      idempotencyKey: createIdempotencyKey(),
+      idempotencyKey: topupIdempotency.keyFor(body),
     });
     const data = unwrap(payload) || {};
-    const paymentUrl = data.payment_url || data.checkout_url || data.order?.payment_url;
-    if (typeof paymentUrl !== "string") {
-      throw new Error("Missing payment URL");
-    }
-    const target = new URL(paymentUrl);
-    if (target.protocol !== "https:") {
-      throw new Error("Unsafe payment URL");
-    }
-    window.location.assign(target.href);
+    topupIdempotency.clear();
+    submitPaymentForm(data.payment_url, data.payment_params);
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       elements.topupDialog.close();

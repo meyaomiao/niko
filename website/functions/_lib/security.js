@@ -264,27 +264,90 @@ export function validCsrfToken(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{32,256}$/.test(value);
 }
 
-function allowedPaymentOrigins(env) {
-  return new Set(
-    String(env.NIKO_PAYMENT_ALLOWED_ORIGINS || "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map((value) => {
-        try {
-          return new URL(value).origin;
-        } catch {
-          return "";
-        }
-      })
-      .filter(Boolean),
-  );
+const PAYMENT_PARAM_LIMITS = Object.freeze({
+  pid: 128,
+  type: 64,
+  out_trade_no: 128,
+  notify_url: 2048,
+  name: 256,
+  money: 32,
+  device: 16,
+  sign_type: 16,
+  return_url: 2048,
+  sign: 128,
+});
+
+const FORBIDDEN_PAYMENT_PARAM_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function plainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  return Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function validHttpsUrl(value) {
+  try {
+    const target = new URL(value);
+    return target.protocol === "https:" && !target.username && !target.password;
+  } catch {
+    return false;
+  }
+}
+
+export function allowedPaymentOrigins(env) {
+  const origins = new Set();
+  for (const configured of String(env.NIKO_PAYMENT_ALLOWED_ORIGINS || "").split(",")) {
+    const value = configured.trim();
+    if (!value) {
+      continue;
+    }
+    try {
+      const target = new URL(value);
+      if (
+        target.protocol === "https:" &&
+        !target.username &&
+        !target.password &&
+        (target.pathname === "" || target.pathname === "/") &&
+        !target.search &&
+        !target.hash
+      ) {
+        origins.add(target.origin);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return origins;
+}
+
+export function contentSecurityPolicy(env) {
+  const formAction = ["'self'", ...allowedPaymentOrigins(env)].join(" ");
+  return [
+    "default-src 'self'",
+    "script-src 'self' 'sha256-vfdgX8SmTsQuaedtxvbKwGIbqWmGbHBdIIM8nJtTcK4=' https://challenges.cloudflare.com",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self' https://challenges.cloudflare.com",
+    "frame-src https://challenges.cloudflare.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    `form-action ${formAction}`,
+    "frame-ancestors 'none'",
+    "manifest-src 'self'",
+    "upgrade-insecure-requests",
+  ].join("; ");
 }
 
 export function validatePaymentResponse(payload, env) {
   const data =
-    payload?.data && typeof payload.data === "object" ? payload.data : payload || {};
-  const paymentUrl = data.payment_url || data.checkout_url || data.order?.payment_url;
+    payload?.data && plainObject(payload.data) ? payload.data : payload;
+  if (!plainObject(data)) {
+    throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付服务返回了无效结果。");
+  }
+
+  const paymentUrl = data.payment_url;
   if (typeof paymentUrl !== "string") {
     throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付服务返回了无效结果。");
   }
@@ -304,6 +367,49 @@ export function validatePaymentResponse(payload, env) {
     !allowedOrigins.has(target.origin)
   ) {
     throw new HttpError(502, "PAYMENT_URL_REJECTED", "支付地址未通过安全校验。");
+  }
+
+  const paymentParams = data.payment_params;
+  if (!plainObject(paymentParams)) {
+    throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付参数未通过安全校验。");
+  }
+
+  const keys = Object.keys(paymentParams);
+  const expectedKeys = Object.keys(PAYMENT_PARAM_LIMITS);
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some(
+      (key) =>
+        FORBIDDEN_PAYMENT_PARAM_KEYS.has(key) ||
+        !Object.hasOwn(PAYMENT_PARAM_LIMITS, key),
+    )
+  ) {
+    throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付参数未通过安全校验。");
+  }
+
+  for (const key of expectedKeys) {
+    const value = paymentParams[key];
+    if (
+      typeof value !== "string" ||
+      value.length < 1 ||
+      value.length > PAYMENT_PARAM_LIMITS[key] ||
+      /[\u0000-\u001f\u007f]/.test(value)
+    ) {
+      throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付参数未通过安全校验。");
+    }
+  }
+
+  if (
+    !/^[A-Za-z0-9_-]+$/.test(paymentParams.type) ||
+    !/^[A-Za-z0-9_-]+$/.test(paymentParams.out_trade_no) ||
+    !/^(?:0|[1-9]\d{0,15})\.\d{2}$/.test(paymentParams.money) ||
+    paymentParams.device !== "pc" ||
+    paymentParams.sign_type !== "MD5" ||
+    !/^[a-f0-9]{32}$/.test(paymentParams.sign) ||
+    !validHttpsUrl(paymentParams.notify_url) ||
+    !validHttpsUrl(paymentParams.return_url)
+  ) {
+    throw new HttpError(502, "INVALID_PAYMENT_RESPONSE", "支付参数未通过安全校验。");
   }
 }
 

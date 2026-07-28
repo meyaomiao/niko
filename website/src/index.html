@@ -86,9 +86,12 @@
             <a href="/login/">登录</a>
             <a class="account-register" href="/register/">注册</a>
           </span>
-          <a class="account-center" href="/account/" data-logged-in hidden>
-            <span data-account-name>个人中心</span>
-          </a>
+          <span class="account-logged-in" data-logged-in hidden>
+            <a class="account-center" href="/account/">
+              <span data-account-name>个人中心</span>
+            </a>
+            <button class="account-logout" type="button" data-session-logout>退出</button>
+          </span>
         </div>
       </div>
     </header>

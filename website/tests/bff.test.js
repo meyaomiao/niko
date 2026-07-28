@@ -10,6 +10,7 @@ import {
 import {
   CSRF_COOKIE,
   HttpError,
+  contentSecurityPolicy,
   createUpstreamRequest,
   csrfCookie,
   removeAuthTokens,
@@ -23,6 +24,21 @@ function assertHttpError(error, status, code) {
   assert.equal(error.status, status);
   assert.equal(error.code, code);
   return true;
+}
+
+function validPaymentParams() {
+  return {
+    pid: "10001",
+    type: "alipay",
+    out_trade_no: "NKO0123456789abcdef0123456789abcdef",
+    notify_url: "https://momotoken.win/api/user/epay/notify",
+    name: "Niko 余额充值",
+    money: "10.00",
+    device: "pc",
+    sign_type: "MD5",
+    return_url: "https://niko-ai.cc/payment/return/?order_id=NKO123",
+    sign: "0123456789abcdef0123456789abcdef",
+  };
 }
 
 test("route matching only permits the explicit BFF surface", () => {
@@ -170,22 +186,86 @@ test("top-up requests require one amount mode and a valid idempotency key", asyn
   );
 });
 
-test("payment redirects are restricted to configured HTTPS origins", () => {
+test("payment responses require the exact Epay POST contract on an allowed HTTPS origin", () => {
   const env = { NIKO_PAYMENT_ALLOWED_ORIGINS: "https://pay.example.com" };
   assert.doesNotThrow(() =>
     validatePaymentResponse(
-      { data: { payment_url: "https://pay.example.com/checkout/123" } },
+      {
+        data: {
+          payment_url: "https://pay.example.com/checkout/123",
+          payment_params: validPaymentParams(),
+        },
+      },
       env,
     ),
   );
   assert.throws(
-    () => validatePaymentResponse({ payment_url: "http://pay.example.com/checkout" }, env),
+    () =>
+      validatePaymentResponse(
+        {
+          payment_url: "http://pay.example.com/checkout",
+          payment_params: validPaymentParams(),
+        },
+        env,
+      ),
     (error) => assertHttpError(error, 502, "PAYMENT_URL_REJECTED"),
   );
   assert.throws(
-    () => validatePaymentResponse({ payment_url: "https://pay.example.com.evil.test/" }, env),
+    () =>
+      validatePaymentResponse(
+        {
+          payment_url: "https://pay.example.com.evil.test/",
+          payment_params: validPaymentParams(),
+        },
+        env,
+      ),
     (error) => assertHttpError(error, 502, "PAYMENT_URL_REJECTED"),
   );
+});
+
+test("payment parameter validation rejects pollution, nesting, wrong types, and abnormal size", () => {
+  const env = { NIKO_PAYMENT_ALLOWED_ORIGINS: "https://pay.example.com" };
+  const response = (paymentParams) => ({
+    payment_url: "https://pay.example.com/submit.php",
+    payment_params: paymentParams,
+  });
+  const invalidParams = [
+    null,
+    [],
+    { ...validPaymentParams(), name: { nested: true } },
+    { ...validPaymentParams(), money: 10 },
+    { ...validPaymentParams(), pid: "p".repeat(129) },
+    { ...validPaymentParams(), extra: "unexpected" },
+    (() => {
+      const params = validPaymentParams();
+      delete params.sign;
+      return params;
+    })(),
+    Object.assign(Object.create(null), validPaymentParams()),
+    JSON.parse(`{"__proto__":"polluted",${JSON.stringify(validPaymentParams()).slice(1)}`),
+    JSON.parse(`{"constructor":"polluted",${JSON.stringify(validPaymentParams()).slice(1)}`),
+    JSON.parse(`{"prototype":"polluted",${JSON.stringify(validPaymentParams()).slice(1)}`),
+  ];
+
+  for (const paymentParams of invalidParams) {
+    assert.throws(
+      () => validatePaymentResponse(response(paymentParams), env),
+      (error) => assertHttpError(error, 502, "INVALID_PAYMENT_RESPONSE"),
+    );
+  }
+});
+
+test("payment CSP uses only configured origins for form submissions", () => {
+  const policy = contentSecurityPolicy({
+    NIKO_PAYMENT_ALLOWED_ORIGINS:
+      "https://pay.example.com, https://gateway.example.net:8443, https://ignored.test/path, http://insecure.test",
+  });
+  const formAction = policy.split("; ").find((directive) => directive.startsWith("form-action"));
+  assert.equal(
+    formAction,
+    "form-action 'self' https://pay.example.com https://gateway.example.net:8443",
+  );
+  assert.doesNotMatch(formAction, /(?:^|\s)https:(?:\s|$)/);
 });
 
 test("upstream requests carry a verifiable HMAC and never expose auth tokens", async () => {
