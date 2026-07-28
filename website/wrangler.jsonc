@@ -2,5 +2,10 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "niko-ai",
   "pages_build_output_dir": "./dist",
-  "compatibility_date": "2026-07-28"
+  "compatibility_date": "2026-07-28",
+  "vars": {
+    "MOMOTOKEN_NIKO_API_ORIGIN": "https://momotoken.win",
+    "NIKO_TURNSTILE_SITE_KEY": "0x4AAAAAAD_7tPGZn65hZ-Ov",
+    "NIKO_PAYMENT_ALLOWED_ORIGINS": "https://api.kyrenpay.com"
+  }
 }

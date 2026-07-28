@@ -118,7 +118,7 @@ function registerBody(body, allowMissingTurnstile) {
 function loginBody(body, allowMissingTurnstile) {
   assertAllowedKeys(body, ["account", "password", "turnstile_token"]);
   return {
-    account: requiredString(body, "account", { min: 1, max: 254, trim: true }),
+    username: requiredString(body, "account", { min: 1, max: 254, trim: true }),
     password: requiredString(body, "password", { min: 8, max: 128 }),
     turnstile_token: turnstileToken(body, allowMissingTurnstile),
   };
@@ -192,7 +192,8 @@ function topupBody(body) {
   if (!/^[A-Z]{3}$/.test(currency)) {
     throw new HttpError(400, "INVALID_REQUEST", "币种格式无效。");
   }
-  result.amount = amount;
+  const [whole, fraction = ""] = amount.split(".");
+  result.amount_minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
   result.currency = currency;
   return result;
 }
@@ -200,7 +201,6 @@ function topupBody(body) {
 export async function parseBody(
   request,
   route,
-  returnUrl,
   { allowMissingTurnstile = false } = {},
 ) {
   if (!route.body) {
@@ -217,7 +217,7 @@ export async function parseBody(
     case "emailBind":
       return emailBindBody(body);
     case "topupCreate":
-      return { ...topupBody(body), return_url: returnUrl };
+      return topupBody(body);
     case "empty":
       assertAllowedKeys(body, []);
       return {};

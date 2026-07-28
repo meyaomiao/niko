@@ -173,6 +173,7 @@ export async function createUpstreamRequest({
   method,
   body,
   sessionToken,
+  csrfToken,
   idempotencyKey,
 }) {
   const requestUrl = new URL(request.url);
@@ -180,9 +181,8 @@ export async function createUpstreamRequest({
   const upstreamUrl = new URL(pathname, base);
   upstreamUrl.search = search;
 
-  const clientId = env.MOMOTOKEN_NIKO_CLIENT_ID || "";
-  const secret = env.MOMOTOKEN_NIKO_CLIENT_SECRET || "";
-  if (!clientId || !secret) {
+  const secret = env.NIKO_BFF_SECRET || "";
+  if (secret.length < 32) {
     throw new HttpError(503, "BFF_NOT_CONFIGURED", "账户服务签名尚未完成配置。");
   }
 
@@ -193,14 +193,15 @@ export async function createUpstreamRequest({
   const clientIp = connectingIp(request);
   const requestTarget = `${upstreamUrl.pathname}${upstreamUrl.search}`;
   const canonical = [
-    "NIKO-HMAC-V1",
-    clientId,
-    timestamp,
-    nonce,
     method,
     requestTarget,
     bodyHash,
+    timestamp,
+    nonce,
     clientIp,
+    sessionToken || "",
+    csrfToken || "",
+    idempotencyKey || "",
   ].join("\n");
   const signature = await hmacHex(secret, canonical);
 
@@ -208,15 +209,16 @@ export async function createUpstreamRequest({
     Accept: "application/json",
     "Content-Type": "application/json",
     "User-Agent": "Niko-Website-BFF/1.0",
-    "X-Niko-Client-Id": clientId,
     "X-Niko-Timestamp": timestamp,
     "X-Niko-Nonce": nonce,
-    "X-Niko-Content-SHA256": bodyHash,
     "X-Niko-Client-IP": clientIp,
-    "X-Niko-Signature": `v1=${signature}`,
+    "X-Niko-Signature": signature,
   });
   if (sessionToken) {
-    headers.set("Authorization", `Bearer ${sessionToken}`);
+    headers.set("X-Niko-Session", sessionToken);
+  }
+  if (csrfToken) {
+    headers.set("X-Niko-CSRF", csrfToken);
   }
   if (idempotencyKey) {
     headers.set("Idempotency-Key", idempotencyKey);

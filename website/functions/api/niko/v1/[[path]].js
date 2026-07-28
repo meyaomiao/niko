@@ -69,13 +69,6 @@ function configResponse(request, env, cookies) {
   );
 }
 
-function returnUrl(request) {
-  const url = new URL("/payment/return/", request.url);
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
-
 async function parseUpstreamPayload(response) {
   const contentType = response.headers.get("Content-Type") || "";
   if (!contentType.toLowerCase().includes("application/json")) {
@@ -135,10 +128,18 @@ export async function onRequest(context) {
     }
 
     const search = filteredSearch(requestUrl, route);
-    const body = await parseBody(request, route, returnUrl(request), {
+    const body = await parseBody(request, route, {
       allowMissingTurnstile: localTurnstileDisabled(request, env),
     });
     const requestIdempotencyKey = idempotencyKey(request, route);
+    const upstreamSessionToken =
+      (route.protected || route.id === "session") && validSessionToken(sessionToken)
+        ? sessionToken
+        : "";
+    const upstreamCsrfToken =
+      method !== "GET" && upstreamSessionToken
+        ? cookies.get(CSRF_COOKIE) || ""
+        : "";
     const upstreamRequest = await createUpstreamRequest({
       request,
       env,
@@ -146,7 +147,8 @@ export async function onRequest(context) {
       search,
       method,
       body,
-      sessionToken: validSessionToken(sessionToken) ? sessionToken : "",
+      sessionToken: upstreamSessionToken,
+      csrfToken: upstreamCsrfToken,
       idempotencyKey: requestIdempotencyKey,
     });
 

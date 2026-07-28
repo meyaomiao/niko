@@ -27,8 +27,7 @@ npm run dev
 必须配置：
 
 - `MOMOTOKEN_NIKO_API_ORIGIN`：上游地址，只接受 HTTPS 生产地址。
-- `MOMOTOKEN_NIKO_CLIENT_ID`：BFF 调用方 ID。
-- `MOMOTOKEN_NIKO_CLIENT_SECRET`：HMAC 密钥，必须使用 Pages Secret。
+- `NIKO_BFF_SECRET`：与 momotoken 相同的 HMAC 密钥，至少 32 字节，必须使用 Pages Secret。
 - `NIKO_TURNSTILE_SITE_KEY`：前端公开的 Turnstile Site Key。
 - `NIKO_PAYMENT_ALLOWED_ORIGINS`：允许返回给浏览器的支付页 Origin，逗号分隔，必须包含协议，例如 `https://pay.example.com`。
 
@@ -51,28 +50,29 @@ npm run dev
 
 每次 BFF 请求均发送：
 
-- `X-Niko-Client-Id`
 - `X-Niko-Timestamp`：Unix 秒。
 - `X-Niko-Nonce`：16 字节随机数的十六进制字符串。
-- `X-Niko-Content-SHA256`：实际转发 JSON 字符串的 SHA-256 十六进制摘要；GET 空 Body 使用空字符串摘要。
 - `X-Niko-Client-IP`：只取 Cloudflare `CF-Connecting-IP`，并纳入签名。
-- `X-Niko-Signature: v1=<hex hmac>`。
-- 登录态请求另带 `Authorization: Bearer <session_token>`。
+- `X-Niko-Session`：登录态请求携带上游 Session Token。
+- `X-Niko-CSRF`：登录后的写请求携带上游 CSRF Token。
+- `Idempotency-Key`：创建充值订单时携带。
+- `X-Niko-Signature: <hex hmac>`。
 
 签名原文使用 UTF-8，各行以 `\n` 拼接，末尾不加换行：
 
 ```text
-NIKO-HMAC-V1
-<client_id>
-<timestamp>
-<nonce>
 <HTTP_METHOD>
 <path_and_query>
 <body_sha256_hex>
+<timestamp>
+<nonce>
 <client_ip>
+<session_token_or_empty>
+<csrf_token_or_empty>
+<idempotency_key_or_empty>
 ```
 
-签名算法为 `HMAC-SHA256(client_secret, canonical_text)`，输出小写十六进制。上游必须校验时间窗口、Nonce 防重放、Body 摘要、签名和客户端 IP 字段的一致性。
+签名算法为 `HMAC-SHA256(NIKO_BFF_SECRET, canonical_text)`，输出小写十六进制。签名使用实际转发的原始 JSON 字符串；GET 空 Body 使用空字符串的 SHA-256。上游必须校验时间窗口、Nonce 防重放、Body 摘要、签名和客户端 IP 字段的一致性。
 
 ## BFF 白名单
 
@@ -118,7 +118,9 @@ NIKO-HMAC-V1
 - 创建订单：返回 `order_id` 和 `payment_url`；`payment_url` 必须是 HTTPS 且 Origin 在 BFF 白名单。
 - 查询订单：返回 `order_id`、`status`；状态为 `pending`、`success`、`failed`、`expired`、`partially_refunded` 或 `refunded`。
 
-创建充值订单必须带 `Idempotency-Key`。浏览器只能提交 `option_id`，或 `amount + currency`，以及 `payment_channel`；BFF 拒绝余额、到账额度、`quota_to_add` 和浏览器传入的 `return_url`。BFF 会自行注入 Niko 的 `/payment/return/` 地址。支付回跳页面只按 `order_id` 查询，上游订单状态只能由可信支付回调更新。
+创建充值订单必须带 `Idempotency-Key`。浏览器只能提交 `option_id`，或 `amount + currency`，以及 `payment_channel`；BFF 将十进制金额精确转换为 `amount_minor`，并拒绝余额、到账额度、`quota_to_add` 和浏览器传入的 `return_url`。momotoken 固定生成 Niko 的 `/payment/return/` 地址；回跳页面只按 `order_id` 查询，上游订单状态只能由可信支付回调更新。
+
+Turnstile action 固定为：注册 `niko_register`、登录 `niko_login`、发送邮箱验证码 `niko_email_code`。momotoken 同时校验 action 和 hostname。
 
 ## 构建与部署
 

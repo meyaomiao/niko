@@ -127,11 +127,10 @@ test("top-up requests require one amount mode and a valid idempotency key", asyn
   });
 
   assert.deepEqual(
-    await parseBody(request, route, "https://niko-ai.cc/payment/return/"),
+    await parseBody(request, route),
     {
       option_id: "starter",
       payment_channel: "alipay",
-      return_url: "https://niko-ai.cc/payment/return/",
     },
   );
   assert.equal(idempotencyKey(request, route), "order_request_1234");
@@ -147,7 +146,7 @@ test("top-up requests require one amount mode and a valid idempotency key", asyn
     }),
   });
   await assert.rejects(
-    () => parseBody(mixedMode, route, "https://niko-ai.cc/payment/return/"),
+    () => parseBody(mixedMode, route),
     (error) => assertHttpError(error, 400, "INVALID_REQUEST"),
   );
 
@@ -161,7 +160,7 @@ test("top-up requests require one amount mode and a valid idempotency key", asyn
     }),
   });
   await assert.rejects(
-    () => parseBody(forbiddenField, route, "https://niko-ai.cc/payment/return/"),
+    () => parseBody(forbiddenField, route),
     (error) => assertHttpError(error, 400, "INVALID_REQUEST"),
   );
 
@@ -197,36 +196,38 @@ test("upstream requests carry a verifiable HMAC and never expose auth tokens", a
     request: source,
     env: {
       MOMOTOKEN_NIKO_API_ORIGIN: "https://momotoken.win",
-      MOMOTOKEN_NIKO_CLIENT_ID: "niko-website",
-      MOMOTOKEN_NIKO_CLIENT_SECRET: "test-secret",
+      NIKO_BFF_SECRET: "test-secret-that-is-at-least-32-bytes",
     },
     pathname: "/api/niko/v1/wallet/summary",
     search: "?limit=1",
     method: "GET",
     body: undefined,
     sessionToken: "s".repeat(32),
+    csrfToken: "c".repeat(64),
     idempotencyKey: "",
   });
 
   assert.equal(upstream.url, "https://momotoken.win/api/niko/v1/wallet/summary?limit=1");
-  assert.equal(upstream.headers.get("Authorization"), `Bearer ${"s".repeat(32)}`);
+  assert.equal(upstream.headers.get("X-Niko-Session"), "s".repeat(32));
+  assert.equal(upstream.headers.get("X-Niko-CSRF"), "c".repeat(64));
   const timestamp = upstream.headers.get("X-Niko-Timestamp") || "";
   const nonce = upstream.headers.get("X-Niko-Nonce") || "";
-  const bodyHash = upstream.headers.get("X-Niko-Content-SHA256") || "";
+  const bodyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
   const canonical = [
-    "NIKO-HMAC-V1",
-    "niko-website",
-    timestamp,
-    nonce,
     "GET",
     "/api/niko/v1/wallet/summary?limit=1",
     bodyHash,
+    timestamp,
+    nonce,
     "203.0.113.9",
+    "s".repeat(32),
+    "c".repeat(64),
+    "",
   ].join("\n");
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode("test-secret"),
+    encoder.encode("test-secret-that-is-at-least-32-bytes"),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -237,7 +238,7 @@ test("upstream requests carry a verifiable HMAC and never expose auth tokens", a
   const expectedSignature = [...expectedBytes]
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
-  assert.equal(upstream.headers.get("X-Niko-Signature"), `v1=${expectedSignature}`);
+  assert.equal(upstream.headers.get("X-Niko-Signature"), expectedSignature);
   assert.match(nonce, /^[a-f0-9]{32}$/);
 
   const payload = {
@@ -252,4 +253,41 @@ test("upstream requests carry a verifiable HMAC and never expose auth tokens", a
   assert.equal(extracted.csrfToken, "c".repeat(64));
   assert.equal("session_token" in extracted.payload.data, false);
   assert.equal("csrf_token" in extracted.payload.data, false);
+});
+
+test("login and custom top-up bodies match the upstream contract", async () => {
+  const loginRoute = matchRoute("POST", "auth/login");
+  const loginRequest = new Request("https://niko-ai.cc/api/niko/v1/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      account: "user@example.com",
+      password: "Password123",
+      turnstile_token: "t".repeat(20),
+    }),
+  });
+  assert.deepEqual(await parseBody(loginRequest, loginRoute), {
+    username: "user@example.com",
+    password: "Password123",
+    turnstile_token: "t".repeat(20),
+  });
+
+  const topupRoute = matchRoute("POST", "wallet/topup-orders");
+  const topupRequest = new Request(
+    "https://niko-ai.cc/api/niko/v1/wallet/topup-orders",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        amount: "12.30",
+        currency: "CNY",
+        payment_channel: "alipay",
+      }),
+    },
+  );
+  assert.deepEqual(await parseBody(topupRequest, topupRoute), {
+    amount_minor: 1230,
+    currency: "CNY",
+    payment_channel: "alipay",
+  });
 });

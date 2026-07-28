@@ -69,7 +69,8 @@ function accountData(payload) {
 function renderAccount(user) {
   account = user;
   const username = user.username || user.name || "用户";
-  const email = user.email || "";
+  const email = user.email || user.email_masked || "";
+  const emailBound = user.email_bound === true || Boolean(user.email);
 
   document.querySelector("[data-username]").textContent = username;
   document.querySelector("[data-profile-username]").textContent = username;
@@ -80,9 +81,9 @@ function renderAccount(user) {
   });
 
   const emailAction = document.querySelector("[data-open-email]");
-  emailAction.textContent = email ? "更换邮箱" : "绑定邮箱";
+  emailAction.textContent = emailBound ? "更换邮箱" : "绑定邮箱";
   const emailInput = document.querySelector('[data-email-form] input[name="email"]');
-  emailInput.value = email;
+  emailInput.value = user.email || "";
 
   elements.loading.hidden = true;
   elements.access.hidden = true;
@@ -94,7 +95,9 @@ function renderBalance(payload) {
   const data = unwrap(payload) || {};
   const wallet = data.wallet && typeof data.wallet === "object" ? data.wallet : data;
   elements.balance.textContent = displayMoney(wallet, "balance");
-  elements.balanceUpdated.textContent = formatDate(wallet.updated_at || data.updated_at);
+  elements.balanceUpdated.textContent = formatDate(
+    wallet.updated_at || wallet.as_of || data.updated_at,
+  );
 }
 
 function setBalanceUnavailable() {
@@ -344,7 +347,9 @@ function optionData(payload) {
   return {
     options: Array.isArray(data.options)
       ? data.options
-      : Array.isArray(data.amounts)
+      : Array.isArray(data.amount_options)
+        ? data.amount_options
+        : Array.isArray(data.amounts)
         ? data.amounts
         : [],
     channels: Array.isArray(data.channels)

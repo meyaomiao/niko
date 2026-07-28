@@ -114,13 +114,13 @@ function friendlyError(error) {
       ? `操作过于频繁，请在 ${error.retryAfter} 秒后重试。`
       : "操作过于频繁，请稍后重试。";
   }
-  if (["INVALID_CREDENTIALS", "AUTH_FAILED"].includes(error.code)) {
+  if (["INVALID_CREDENTIALS", "AUTH_FAILED", "AUTH_INVALID_CREDENTIALS"].includes(error.code)) {
     return "账号或密码不正确。";
   }
   if (["TURNSTILE_FAILED", "TURNSTILE_REQUIRED"].includes(error.code)) {
     return "安全验证未通过，请重新验证。";
   }
-  if (error.code === "USERNAME_TAKEN") {
+  if (["USERNAME_TAKEN", "ACCOUNT_CONFLICT"].includes(error.code)) {
     return "这个用户名暂不可用，请换一个再试。";
   }
   if (error.status >= 500) {
