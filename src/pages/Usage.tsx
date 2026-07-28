@@ -376,6 +376,11 @@ export default function Usage() {
           {!loading && !error && (
             <div className={CARD}>
               <p className={TITLE}>明细记录</p>
+              {/* Claude Code / Codex 是 agent，一次提问内部会分成读文件、调工具、生成标题等多次
+                  独立请求，条数远多于用户感知的对话轮数，不说明会被当成重复计费 */}
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                一次提问通常对应多条记录：Claude Code 与 Codex 会在内部拆成读文件、调用工具等多次请求，各自单独计费。
+              </p>
               {visibleLogs.length === 0 ? (
                 <p className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
                   当前筛选条件下暂无用量记录

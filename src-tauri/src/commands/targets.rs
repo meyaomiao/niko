@@ -201,7 +201,7 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
             let code = r.status().as_u16();
             let ok = code < 300;
             let detail = if ok {
-                format!("连通正常，{model} 可用（{ms}ms）")
+                format!("连通正常，{model} 可用（{:.1}s）", ms as f64 / 1000.0)
             } else {
                 let body = r.text().await.unwrap_or_default();
                 let hint = match code {
