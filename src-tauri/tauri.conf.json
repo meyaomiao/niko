@@ -39,7 +39,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3QTlBNTFBRUREOEYwMjMKUldRajhOanRHcVdwcHhCeU9WZVdlM3FyYmQ2QVJadXVZeXBhend0TTltbllFb1ZDajF2bEE2RkcK",
       "endpoints": [
         "https://github.com/meyaomiao/niko/releases/latest/download/latest.json"
       ],
