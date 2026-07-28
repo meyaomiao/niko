@@ -515,14 +515,16 @@ export default function Home() {
                             {active && <span className="shrink-0 text-xs">✓</span>}
                           </div>
                           {result && (
+                            /* 改动项是一串很长的配置路径，全列会把卡片撑爆，这里只给条数，明细放 title */
                             <p
-                              className={`mt-1.5 text-xs ${
+                              title={result.ok ? result.changed?.join("\n") : result.error}
+                              className={`mt-1.5 truncate text-xs ${
                                 result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
                               }`}
                             >
                               {result.ok
                                 ? result.changed && result.changed.length > 0
-                                  ? `✓ 已更新 ${result.changed.join("、")}`
+                                  ? `✓ 已写入 ${result.changed.length} 项配置`
                                   : "✓ 配置已是最新"
                                 : `✗ ${result.error}`}
                             </p>
@@ -820,40 +822,39 @@ export default function Home() {
                     )}
                   </div>
 
-                  <button
-                    onClick={enable}
-                    disabled={provisioning || !group || !model || !targetId}
-                    className={`mt-2.5 w-full shrink-0 rounded-xl bg-gray-900 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200`}
-                  >
-                    {provisioning ? "配置中…" : targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
-                  </button>
-                  {/* 配置只在应用启动时读取，所以紧跟启用按钮给一个重启入口 */}
-                  <button
-                    onClick={restartTargets}
-                    disabled={provisioning || testing || restoring || restarting || !targetId}
-                    className={`${GHOST_BTN} mt-1.5 w-full shrink-0`}
-                  >
-                    {restarting
-                      ? "重启中…"
-                      : targetLabel
-                        ? `启动 / 重启 ${targetLabel}`
-                        : "选择应用后可重启"}
-                  </button>
-                  {/* 配置后自检与回退：直读磁盘配置，不改内存状态 */}
-                  <div className="mt-1.5 flex shrink-0 gap-1.5">
+                  {/* 四个动作挤在一行：主操作占宽，其余三个短名等分，避免堆四行把卡片撑高 */}
+                  <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={enable}
+                      disabled={provisioning || !group || !model || !targetId}
+                      title={targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
+                      className="flex-1 rounded-full bg-gray-900 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-40 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                    >
+                      {provisioning ? "配置中…" : "启用"}
+                    </button>
+                    <button
+                      onClick={restartTargets}
+                      disabled={provisioning || testing || restoring || restarting || !targetId}
+                      title={targetLabel ? `启动 / 重启 ${targetLabel}，配置只在启动时读取` : "选择应用后可重启"}
+                      className={GHOST_BTN}
+                    >
+                      {restarting ? "重启中…" : "重启"}
+                    </button>
                     <button
                       onClick={testConnectivity}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      className={`${GHOST_BTN} flex-1`}
+                      title="用磁盘上真实生效的配置发一条最小请求"
+                      className={GHOST_BTN}
                     >
-                      {testing ? "检测中…" : "检测连通性"}
+                      {testing ? "检测中…" : "检测"}
                     </button>
                     <button
                       onClick={restoreDefaults}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      className={`${GHOST_BTN} flex-1 ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
+                      title="移除 Niko 写入的中转配置，恢复用官方账号登录"
+                      className={`${GHOST_BTN} ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
                     >
-                      {restoring ? "恢复中…" : confirmRestore ? "再点确认恢复" : "恢复官方默认"}
+                      {restoring ? "恢复中…" : confirmRestore ? "再点确认" : "恢复默认"}
                     </button>
                   </div>
                   {/* 常驻一行：结果提示出现时不再压缩上方列表 */}

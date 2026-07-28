@@ -48,13 +48,13 @@ pub async fn restart_target(target_id: String) -> Result<String, String> {
     let path = crate::targets::app_launch_path(&target_id)
         .ok_or_else(|| "未找到已安装的应用，请先安装后再试".to_owned())?;
 
-    let was_running = check_process(target_id.clone()).await.running;
+    let was_running = app_process_running(&path);
     if was_running {
         quit_app(&target_id, &path)?;
         let mut quit = false;
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(250));
-            if !check_process(target_id.clone()).await.running {
+            if !app_process_running(&path) {
                 quit = true;
                 break;
             }
@@ -66,6 +66,16 @@ pub async fn restart_target(target_id: String) -> Result<String, String> {
 
     launch_app(&path)?;
     Ok(if was_running { "已重启".to_owned() } else { "已启动".to_owned() })
+}
+
+/// 某个安装路径下是否有进程在跑。按可执行文件路径判断，不能用进程名关键词：
+/// Claude 桌面端与 claude CLI 的进程名都含 "claude"，名字匹配会把 CLI 误判成桌面端还没退出。
+fn app_process_running(path: &std::path::Path) -> bool {
+    let mut sys = System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    sys.processes()
+        .values()
+        .any(|proc| proc.exe().is_some_and(|exe| exe.starts_with(path)))
 }
 
 fn quit_app(target_id: &str, path: &std::path::Path) -> Result<(), String> {
