@@ -1,25 +1,62 @@
 name: Niko Release
 
 on:
-  push:
-    tags:
-      - "niko-v*"
   workflow_dispatch:
     inputs:
       tag:
         description: "Release tag (e.g. niko-v0.1.0)"
         required: true
+      confirm:
+        description: "Type RELEASE to confirm"
+        required: true
+
+concurrency:
+  group: niko-release-${{ inputs.tag }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
 jobs:
+  validate-release:
+    name: Validate release request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate branch, confirmation, and version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "::error::Releases must be dispatched from main"
+            exit 1
+          fi
+
+          if [ "$RELEASE_CONFIRM" != "RELEASE" ]; then
+            echo "::error::Confirmation must be exactly RELEASE"
+            exit 1
+          fi
+
+          VERSION=$(node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)")
+          EXPECTED_TAG="niko-v${VERSION}"
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "::error::Tag must be $EXPECTED_TAG for app version $VERSION"
+            exit 1
+          fi
+
+          echo "Validated release $RELEASE_TAG from main"
+
   # ──────────────────────────────────────────────────────────────
   # E9-1: macOS — 签名 + 公证
   # ──────────────────────────────────────────────────────────────
   build-macos:
     name: macOS (signed + notarized)
+    needs: validate-release
     runs-on: macos-latest
+    timeout-minutes: 45
     outputs:
       app_version: ${{ steps.version.outputs.version }}
       macos_sig: ${{ steps.sig.outputs.signature }}
@@ -102,7 +139,7 @@ jobs:
       - name: Set macOS download URL
         id: url
         run: |
-          TAG=${{ github.ref_name || inputs.tag }}
+          TAG=${{ inputs.tag }}
           VER=${{ steps.version.outputs.version }}
           echo "url=https://github.com/meyaomiao/niko/releases/download/${TAG}/Niko_${VER}_universal.app.tar.gz" >> "$GITHUB_OUTPUT"
 
@@ -121,7 +158,9 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   build-windows:
     name: Windows (unsigned + SHA256)
+    needs: validate-release
     runs-on: windows-latest
+    timeout-minutes: 45
     outputs:
       win_sig: ${{ steps.sig.outputs.signature }}
       win_url: ${{ steps.url.outputs.url }}
@@ -173,7 +212,7 @@ jobs:
         id: url
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name || inputs.tag }}"
+          $tag = "${{ inputs.tag }}"
           $ver = node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)"
           echo "url=https://github.com/meyaomiao/niko/releases/download/$tag/Niko_${ver}_x64_en-US.msi.zip" >> $env:GITHUB_OUTPUT
 
@@ -195,6 +234,7 @@ jobs:
     name: Create Release
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -208,7 +248,7 @@ jobs:
 
       - name: Generate latest.json
         run: |
-          TAG=${{ github.ref_name || inputs.tag }}
+          TAG=${{ inputs.tag }}
           VER=${{ needs.build-macos.outputs.app_version }}
           MACOS_SIG='${{ needs.build-macos.outputs.macos_sig }}'
           MACOS_URL='${{ needs.build-macos.outputs.macos_url }}'
@@ -237,8 +277,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          name: "momo·摸摸登录器 ${{ github.ref_name || inputs.tag }}"
+          tag_name: ${{ inputs.tag }}
+          name: "momo·摸摸登录器 ${{ inputs.tag }}"
           draft: true
           body: |
             ## 下载
