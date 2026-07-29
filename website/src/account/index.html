@@ -15,7 +15,7 @@
       async
       defer
     ></script>
-    <script type="module" src="/js/account.js"></script>
+    <script type="module" src="/js/account.js?v=20260729-1"></script>
   </head>
   <body class="account-body">
     <a class="skip-link" href="#main">跳到个人中心</a>
@@ -156,7 +156,8 @@
           </div>
           <p class="form-status" data-topup-status role="status" aria-live="polite"></p>
           <div class="dialog-actions">
-            <button class="command-button" type="button" data-cancel-dialog>取消</button>
+            <button class="command-button" type="button" data-cancel-dialog data-topup-cancel>取消</button>
+            <button class="command-button" type="button" data-new-topup hidden>创建新订单</button>
             <button class="command-button primary" type="submit" data-topup-submit disabled>前往支付</button>
           </div>
         </form>

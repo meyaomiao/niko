@@ -6,7 +6,10 @@ import {
   getPublicConfig,
   unwrap,
 } from "./api.js";
-import { createTopupIdempotencyState, submitPaymentForm } from "./payment.js";
+import {
+  createTopupIdempotencyState,
+  createTopupPaymentState,
+} from "./payment.js?v=20260729-1";
 
 const elements = {
   loading: document.querySelector("[data-account-loading]"),
@@ -20,6 +23,11 @@ const elements = {
   balance: document.querySelector("[data-balance]"),
   balanceUpdated: document.querySelector("[data-balance-updated]"),
   topupDialog: document.querySelector("[data-topup-dialog]"),
+  topupLoading: document.querySelector("[data-topup-loading]"),
+  topupFields: document.querySelector("[data-topup-fields]"),
+  topupSubmit: document.querySelector("[data-topup-submit]"),
+  topupCancel: document.querySelector("[data-topup-cancel]"),
+  newTopup: document.querySelector("[data-new-topup]"),
   emailDialog: document.querySelector("[data-email-dialog]"),
 };
 
@@ -28,6 +36,7 @@ const recordState = {
   consumptions: { loaded: false, loading: false, nextCursor: "" },
 };
 const topupIdempotency = createTopupIdempotencyState();
+const topupPayment = createTopupPaymentState();
 
 let account = null;
 let emailTurnstileWidget;
@@ -43,6 +52,43 @@ function setDialogStatus(name, message = "", tone = "error") {
   const target = document.querySelector(`[data-${name}-status]`);
   target.textContent = message;
   target.dataset.tone = message ? tone : "";
+}
+
+function showTopupPayment(orderId = "", openFailed = false) {
+  const order = orderId ? `订单 ${orderId} 已创建。` : "订单已创建。";
+  elements.topupLoading.hidden = true;
+  elements.topupFields.hidden = true;
+  elements.topupSubmit.disabled = false;
+  elements.topupSubmit.textContent = "重新打开支付页";
+  elements.topupCancel.textContent = "关闭";
+  elements.newTopup.hidden = false;
+  setDialogStatus(
+    "topup",
+    openFailed
+      ? `${order}支付页面未能自动打开，请点击“重新打开支付页”。`
+      : `${order}正在新标签页打开支付页面；如未打开，请点击“重新打开支付页”。`,
+    openFailed ? "warning" : "success",
+  );
+}
+
+function openTopupPayment(orderId = "") {
+  showTopupPayment(orderId);
+  try {
+    topupPayment.open();
+  } catch {
+    showTopupPayment(orderId, true);
+  }
+}
+
+function startNewTopup() {
+  topupPayment.clear();
+  setDialogStatus("topup");
+  elements.topupLoading.hidden = true;
+  elements.topupFields.hidden = false;
+  elements.topupSubmit.disabled = false;
+  elements.topupSubmit.textContent = "前往支付";
+  elements.topupCancel.textContent = "取消";
+  elements.newTopup.hidden = true;
 }
 
 function showAccess({ title, message, login = true }) {
@@ -408,17 +454,25 @@ function renderTopupOptions(payload) {
     throw new Error("No top-up options");
   }
 
-  document.querySelector("[data-topup-loading]").hidden = true;
-  document.querySelector("[data-topup-fields]").hidden = false;
-  document.querySelector("[data-topup-submit]").disabled = false;
+  elements.topupLoading.hidden = true;
+  elements.topupFields.hidden = false;
+  elements.topupSubmit.disabled = false;
 }
 
 async function openTopup() {
-  setDialogStatus("topup");
-  document.querySelector("[data-topup-loading]").hidden = false;
-  document.querySelector("[data-topup-fields]").hidden = true;
-  document.querySelector("[data-topup-submit]").disabled = true;
   elements.topupDialog.showModal();
+  if (topupPayment.status() === "ready") {
+    showTopupPayment();
+    return;
+  }
+
+  setDialogStatus("topup");
+  elements.topupLoading.hidden = false;
+  elements.topupFields.hidden = true;
+  elements.topupSubmit.disabled = true;
+  elements.topupSubmit.textContent = "前往支付";
+  elements.topupCancel.textContent = "取消";
+  elements.newTopup.hidden = true;
 
   try {
     const payload = await apiRequest("/wallet/topup-options");
@@ -429,13 +483,18 @@ async function openTopup() {
       requireLogin();
       return;
     }
-    document.querySelector("[data-topup-loading]").hidden = true;
+    elements.topupLoading.hidden = true;
     setDialogStatus("topup", "充值方式暂时不可用，请稍后重试。");
   }
 }
 
 async function submitTopup(event) {
   event.preventDefault();
+  if (topupPayment.status() === "ready") {
+    openTopupPayment();
+    return;
+  }
+
   const form = event.currentTarget;
   const selected = form.querySelector('input[name="topup_option"]:checked');
   const channel = form.elements.payment_channel.value;
@@ -452,20 +511,26 @@ async function submitTopup(event) {
     body.currency = selected.dataset.currency;
   }
 
-  const submit = document.querySelector("[data-topup-submit]");
-  submit.disabled = true;
-  submit.textContent = "正在创建订单…";
+  elements.topupSubmit.disabled = true;
+  elements.topupSubmit.textContent = "正在创建订单…";
   setDialogStatus("topup");
 
   try {
-    const payload = await apiRequest("/wallet/topup-orders", {
-      method: "POST",
-      body,
-      idempotencyKey: topupIdempotency.keyFor(body),
+    const { handoff } = await topupPayment.create(async () => {
+      const payload = await apiRequest("/wallet/topup-orders", {
+        method: "POST",
+        body,
+        idempotencyKey: topupIdempotency.keyFor(body),
+      });
+      const data = unwrap(payload) || {};
+      return {
+        paymentUrl: data.payment_url,
+        paymentParams: data.payment_params,
+        orderId: String(data.order?.order_id || data.order?.id || data.order_id || ""),
+      };
     });
-    const data = unwrap(payload) || {};
     topupIdempotency.clear();
-    submitPaymentForm(data.payment_url, data.payment_params);
+    openTopupPayment(handoff.orderId);
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       elements.topupDialog.close();
@@ -476,8 +541,8 @@ async function submitTopup(event) {
       "topup",
       error instanceof ApiError ? error.message : "订单创建失败，请稍后重试。",
     );
-    submit.disabled = false;
-    submit.textContent = "前往支付";
+    elements.topupSubmit.disabled = false;
+    elements.topupSubmit.textContent = "前往支付";
   }
 }
 
@@ -673,6 +738,7 @@ document.querySelector("[data-refresh-account]").addEventListener("click", async
   await loadRecords("topups", false);
 });
 document.querySelector("[data-topup-form]").addEventListener("submit", submitTopup);
+elements.newTopup.addEventListener("click", startNewTopup);
 document.querySelector("[data-email-form]").addEventListener("submit", bindEmail);
 document.querySelector("[data-send-email-code]").addEventListener("click", sendEmailCode);
 elements.logout.addEventListener("click", logout);

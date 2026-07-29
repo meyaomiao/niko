@@ -755,6 +755,7 @@ dialog::backdrop {
 
 .dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.65rem;
   margin-top: 1.4rem;

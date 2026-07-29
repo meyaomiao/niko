@@ -38,6 +38,43 @@ export function createTopupIdempotencyState(createKey = createIdempotencyKey) {
   };
 }
 
+export function createTopupPaymentState(openPayment = submitPaymentForm) {
+  let handoff = null;
+  let creating = null;
+
+  return {
+    status() {
+      return handoff ? "ready" : creating ? "creating" : "idle";
+    },
+    async create(createPayment) {
+      if (handoff) {
+        return { created: false, handoff };
+      }
+      if (!creating) {
+        creating = Promise.resolve()
+          .then(createPayment)
+          .then((nextHandoff) => {
+            handoff = nextHandoff;
+            return { created: true, handoff };
+          })
+          .finally(() => {
+            creating = null;
+          });
+      }
+      return creating;
+    },
+    open(documentRef = document) {
+      if (!handoff) {
+        throw new Error("Missing payment handoff");
+      }
+      return openPayment(handoff.paymentUrl, handoff.paymentParams, documentRef);
+    },
+    clear() {
+      handoff = null;
+    },
+  };
+}
+
 export function submitPaymentForm(paymentUrl, paymentParams, documentRef = document) {
   const target = new URL(paymentUrl);
   if (target.protocol !== "https:" || target.username || target.password) {
@@ -50,6 +87,7 @@ export function submitPaymentForm(paymentUrl, paymentParams, documentRef = docum
   const form = documentRef.createElement("form");
   form.method = "POST";
   form.action = target.href;
+  form.target = "_blank";
   form.acceptCharset = "UTF-8";
   form.hidden = true;
 
@@ -65,6 +103,10 @@ export function submitPaymentForm(paymentUrl, paymentParams, documentRef = docum
   }
 
   documentRef.body.append(form);
-  form.submit();
+  try {
+    form.submit();
+  } finally {
+    form.remove();
+  }
   return form;
 }
