@@ -75,46 +75,6 @@ export function createTopupPaymentState(openPayment = submitPaymentForm) {
   };
 }
 
-export function preparePaymentWindow(
-  windowRef = window,
-) {
-  let paymentWindow = null;
-  try {
-    paymentWindow = windowRef.open("", "_blank");
-  } catch {
-    // The retry button can submit to a fresh tab from a direct user gesture.
-  }
-  if (!paymentWindow) {
-    return { documentRef: () => null, close() {} };
-  }
-
-  try {
-    paymentWindow.document.title = "正在打开支付页面";
-    paymentWindow.document.body.textContent = "订单创建中，正在准备支付页面…";
-  } catch {
-    // The window may already have navigated or been isolated by the browser.
-  }
-
-  return {
-    documentRef() {
-      try {
-        return paymentWindow.closed ? null : paymentWindow.document;
-      } catch {
-        return null;
-      }
-    },
-    close() {
-      try {
-        if (!paymentWindow.closed) {
-          paymentWindow.close();
-        }
-      } catch {
-        // Ignore browser cleanup failures after a blocked or isolated navigation.
-      }
-    },
-  };
-}
-
 export function submitPaymentForm(
   paymentUrl,
   paymentParams,

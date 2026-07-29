@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   createTopupIdempotencyState,
   createTopupPaymentState,
-  preparePaymentWindow,
   submitPaymentForm,
 } from "../src/js/payment.js";
 import {
@@ -99,70 +98,6 @@ test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", 
   assert.equal(documentRef.removed[0], form);
 });
 
-test("payment handoff can submit in the prepared tab itself", async () => {
-  const documentRef = fakeDocument();
-  const form = submitPaymentForm(
-    "https://pay.example.com/submit.php",
-    { pid: "10001" },
-    documentRef,
-    "_self",
-  );
-
-  assert.equal(form.target, "_self");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(documentRef.appended, []);
-});
-
-test("payment window exposes its document for a self-targeted POST", async () => {
-  const childDocument = fakeDocument();
-  const childWindow = {
-    closed: false,
-    closeCount: 0,
-    close() {
-      this.closeCount += 1;
-      this.closed = true;
-    },
-    document: childDocument,
-  };
-  const opened = [];
-  const windowRef = {
-    open(url, target) {
-      opened.push({ url, target });
-      return childWindow;
-    },
-  };
-
-  const prepared = preparePaymentWindow(windowRef);
-
-  assert.deepEqual(opened, [{ url: "", target: "_blank" }]);
-  assert.equal(prepared.documentRef(), childDocument);
-  assert.equal(childWindow.document.title, "正在打开支付页面");
-  assert.match(childWindow.document.body.textContent, /订单创建中/);
-
-  const form = submitPaymentForm(
-    "https://pay.example.com/submit.php",
-    { pid: "10001", sign: "abc123" },
-    prepared.documentRef(),
-    "_self",
-  );
-  assert.equal(childDocument.appended[0], form);
-  assert.equal(form.target, "_self");
-  assert.equal(form.submitCount, 1);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(childDocument.appended, []);
-
-  prepared.close();
-  assert.equal(childWindow.closeCount, 1);
-  assert.equal(prepared.documentRef(), null);
-});
-
-test("blocked payment window falls back to a fresh tab target", () => {
-  const prepared = preparePaymentWindow({ open: () => null });
-
-  assert.equal(prepared.documentRef(), null);
-  assert.doesNotThrow(() => prepared.close());
-});
-
 test("payment handoff removes its form when submission throws", () => {
   const documentRef = fakeDocument();
   const originalCreateElement = documentRef.createElement;
@@ -215,8 +150,9 @@ test("top-up retries reuse a key until parameters change or creation succeeds", 
 test("created payment handoff can be reopened without creating another order", async () => {
   let createCount = 0;
   const opened = [];
-  const state = createTopupPaymentState((paymentUrl, paymentParams) => {
-    opened.push({ paymentUrl, paymentParams });
+  const documentRef = fakeDocument();
+  const state = createTopupPaymentState((paymentUrl, paymentParams, openedDocument, formTarget) => {
+    opened.push({ paymentUrl, paymentParams, documentRef: openedDocument, formTarget });
   });
   const createPayment = async () => {
     createCount += 1;
@@ -231,14 +167,18 @@ test("created payment handoff can be reopened without creating another order", a
   const first = await state.create(createPayment);
   assert.equal(first.created, true);
   assert.equal(state.status(), "ready");
-  state.open({});
+  state.open(documentRef, "_blank");
 
   const retry = await state.create(createPayment);
   assert.equal(retry.created, false);
-  state.open({});
+  state.open(documentRef, "_blank");
 
   assert.equal(createCount, 1);
-  assert.deepEqual(opened, [first.handoff, first.handoff].map(({ orderId, ...handoff }) => handoff));
+  assert.deepEqual(opened, [first.handoff, first.handoff].map(({ orderId, ...handoff }) => ({
+    ...handoff,
+    documentRef,
+    formTarget: "_blank",
+  })));
 
   state.clear();
   assert.equal(state.status(), "idle");
