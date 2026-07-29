@@ -367,7 +367,7 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: "Niko ${{ inputs.tag }}"
+          name: "Niko v${{ needs.build-macos.outputs.app_version }}"
           draft: true
           fail_on_unmatched_files: true
           body: |
@@ -376,18 +376,18 @@ jobs:
             | 平台 | 文件 | 说明 |
             |---|---|---|
             | macOS (Apple Silicon + Intel) | `*.dmg` | 已签名 + 公证，直接安装 |
-            | Windows 10/11 | `*.msi` / `*_setup.exe` | **未签名**，首次运行会有 SmartScreen 提示，[查看说明](#windows-smartscreen) |
+            | Windows 10/11 | `*.msi` / `*_setup.exe` | **未签名**，首次运行会有 SmartScreen 提示，见下方说明 |
 
             ## SHA256 校验
 
             见附件中的 `SHA256SUMS.txt` / `SHA256SUMS_win.txt`
 
-            ## Windows SmartScreen 说明 {#windows-smartscreen}
+            ## Windows SmartScreen
 
             首次运行安装包时，Windows SmartScreen 会提示"Windows 已保护你的电脑"。
             点击 **更多信息** → **仍要运行** 即可继续安装。
-            这是因为当前版本尚未购买代码签名证书，程序本身是安全的。
-            SHA256 校验和已公示，可自行核验。
+            这是因为当前版本尚未购买 Windows 代码签名证书。
+            附件提供了 SHA256 校验值，可用于核对下载文件完整性。
           files: |
             release-artifacts/**/*
             latest.json
