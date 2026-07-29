@@ -60,7 +60,7 @@ jobs:
     outputs:
       app_version: ${{ steps.version.outputs.version }}
       macos_sig: ${{ steps.sig.outputs.signature }}
-      macos_url: ${{ steps.url.outputs.url }}
+      macos_filename: ${{ steps.sig.outputs.filename }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,22 +130,40 @@ jobs:
 
       - name: Compute SHA256 & extract updater sig
         id: sig
+        shell: bash
         run: |
+          set -euo pipefail
           cd src-tauri/target/universal-apple-darwin/release/bundle
-          find . -name "*.dmg" -o -name "*.app.tar.gz" | while read f; do
+
+          shopt -s nullglob
+          updater_files=(macos/*.app.tar.gz)
+          dmg_files=(dmg/*.dmg)
+          if [ "${#updater_files[@]}" -ne 1 ] || [ "${#dmg_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one macOS updater archive and one DMG"
+            exit 1
+          fi
+
+          updater_file="${updater_files[0]}"
+          signature_file="${updater_file}.sig"
+          if [ ! -s "$signature_file" ]; then
+            echo "::error::Missing updater signature: $signature_file"
+            exit 1
+          fi
+
+          artifacts=("${dmg_files[0]}" "$updater_file")
+          for f in "${artifacts[@]}"; do
             shasum -a 256 "$f"
           done > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          # 提取 .app.tar.gz.sig（tauri updater 签名）
-          SIG=$(cat macos/*.app.tar.gz.sig 2>/dev/null || echo "")
-          echo "signature=$SIG" >> "$GITHUB_OUTPUT"
 
-      - name: Set macOS download URL
-        id: url
-        run: |
-          TAG=${{ inputs.tag }}
-          VER=${{ steps.version.outputs.version }}
-          echo "url=https://github.com/meyaomiao/niko/releases/download/${TAG}/Niko_${VER}_universal.app.tar.gz" >> "$GITHUB_OUTPUT"
+          SIG=$(tr -d '\r\n' < "$signature_file")
+          if [ -z "$SIG" ]; then
+            echo "::error::macOS updater signature is empty"
+            exit 1
+          fi
+
+          echo "signature=$SIG" >> "$GITHUB_OUTPUT"
+          echo "filename=$(basename "$updater_file")" >> "$GITHUB_OUTPUT"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -156,6 +174,7 @@ jobs:
             src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
             src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz.sig
             src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
+          if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────
   # E9-2: Windows — 未签名产物 + SHA256 公示
@@ -167,7 +186,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       win_sig: ${{ steps.sig.outputs.signature }}
-      win_url: ${{ steps.url.outputs.url }}
+      win_filename: ${{ steps.sig.outputs.filename }}
     steps:
       - uses: actions/checkout@v4
 
@@ -208,17 +227,23 @@ jobs:
           }
           $out | Out-File -FilePath SHA256SUMS_win.txt -Encoding utf8
           Get-Content SHA256SUMS_win.txt
-          $sigFile = Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.msi.zip.sig" | Select-Object -First 1
-          $sig = if ($sigFile) { Get-Content $sigFile.FullName -Raw } else { "" }
-          echo "signature=$($sig.Trim())" >> $env:GITHUB_OUTPUT
 
-      - name: Set Windows download URL
-        id: url
-        shell: pwsh
-        run: |
-          $tag = "${{ inputs.tag }}"
-          $ver = node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)"
-          echo "url=https://github.com/meyaomiao/niko/releases/download/$tag/Niko_${ver}_x64_en-US.msi.zip" >> $env:GITHUB_OUTPUT
+          $msiFiles = @(Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.msi" -File)
+          $exeFiles = @(Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.exe" -File)
+          if ($msiFiles.Count -ne 1 -or $exeFiles.Count -ne 1) {
+            throw "Expected exactly one MSI and one EXE installer"
+          }
+
+          $msiFile = $msiFiles[0]
+          $sigFile = Get-Item "$($msiFile.FullName).sig" -ErrorAction Stop
+          $exeSigFile = Get-Item "$($exeFiles[0].FullName).sig" -ErrorAction Stop
+          $sig = (Get-Content $sigFile.FullName -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($sig) -or $exeSigFile.Length -eq 0) {
+            throw "Windows updater signature is missing or empty"
+          }
+
+          echo "signature=$sig" >> $env:GITHUB_OUTPUT
+          echo "filename=$($msiFile.Name)" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -226,10 +251,11 @@ jobs:
           name: windows-unsigned
           path: |
             src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.msi.zip
-            src-tauri/target/release/bundle/**/*.msi.zip.sig
+            src-tauri/target/release/bundle/**/*.msi.sig
             src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.exe.sig
             SHA256SUMS_win.txt
+          if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────
   # E9-4: 生成 latest.json（Tauri updater 所需）
@@ -250,40 +276,100 @@ jobs:
       - name: List artifacts
         run: find release-artifacts -type f | sort
 
-      - name: Generate latest.json
+      - name: Validate artifacts & generate latest.json
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          APP_VERSION: ${{ needs.build-macos.outputs.app_version }}
+          MACOS_SIGNATURE: ${{ needs.build-macos.outputs.macos_sig }}
+          MACOS_FILENAME: ${{ needs.build-macos.outputs.macos_filename }}
+          WINDOWS_SIGNATURE: ${{ needs.build-windows.outputs.win_sig }}
+          WINDOWS_FILENAME: ${{ needs.build-windows.outputs.win_filename }}
         run: |
-          TAG=${{ inputs.tag }}
-          VER=${{ needs.build-macos.outputs.app_version }}
-          MACOS_SIG='${{ needs.build-macos.outputs.macos_sig }}'
-          MACOS_URL='${{ needs.build-macos.outputs.macos_url }}'
-          WIN_SIG='${{ needs.build-windows.outputs.win_sig }}'
-          WIN_URL='${{ needs.build-windows.outputs.win_url }}'
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          cat > latest.json << JSON
-          {
-            "version": "$VER",
-            "notes": "查看 Release Notes：https://github.com/meyaomiao/niko/releases/tag/$TAG",
-            "pub_date": "$PUB_DATE",
-            "platforms": {
-              "darwin-universal": {
-                "signature": "$MACOS_SIG",
-                "url": "$MACOS_URL"
-              },
-              "windows-x86_64": {
-                "signature": "$WIN_SIG",
-                "url": "$WIN_URL"
-              }
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const required = [
+            "RELEASE_TAG",
+            "APP_VERSION",
+            "MACOS_SIGNATURE",
+            "MACOS_FILENAME",
+            "WINDOWS_SIGNATURE",
+            "WINDOWS_FILENAME",
+          ];
+          for (const name of required) {
+            if (!process.env[name]?.trim()) {
+              throw new Error(`${name} is empty`);
             }
           }
-          JSON
-          cat latest.json
+
+          const files = [];
+          function walk(directory) {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const target = path.join(directory, entry.name);
+              if (entry.isDirectory()) walk(target);
+              else files.push(target);
+            }
+          }
+          walk("release-artifacts");
+
+          function exactlyOne(filename) {
+            if (path.basename(filename) !== filename) {
+              throw new Error(`Invalid artifact filename: ${filename}`);
+            }
+            const matches = files.filter((file) => path.basename(file) === filename);
+            if (matches.length !== 1) {
+              throw new Error(`Expected exactly one ${filename}, found ${matches.length}`);
+            }
+            return matches[0];
+          }
+
+          const macosArchive = exactlyOne(process.env.MACOS_FILENAME);
+          const windowsInstaller = exactlyOne(process.env.WINDOWS_FILENAME);
+          const macosSignatureFile = exactlyOne(`${process.env.MACOS_FILENAME}.sig`);
+          const windowsSignatureFile = exactlyOne(`${process.env.WINDOWS_FILENAME}.sig`);
+          const macosSignature = fs.readFileSync(macosSignatureFile, "utf8").trim();
+          const windowsSignature = fs.readFileSync(windowsSignatureFile, "utf8").trim();
+
+          if (!fs.statSync(macosArchive).size || !fs.statSync(windowsInstaller).size) {
+            throw new Error("Updater artifact is empty");
+          }
+          if (macosSignature !== process.env.MACOS_SIGNATURE.trim()) {
+            throw new Error("macOS signature output does not match its artifact");
+          }
+          if (windowsSignature !== process.env.WINDOWS_SIGNATURE.trim()) {
+            throw new Error("Windows signature output does not match its artifact");
+          }
+
+          const tag = process.env.RELEASE_TAG;
+          const baseUrl = `https://github.com/meyaomiao/niko/releases/download/${tag}`;
+          const latest = {
+            version: process.env.APP_VERSION,
+            notes: `查看 Release Notes：https://github.com/meyaomiao/niko/releases/tag/${tag}`,
+            pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            platforms: {
+              "darwin-universal": {
+                signature: macosSignature,
+                url: `${baseUrl}/${process.env.MACOS_FILENAME}`,
+              },
+              "windows-x86_64": {
+                signature: windowsSignature,
+                url: `${baseUrl}/${process.env.WINDOWS_FILENAME}`,
+              },
+            },
+          };
+          fs.writeFileSync("latest.json", `${JSON.stringify(latest, null, 2)}\n`);
+          console.log(fs.readFileSync("latest.json", "utf8"));
+          NODE
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: "Niko ${{ inputs.tag }}"
           draft: true
+          fail_on_unmatched_files: true
           body: |
             ## 下载
 
