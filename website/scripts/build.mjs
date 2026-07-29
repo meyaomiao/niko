@@ -80,6 +80,8 @@ for (const required of [
   "github.com/meyaomiao/niko/releases",
   "Niko_0.1.2_universal.dmg",
   "Niko_0.1.2_x64-setup.exe",
+  'data-hero-download="macos"',
+  'data-hero-download="windows"',
   '"softwareVersion": "0.1.2"'
 ]) {
   if (!html.includes(required)) {

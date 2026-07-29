@@ -285,6 +285,52 @@ h1 {
   margin-top: 2rem;
 }
 
+.hero-downloads {
+  align-items: stretch;
+}
+
+.button.hero-download {
+  min-width: 202px;
+  min-height: 62px;
+  flex-direction: column;
+  gap: 0.2rem;
+  border-radius: 10px;
+  padding: 0.78rem 1.05rem;
+  box-shadow: 0 12px 30px rgba(50, 43, 42, 0.15);
+}
+
+.hero-download span {
+  font-size: 0.96rem;
+  line-height: 1.25;
+}
+
+.hero-download small {
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.25;
+  opacity: 0.72;
+}
+
+.button.hero-download-macos {
+  background: var(--ink);
+  color: white;
+}
+
+.hero-download-macos:hover {
+  background: #181414;
+}
+
+.button.hero-download-windows {
+  border-color: #df8177;
+  background: var(--coral);
+  color: var(--ink);
+}
+
+.hero-download-windows:hover {
+  border-color: #d77368;
+  background: #f19f96;
+}
+
 .button {
   min-height: 48px;
   display: inline-flex;
@@ -704,15 +750,15 @@ footer {
 .button-download {
   min-width: 154px;
   min-height: 44px;
-  border-color: rgba(120, 80, 60, 0.2);
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 8px 22px rgba(81, 58, 46, 0.1);
+  border-color: var(--ink);
+  background: var(--ink);
+  color: white;
+  box-shadow: 0 8px 22px rgba(50, 43, 42, 0.16);
 }
 
 .button-download:hover {
-  border-color: rgba(120, 80, 60, 0.34);
-  background: white;
+  border-color: #181414;
+  background: #181414;
 }
 
 .download-copy > .download-meta {
@@ -979,6 +1025,16 @@ footer {
 
   .platform-note {
     max-width: 340px;
+  }
+
+  .hero-downloads {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .button.hero-download {
+    min-width: 0;
+    width: 100%;
   }
 
   .product-stage {
