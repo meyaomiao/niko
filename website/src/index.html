@@ -51,8 +51,11 @@
         "operatingSystem": "macOS 12+, Windows 10+",
         "description": "将可用模型配置接入 ChatGPT 与 Claude 桌面端的轻量桌面工具。",
         "url": "https://niko-ai.cc/",
-        "downloadUrl": "https://github.com/meyaomiao/niko/releases",
-        "softwareVersion": "0.1.1"
+        "downloadUrl": [
+          "https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/Niko_0.1.2_universal.dmg",
+          "https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/Niko_0.1.2_x64-setup.exe"
+        ],
+        "softwareVersion": "0.1.2"
       }
     </script>
   </head>
@@ -117,10 +120,8 @@
           <div class="hero-actions">
             <a
               class="button button-primary"
-              href="https://github.com/meyaomiao/niko/releases"
-              target="_blank"
-              rel="noreferrer"
-            >查看 Releases <span aria-hidden="true">↗</span></a>
+              href="#download"
+            >下载 Niko <span aria-hidden="true">↓</span></a>
             <a
               class="button button-secondary"
               href="https://github.com/meyaomiao/niko"
@@ -128,7 +129,7 @@
               rel="noreferrer"
             >查看源码</a>
           </div>
-          <p class="platform-note">支持 macOS 12+ 与 Windows 10+ · 当前公开版本正在准备中</p>
+          <p class="platform-note">支持 macOS 12+ 与 Windows 10+ · v0.1.2 已发布</p>
         </div>
 
         <div class="product-stage" aria-label="Niko 产品工作流示意">
@@ -247,15 +248,57 @@
           <p class="section-kicker">开始使用</p>
           <h2 id="download-title">安装 Niko，然后把配置交给它。</h2>
           <p>
-            正式安装包将通过 GitHub Releases 提供。当前公开版本仍在准备中；发布后同一入口会提供
-            macOS 的 <code>.dmg</code> 与 Windows 的 <code>.msi</code> / <code>.exe</code>。
+            v0.1.2 已发布。选择当前电脑的系统下载安装，账号与数据可在不同设备间继续使用。
           </p>
-          <a
-            class="button button-primary"
-            href="https://github.com/meyaomiao/niko/releases"
-            target="_blank"
-            rel="noreferrer"
-          >前往 GitHub Releases <span aria-hidden="true">↗</span></a>
+          <div class="download-options" aria-label="Niko v0.1.2 安装包">
+            <div class="download-option">
+              <div class="download-option-copy">
+                <span class="download-platform">macOS</span>
+                <strong>Apple Silicon + Intel 通用版</strong>
+                <small>macOS 12 及以上 · DMG 安装包</small>
+              </div>
+              <a
+                class="button button-download"
+                href="https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/Niko_0.1.2_universal.dmg"
+              >下载 macOS <span aria-hidden="true">↓</span></a>
+            </div>
+            <div class="download-option">
+              <div class="download-option-copy">
+                <span class="download-platform">Windows</span>
+                <strong>Windows 10 / 11 x64</strong>
+                <small>
+                  EXE 安装包 ·
+                  <a
+                    href="https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/Niko_0.1.2_x64_en-US.msi"
+                  >下载 MSI</a>
+                </small>
+              </div>
+              <a
+                class="button button-download"
+                href="https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/Niko_0.1.2_x64-setup.exe"
+              >下载 Windows <span aria-hidden="true">↓</span></a>
+            </div>
+          </div>
+          <p class="download-meta">
+            v0.1.2 ·
+            <a
+              href="https://github.com/meyaomiao/niko/releases/tag/niko-v0.1.2"
+              target="_blank"
+              rel="noreferrer"
+            >版本说明</a>
+            ·
+            <a
+              href="https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/SHA256SUMS.txt"
+              target="_blank"
+              rel="noreferrer"
+            >macOS SHA256</a>
+            ·
+            <a
+              href="https://github.com/meyaomiao/niko/releases/download/niko-v0.1.2/SHA256SUMS_win.txt"
+              target="_blank"
+              rel="noreferrer"
+            >Windows SHA256</a>
+          </p>
         </div>
         <ol class="install-steps">
           <li><span>1</span><div><strong>安装并打开</strong><p>macOS 12+ 或 Windows 10+</p></div></li>
@@ -284,10 +327,8 @@
         <div class="hero-actions">
           <a
             class="button button-primary"
-            href="https://github.com/meyaomiao/niko/releases"
-            target="_blank"
-            rel="noreferrer"
-          >查看 Releases</a>
+            href="#download"
+          >下载 v0.1.2</a>
           <a
             class="button button-secondary"
             href="https://github.com/meyaomiao/niko/issues"

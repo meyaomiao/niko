@@ -77,7 +77,10 @@ for (const required of [
   'href="/login/"',
   'href="/account/"',
   "https://niko-ai.cc/",
-  "github.com/meyaomiao/niko/releases"
+  "github.com/meyaomiao/niko/releases",
+  "Niko_0.1.2_universal.dmg",
+  "Niko_0.1.2_x64-setup.exe",
+  '"softwareVersion": "0.1.2"'
 ]) {
   if (!html.includes(required)) {
     throw new Error(`Website is missing required content: ${required}`);
