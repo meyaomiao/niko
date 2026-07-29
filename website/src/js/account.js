@@ -9,7 +9,8 @@ import {
 import {
   createTopupIdempotencyState,
   createTopupPaymentState,
-} from "./payment.js?v=20260729-1";
+  preparePaymentWindow,
+} from "./payment.js?v=20260729-2";
 
 const elements = {
   loading: document.querySelector("[data-account-loading]"),
@@ -71,11 +72,12 @@ function showTopupPayment(orderId = "", openFailed = false) {
   );
 }
 
-function openTopupPayment(orderId = "") {
+function openTopupPayment(orderId = "", preparedWindow) {
   showTopupPayment(orderId);
   try {
-    topupPayment.open();
+    topupPayment.open(document, preparedWindow?.target);
   } catch {
+    preparedWindow?.close();
     showTopupPayment(orderId, true);
   }
 }
@@ -511,6 +513,7 @@ async function submitTopup(event) {
     body.currency = selected.dataset.currency;
   }
 
+  const preparedWindow = preparePaymentWindow();
   elements.topupSubmit.disabled = true;
   elements.topupSubmit.textContent = "正在创建订单…";
   setDialogStatus("topup");
@@ -530,8 +533,9 @@ async function submitTopup(event) {
       };
     });
     topupIdempotency.clear();
-    openTopupPayment(handoff.orderId);
+    openTopupPayment(handoff.orderId, preparedWindow);
   } catch (error) {
+    preparedWindow.close();
     if (error instanceof ApiError && error.status === 401) {
       elements.topupDialog.close();
       requireLogin();

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createTopupIdempotencyState,
   createTopupPaymentState,
+  preparePaymentWindow,
   submitPaymentForm,
 } from "../src/js/payment.js";
 import {
@@ -70,7 +71,7 @@ function fakeNavigation() {
   };
 }
 
-test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", () => {
+test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", async () => {
   const documentRef = fakeDocument();
   const form = submitPaymentForm(
     "https://pay.example.com/submit.php",
@@ -78,8 +79,7 @@ test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", 
     documentRef,
   );
 
-  assert.deepEqual(documentRef.appended, []);
-  assert.equal(documentRef.removed[0], form);
+  assert.equal(documentRef.appended[0], form);
   assert.equal(form.method, "POST");
   assert.equal(form.action, "https://pay.example.com/submit.php");
   assert.equal(form.target, "_blank");
@@ -93,6 +93,59 @@ test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", 
       { type: "hidden", name: "sign", value: "abc123" },
     ],
   );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(documentRef.appended, []);
+  assert.equal(documentRef.removed[0], form);
+});
+
+test("payment handoff targets a tab prepared during the user gesture", async () => {
+  const documentRef = fakeDocument();
+  const form = submitPaymentForm(
+    "https://pay.example.com/submit.php",
+    { pid: "10001" },
+    documentRef,
+    "niko-payment-test",
+  );
+
+  assert.equal(form.target, "niko-payment-test");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(documentRef.appended, []);
+});
+
+test("payment window is prepared synchronously and can be closed after creation fails", () => {
+  const childWindow = {
+    closed: false,
+    closeCount: 0,
+    close() {
+      this.closeCount += 1;
+      this.closed = true;
+    },
+    document: { title: "", body: { textContent: "" } },
+  };
+  const opened = [];
+  const windowRef = {
+    open(url, target) {
+      opened.push({ url, target });
+      return childWindow;
+    },
+  };
+
+  const prepared = preparePaymentWindow(windowRef, "niko-payment-test");
+
+  assert.deepEqual(opened, [{ url: "", target: "niko-payment-test" }]);
+  assert.equal(prepared.target, "niko-payment-test");
+  assert.equal(childWindow.document.title, "正在打开支付页面");
+  assert.match(childWindow.document.body.textContent, /订单创建中/);
+  prepared.close();
+  assert.equal(childWindow.closeCount, 1);
+});
+
+test("blocked payment window falls back to a fresh tab target", () => {
+  const prepared = preparePaymentWindow({ open: () => null }, "niko-payment-test");
+
+  assert.equal(prepared.target, "_blank");
+  assert.doesNotThrow(() => prepared.close());
 });
 
 test("payment handoff removes its form when submission throws", () => {

@@ -63,11 +63,11 @@ export function createTopupPaymentState(openPayment = submitPaymentForm) {
       }
       return creating;
     },
-    open(documentRef = document) {
+    open(documentRef = document, formTarget = "_blank") {
       if (!handoff) {
         throw new Error("Missing payment handoff");
       }
-      return openPayment(handoff.paymentUrl, handoff.paymentParams, documentRef);
+      return openPayment(handoff.paymentUrl, handoff.paymentParams, documentRef, formTarget);
     },
     clear() {
       handoff = null;
@@ -75,7 +75,47 @@ export function createTopupPaymentState(openPayment = submitPaymentForm) {
   };
 }
 
-export function submitPaymentForm(paymentUrl, paymentParams, documentRef = document) {
+export function preparePaymentWindow(
+  windowRef = window,
+  target = `niko-payment-${createIdempotencyKey()}`,
+) {
+  let paymentWindow = null;
+  try {
+    paymentWindow = windowRef.open("", target);
+  } catch {
+    // The retry button can submit to a fresh tab from a direct user gesture.
+  }
+  if (!paymentWindow) {
+    return { target: "_blank", close() {} };
+  }
+
+  try {
+    paymentWindow.document.title = "正在打开支付页面";
+    paymentWindow.document.body.textContent = "订单创建中，正在准备支付页面…";
+  } catch {
+    // The window may already have navigated or been isolated by the browser.
+  }
+
+  return {
+    target,
+    close() {
+      try {
+        if (!paymentWindow.closed) {
+          paymentWindow.close();
+        }
+      } catch {
+        // Ignore browser cleanup failures after a blocked or isolated navigation.
+      }
+    },
+  };
+}
+
+export function submitPaymentForm(
+  paymentUrl,
+  paymentParams,
+  documentRef = document,
+  formTarget = "_blank",
+) {
   const target = new URL(paymentUrl);
   if (target.protocol !== "https:" || target.username || target.password) {
     throw new Error("Unsafe payment URL");
@@ -87,7 +127,7 @@ export function submitPaymentForm(paymentUrl, paymentParams, documentRef = docum
   const form = documentRef.createElement("form");
   form.method = "POST";
   form.action = target.href;
-  form.target = "_blank";
+  form.target = formTarget;
   form.acceptCharset = "UTF-8";
   form.hidden = true;
 
@@ -105,8 +145,10 @@ export function submitPaymentForm(paymentUrl, paymentParams, documentRef = docum
   documentRef.body.append(form);
   try {
     form.submit();
-  } finally {
+  } catch (error) {
     form.remove();
+    throw error;
   }
+  setTimeout(() => form.remove(), 0);
   return form;
 }
