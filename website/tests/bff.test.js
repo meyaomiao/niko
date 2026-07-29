@@ -187,7 +187,10 @@ test("top-up requests require one amount mode and a valid idempotency key", asyn
 });
 
 test("payment responses require the exact Epay POST contract on an allowed HTTPS origin", () => {
-  const env = { NIKO_PAYMENT_ALLOWED_ORIGINS: "https://pay.example.com" };
+  const env = {
+    NIKO_PAYMENT_ALLOWED_ORIGINS: "https://pay.example.com",
+    NIKO_PAYMENT_REDIRECT_ORIGINS: "https://checkout.example.com",
+  };
   assert.doesNotThrow(() =>
     validatePaymentResponse(
       {
@@ -204,6 +207,17 @@ test("payment responses require the exact Epay POST contract on an allowed HTTPS
       validatePaymentResponse(
         {
           payment_url: "http://pay.example.com/checkout",
+          payment_params: validPaymentParams(),
+        },
+        env,
+      ),
+    (error) => assertHttpError(error, 502, "PAYMENT_URL_REJECTED"),
+  );
+  assert.throws(
+    () =>
+      validatePaymentResponse(
+        {
+          payment_url: "https://checkout.example.com/redirect-only",
           payment_params: validPaymentParams(),
         },
         env,
@@ -259,11 +273,13 @@ test("payment CSP uses only configured origins for form submissions", () => {
   const policy = contentSecurityPolicy({
     NIKO_PAYMENT_ALLOWED_ORIGINS:
       "https://pay.example.com, https://gateway.example.net:8443, https://ignored.test/path, http://insecure.test",
+    NIKO_PAYMENT_REDIRECT_ORIGINS:
+      "https://checkout.example.com, https://ignored-redirect.test/path, http://insecure-redirect.test",
   });
   const formAction = policy.split("; ").find((directive) => directive.startsWith("form-action"));
   assert.equal(
     formAction,
-    "form-action 'self' https://pay.example.com https://gateway.example.net:8443",
+    "form-action 'self' https://pay.example.com https://gateway.example.net:8443 https://checkout.example.com",
   );
   assert.doesNotMatch(formAction, /(?:^|\s)https:(?:\s|$)/);
 });

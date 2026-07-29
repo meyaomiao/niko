@@ -30,6 +30,7 @@ npm run dev
 - `NIKO_BFF_SECRET`：与 momotoken 相同的 HMAC 密钥，至少 32 字节，必须使用 Pages Secret。
 - `NIKO_TURNSTILE_SITE_KEY`：前端公开的 Turnstile Site Key。
 - `NIKO_PAYMENT_ALLOWED_ORIGINS`：允许返回给浏览器并接收支付表单的 HTTPS Origin，逗号分隔，只能填写 Origin（不能带路径、查询或凭据），例如 `https://pay.example.com`。
+- `NIKO_PAYMENT_REDIRECT_ORIGINS`：支付表单提交后允许跟随 302 的 HTTPS Origin，仅用于 CSP `form-action`，不会放宽 BFF 对 `payment_url` 的校验。例如 KyrenPay 收银台为 `https://payment.kyren.io`。
 
 可选配置：
 
@@ -151,4 +152,4 @@ Turnstile action 固定为：注册 `niko_register`、登录 `niko_login`、发�
 
 构建脚本从 `brand/niko-logo-kit-c` 复制品牌资产并生成 Open Graph 图片。部署命令仍为 `npm run deploy`，但开发和联调阶段不要运行该命令。
 
-根 Pages Function middleware 会从 `NIKO_PAYMENT_ALLOWED_ORIGINS` 动态生成 CSP `form-action`；静态 `_headers` 不再保存 CSP，避免两条策略叠加后阻断外部 POST。Cloudflare Pages 的 Production 和 Preview 环境都必须配置同一变量，否则 BFF 会拒绝支付地址且 CSP 仅允许同源表单。网站改动由独立的 `Niko Website CI` 在单个 Ubuntu job 中执行 `npm run check`，不会启动桌面端检查或手动触发的 `Niko Release`。
+根 Pages Function middleware 会从 `NIKO_PAYMENT_ALLOWED_ORIGINS` 和 `NIKO_PAYMENT_REDIRECT_ORIGINS` 动态生成 CSP `form-action`；前者仍单独约束 BFF 接受的 `payment_url`，后者只允许支付网关的 302 收银台终点。静态 `_headers` 不再保存 CSP，避免两条策略叠加后阻断外部 POST。Cloudflare Pages 的 Production 和 Preview 环境都必须配置相同变量，否则 BFF 会拒绝支付地址，或浏览器会阻断网关重定向。网站改动由独立的 `Niko Website CI` 在单个 Ubuntu job 中执行 `npm run check`，不会启动桌面端检查或手动触发的 `Niko Release`。

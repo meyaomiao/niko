@@ -295,9 +295,9 @@ function validHttpsUrl(value) {
   }
 }
 
-export function allowedPaymentOrigins(env) {
+function configuredHttpsOrigins(configuredList) {
   const origins = new Set();
-  for (const configured of String(env.NIKO_PAYMENT_ALLOWED_ORIGINS || "").split(",")) {
+  for (const configured of String(configuredList || "").split(",")) {
     const value = configured.trim();
     if (!value) {
       continue;
@@ -321,8 +321,16 @@ export function allowedPaymentOrigins(env) {
   return origins;
 }
 
+export function allowedPaymentOrigins(env) {
+  return configuredHttpsOrigins(env.NIKO_PAYMENT_ALLOWED_ORIGINS);
+}
+
 export function contentSecurityPolicy(env) {
-  const formAction = ["'self'", ...allowedPaymentOrigins(env)].join(" ");
+  const formActionOrigins = allowedPaymentOrigins(env);
+  for (const origin of configuredHttpsOrigins(env.NIKO_PAYMENT_REDIRECT_ORIGINS)) {
+    formActionOrigins.add(origin);
+  }
+  const formAction = ["'self'", ...formActionOrigins].join(" ");
   return [
     "default-src 'self'",
     "script-src 'self' 'sha256-vfdgX8SmTsQuaedtxvbKwGIbqWmGbHBdIIM8nJtTcK4=' https://challenges.cloudflare.com",
