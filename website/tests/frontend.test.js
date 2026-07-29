@@ -99,21 +99,22 @@ test("payment handoff submits a temporary hidden HTTPS POST form in a new tab", 
   assert.equal(documentRef.removed[0], form);
 });
 
-test("payment handoff targets a tab prepared during the user gesture", async () => {
+test("payment handoff can submit in the prepared tab itself", async () => {
   const documentRef = fakeDocument();
   const form = submitPaymentForm(
     "https://pay.example.com/submit.php",
     { pid: "10001" },
     documentRef,
-    "niko-payment-test",
+    "_self",
   );
 
-  assert.equal(form.target, "niko-payment-test");
+  assert.equal(form.target, "_self");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(documentRef.appended, []);
 });
 
-test("payment window is prepared synchronously and can be closed after creation fails", () => {
+test("payment window exposes its document for a self-targeted POST", async () => {
+  const childDocument = fakeDocument();
   const childWindow = {
     closed: false,
     closeCount: 0,
@@ -121,7 +122,7 @@ test("payment window is prepared synchronously and can be closed after creation 
       this.closeCount += 1;
       this.closed = true;
     },
-    document: { title: "", body: { textContent: "" } },
+    document: childDocument,
   };
   const opened = [];
   const windowRef = {
@@ -131,20 +132,34 @@ test("payment window is prepared synchronously and can be closed after creation 
     },
   };
 
-  const prepared = preparePaymentWindow(windowRef, "niko-payment-test");
+  const prepared = preparePaymentWindow(windowRef);
 
-  assert.deepEqual(opened, [{ url: "", target: "niko-payment-test" }]);
-  assert.equal(prepared.target, "niko-payment-test");
+  assert.deepEqual(opened, [{ url: "", target: "_blank" }]);
+  assert.equal(prepared.documentRef(), childDocument);
   assert.equal(childWindow.document.title, "正在打开支付页面");
   assert.match(childWindow.document.body.textContent, /订单创建中/);
+
+  const form = submitPaymentForm(
+    "https://pay.example.com/submit.php",
+    { pid: "10001", sign: "abc123" },
+    prepared.documentRef(),
+    "_self",
+  );
+  assert.equal(childDocument.appended[0], form);
+  assert.equal(form.target, "_self");
+  assert.equal(form.submitCount, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(childDocument.appended, []);
+
   prepared.close();
   assert.equal(childWindow.closeCount, 1);
+  assert.equal(prepared.documentRef(), null);
 });
 
 test("blocked payment window falls back to a fresh tab target", () => {
-  const prepared = preparePaymentWindow({ open: () => null }, "niko-payment-test");
+  const prepared = preparePaymentWindow({ open: () => null });
 
-  assert.equal(prepared.target, "_blank");
+  assert.equal(prepared.documentRef(), null);
   assert.doesNotThrow(() => prepared.close());
 });
 

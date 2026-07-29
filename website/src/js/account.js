@@ -10,7 +10,7 @@ import {
   createTopupIdempotencyState,
   createTopupPaymentState,
   preparePaymentWindow,
-} from "./payment.js?v=20260729-2";
+} from "./payment.js?v=20260729-3";
 
 const elements = {
   loading: document.querySelector("[data-account-loading]"),
@@ -75,7 +75,8 @@ function showTopupPayment(orderId = "", openFailed = false) {
 function openTopupPayment(orderId = "", preparedWindow) {
   showTopupPayment(orderId);
   try {
-    topupPayment.open(document, preparedWindow?.target);
+    const paymentDocument = preparedWindow?.documentRef() || document;
+    topupPayment.open(paymentDocument, paymentDocument === document ? "_blank" : "_self");
   } catch {
     preparedWindow?.close();
     showTopupPayment(orderId, true);

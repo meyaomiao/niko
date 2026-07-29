@@ -77,16 +77,15 @@ export function createTopupPaymentState(openPayment = submitPaymentForm) {
 
 export function preparePaymentWindow(
   windowRef = window,
-  target = `niko-payment-${createIdempotencyKey()}`,
 ) {
   let paymentWindow = null;
   try {
-    paymentWindow = windowRef.open("", target);
+    paymentWindow = windowRef.open("", "_blank");
   } catch {
     // The retry button can submit to a fresh tab from a direct user gesture.
   }
   if (!paymentWindow) {
-    return { target: "_blank", close() {} };
+    return { documentRef: () => null, close() {} };
   }
 
   try {
@@ -97,7 +96,13 @@ export function preparePaymentWindow(
   }
 
   return {
-    target,
+    documentRef() {
+      try {
+        return paymentWindow.closed ? null : paymentWindow.document;
+      } catch {
+        return null;
+      }
+    },
     close() {
       try {
         if (!paymentWindow.closed) {
