@@ -1,6 +1,6 @@
-//! Read-only Codex session storage inventory and normalization planning.
+//! Isolated Codex session storage inventory and fixture-only migration PoC.
 //!
-//! Portions of the path resolution and provider-bucket detection are adapted
+//! Portions of the path resolution and provider-bucket migration are adapted
 //! from CC Switch commit 606e7bbe75db7f8285f7a3be006fac22b5d22796,
 //! Copyright (c) 2025 Jason Young, under the MIT License. See
 //! `third_party/licenses/CC-Switch-MIT.txt` and `THIRD_PARTY_NOTICES.md`.
@@ -9,19 +9,22 @@
 //! Callers must provide the Codex home, and must separately approve an
 //! external SQLite home before configuration can lead the scan outside it.
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const CUSTOM_PROVIDER: &str = "custom";
 pub const OFFICIAL_PROVIDER: &str = "openai";
 pub const NIKO_PROVIDER: &str = "momotoken";
+pub const FIXTURE_ROOT_MARKER: &str = ".niko-e10-2-fixture";
+pub const FIXTURE_ROOT_MARKER_CONTENT: &str = "niko-e10-2-custom-roundtrip-poc\n";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanRequest {
@@ -207,7 +210,19 @@ pub struct HistoryThreadRow {
     pub item_count: u64,
     pub first_ordinal: Option<i64>,
     pub last_ordinal: Option<i64>,
+    pub next_rollout_byte_offset: Option<i64>,
     pub next_rollout_ordinal: Option<i64>,
+    pub turns: Vec<HistoryTurnCursor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryTurnCursor {
+    pub turn_id: String,
+    pub rollout_ordinal: i64,
+    pub rollout_byte_offset: Option<i64>,
+    pub rollout_end_ordinal: Option<i64>,
+    pub rollout_end_byte_offset: Option<i64>,
+    pub status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -301,6 +316,77 @@ impl ScanReport {
             .any(|item| item.level == DiagnosticLevel::Blocker)
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixtureProviderTarget {
+    Custom,
+    OpenAi,
+}
+
+impl FixtureProviderTarget {
+    fn provider(self) -> &'static str {
+        match self {
+            Self::Custom => CUSTOM_PROVIDER,
+            Self::OpenAi => OFFICIAL_PROVIDER,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureHistoryProof {
+    pub database: PathBuf,
+    pub row: HistoryThreadRow,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureThreadProof {
+    pub thread_id: String,
+    pub rollout_path: PathBuf,
+    pub state_databases: Vec<PathBuf>,
+    pub workspace: Option<PathBuf>,
+    pub archived: bool,
+    pub visible_event_count: usize,
+    pub visible_history_digest: String,
+    pub provider_neutral_digest: String,
+    pub history: Vec<FixtureHistoryProof>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureMigrationReport {
+    pub target: FixtureProviderTarget,
+    pub changed_paths: Vec<PathBuf>,
+    pub before: ScanReport,
+    pub after: ScanReport,
+    pub before_threads: Vec<FixtureThreadProof>,
+    pub after_threads: Vec<FixtureThreadProof>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureAppendReport {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub start_ordinal: i64,
+    pub end_ordinal: i64,
+    pub start_byte_offset: i64,
+    pub end_byte_offset: i64,
+    pub before: FixtureThreadProof,
+    pub after: FixtureThreadProof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureMutationError {
+    pub code: &'static str,
+    pub message: String,
+    pub path: Option<PathBuf>,
+}
+
+impl fmt::Display for FixtureMutationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for FixtureMutationError {}
 
 /// Inventories an explicitly supplied Codex home without writing to it.
 pub fn scan_codex_sessions(request: &ScanRequest) -> Result<ScanReport, ScanError> {
@@ -1053,6 +1139,13 @@ fn inspect_sqlite(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> SqliteArtif
                         Some(path.to_path_buf()),
                     ));
                 }
+                if rows.iter().any(|row| !history_cursor_is_valid(row)) {
+                    diagnostics.push(Diagnostic::blocker(
+                        "sqlite_history_cursor_invalid",
+                        "paginated history cursor, ordinal, lineage, or byte offsets are invalid",
+                        Some(path.to_path_buf()),
+                    ));
+                }
                 artifact.history_rows = rows;
             }
             Err(_) => diagnostics.push(Diagnostic::blocker(
@@ -1064,6 +1157,40 @@ fn inspect_sqlite(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> SqliteArtif
     }
 
     artifact
+}
+
+fn history_cursor_is_valid(row: &HistoryThreadRow) -> bool {
+    let (Some(next_byte_offset), Some(next_ordinal)) =
+        (row.next_rollout_byte_offset, row.next_rollout_ordinal)
+    else {
+        return false;
+    };
+    if next_byte_offset < 0 || next_ordinal < 0 {
+        return false;
+    }
+    row.turns.iter().all(|turn| {
+        let Some(start_byte_offset) = turn.rollout_byte_offset else {
+            return false;
+        };
+        if turn.turn_id.trim().is_empty()
+            || turn.rollout_ordinal < 0
+            || start_byte_offset < 0
+            || turn.rollout_ordinal >= next_ordinal
+            || start_byte_offset >= next_byte_offset
+        {
+            return false;
+        }
+        match (turn.rollout_end_ordinal, turn.rollout_end_byte_offset) {
+            (Some(end_ordinal), Some(end_byte_offset)) => {
+                end_ordinal >= turn.rollout_ordinal
+                    && end_ordinal < next_ordinal
+                    && end_byte_offset > start_byte_offset
+                    && end_byte_offset <= next_byte_offset
+            }
+            (None, None) => turn.status == "inProgress",
+            _ => false,
+        }
+    })
 }
 
 fn inspect_sidecars(database: &Path) -> Vec<SqliteSidecar> {
@@ -1173,12 +1300,26 @@ fn history_capability_status(tables: &BTreeMap<String, BTreeSet<String>>) -> Cap
         capability_status(
             tables,
             "thread_turns",
-            &["thread_id", "turn_id", "rollout_ordinal"],
+            &[
+                "thread_id",
+                "turn_id",
+                "rollout_ordinal",
+                "rollout_byte_offset",
+                "rollout_end_ordinal",
+                "rollout_end_byte_offset",
+            ],
         ),
         capability_status(
             tables,
             "thread_items",
-            &["thread_id", "turn_id", "item_id", "rollout_ordinal"],
+            &[
+                "thread_id",
+                "turn_id",
+                "item_id",
+                "rollout_ordinal",
+                "updated_at_ordinal",
+                "item_type",
+            ],
         ),
         capability_status(
             tables,
@@ -1206,10 +1347,13 @@ fn is_known_auxiliary_schema(tables: &BTreeMap<String, BTreeSet<String>>) -> boo
     const KNOWN_TABLES: &[&str] = &[
         "_sqlx_migrations",
         "external_agent_config_imports",
+        "jobs",
         "logs",
         "memories",
         "memory_usage",
         "remote_control_enrollments",
+        "stage1_outputs",
+        "thread_goal_continuation_deferrals",
         "thread_goals",
     ];
     let application_tables = tables
@@ -1249,28 +1393,41 @@ struct HistoryBuilder {
     item_count: u64,
     first_ordinal: Option<i64>,
     last_ordinal: Option<i64>,
+    next_rollout_byte_offset: Option<i64>,
     next_rollout_ordinal: Option<i64>,
+    turns: Vec<HistoryTurnCursor>,
 }
 
 fn read_history_rows(connection: &Connection) -> rusqlite::Result<Vec<HistoryThreadRow>> {
     let mut rows = BTreeMap::<String, HistoryBuilder>::new();
     {
         let mut statement = connection.prepare(
-            "SELECT thread_id, COUNT(*), MIN(rollout_ordinal), MAX(rollout_ordinal) \
-             FROM thread_turns GROUP BY thread_id ORDER BY thread_id",
+            "SELECT thread_id, turn_id, rollout_ordinal, rollout_byte_offset, \
+                    rollout_end_ordinal, rollout_end_byte_offset, status \
+             FROM thread_turns ORDER BY thread_id, rollout_ordinal, turn_id",
         )?;
         for row in statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, u64>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
+                HistoryTurnCursor {
+                    turn_id: row.get(1)?,
+                    rollout_ordinal: row.get(2)?,
+                    rollout_byte_offset: row.get(3)?,
+                    rollout_end_ordinal: row.get(4)?,
+                    rollout_end_byte_offset: row.get(5)?,
+                    status: row.get(6)?,
+                },
             ))
         })? {
-            let (thread_id, count, first, last) = row?;
+            let (thread_id, turn) = row?;
             let entry = rows.entry(thread_id).or_default();
-            entry.turn_count = count;
-            merge_ordinal_range(entry, first, last);
+            entry.turn_count += 1;
+            merge_ordinal_range(
+                entry,
+                Some(turn.rollout_ordinal),
+                turn.rollout_end_ordinal.or(Some(turn.rollout_ordinal)),
+            );
+            entry.turns.push(turn);
         }
     }
     {
@@ -1294,14 +1451,20 @@ fn read_history_rows(connection: &Connection) -> rusqlite::Result<Vec<HistoryThr
     }
     {
         let mut statement = connection.prepare(
-            "SELECT thread_id, next_rollout_ordinal \
+            "SELECT thread_id, next_rollout_byte_offset, next_rollout_ordinal \
              FROM thread_history_projection_state ORDER BY thread_id",
         )?;
         for row in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })? {
-            let (thread_id, next_ordinal) = row?;
-            rows.entry(thread_id).or_default().next_rollout_ordinal = Some(next_ordinal);
+            let (thread_id, next_byte_offset, next_ordinal) = row?;
+            let entry = rows.entry(thread_id).or_default();
+            entry.next_rollout_byte_offset = Some(next_byte_offset);
+            entry.next_rollout_ordinal = Some(next_ordinal);
         }
     }
 
@@ -1313,7 +1476,9 @@ fn read_history_rows(connection: &Connection) -> rusqlite::Result<Vec<HistoryThr
             item_count: row.item_count,
             first_ordinal: row.first_ordinal,
             last_ordinal: row.last_ordinal,
+            next_rollout_byte_offset: row.next_rollout_byte_offset,
             next_rollout_ordinal: row.next_rollout_ordinal,
+            turns: row.turns,
         })
         .collect())
 }
@@ -1360,7 +1525,7 @@ fn build_thread_inventory(
         thread.rollout_paths.push(rollout.path.clone());
         thread
             .rollout_logical_paths
-            .push(rollout.logical_path.clone());
+            .push(normalize_comparison_path(&rollout.logical_path));
         thread.providers.insert(rollout.provider.clone());
         if let Some(workspace) = &rollout.workspace {
             thread.workspaces.insert(workspace.clone());
@@ -1488,7 +1653,16 @@ fn resolve_state_rollout_path(codex_home: &Path, path: &Path) -> PathBuf {
     } else {
         codex_home.join(path)
     };
-    plain_rollout_path(&path)
+    normalize_comparison_path(&plain_rollout_path(&path))
+}
+
+fn normalize_comparison_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| {
+        path.parent()
+            .and_then(|parent| fs::canonicalize(parent).ok())
+            .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| path.to_path_buf())
+    })
 }
 
 fn schema_version(database: &SqliteArtifact) -> String {
@@ -1589,5 +1763,1006 @@ fn build_normalization_plan(
         },
         target_provider: CUSTOM_PROVIDER.to_owned(),
         actions,
+    }
+}
+
+/// Rewrites provider bucket references only inside explicitly marked fixture roots.
+/// This PoC is deliberately not connected to any production command.
+pub fn migrate_fixture_provider(
+    request: &ScanRequest,
+    target: FixtureProviderTarget,
+) -> Result<FixtureMigrationReport, FixtureMutationError> {
+    validate_fixture_write_roots(request)?;
+    let before = scan_for_fixture_mutation(request)?;
+    let before_threads = build_fixture_thread_proofs(&before)?;
+    let target_provider = target.provider();
+    let mut changed_paths = BTreeSet::new();
+    let mut rollout_byte_deltas = BTreeMap::<String, i64>::new();
+
+    if before.config.active_provider.as_deref() != Some(target_provider) {
+        let contents = rewrite_config_provider(&before, target)?;
+        fs::write(&before.config.path, contents).map_err(|_| {
+            fixture_error(
+                "fixture_config_write_failed",
+                "fixture config.toml could not be written",
+                Some(before.config.path.clone()),
+            )
+        })?;
+        changed_paths.insert(before.config.path.clone());
+    }
+
+    for rollout in &before.rollouts {
+        if rollout.provider == target_provider {
+            continue;
+        }
+        let logical = read_rollout_logical(rollout)?;
+        let (rewritten, byte_delta) = rewrite_rollout_header_provider(
+            &logical,
+            &rollout.thread_id,
+            &rollout.provider,
+            target_provider,
+            &rollout.path,
+        )?;
+        write_rollout_logical(rollout, &rewritten)?;
+        rollout_byte_deltas.insert(rollout.thread_id.clone(), byte_delta);
+        changed_paths.insert(rollout.path.clone());
+    }
+
+    for database in &before.sqlite_databases {
+        let state_updates = database
+            .state_rows
+            .iter()
+            .filter(|row| row.provider != target_provider)
+            .collect::<Vec<_>>();
+        let history_updates = database
+            .history_rows
+            .iter()
+            .filter_map(|row| {
+                rollout_byte_deltas
+                    .get(&row.thread_id)
+                    .copied()
+                    .filter(|delta| *delta != 0)
+                    .map(|delta| (row, delta))
+            })
+            .collect::<Vec<_>>();
+        if state_updates.is_empty() && history_updates.is_empty() {
+            continue;
+        }
+        let mut connection = Connection::open_with_flags(
+            &database.path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| {
+            fixture_error(
+                "fixture_state_open_failed",
+                "fixture state database could not be opened read-write",
+                Some(database.path.clone()),
+            )
+        })?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| {
+                fixture_error(
+                    "fixture_state_transaction_failed",
+                    "fixture state transaction could not start",
+                    Some(database.path.clone()),
+                )
+            })?;
+        for row in state_updates {
+            let changed = transaction
+                .execute(
+                    "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3",
+                    params![target_provider, row.thread_id, row.provider],
+                )
+                .map_err(|_| {
+                    fixture_error(
+                        "fixture_state_update_failed",
+                        "fixture state provider row could not be updated",
+                        Some(database.path.clone()),
+                    )
+                })?;
+            if changed != 1 {
+                return Err(fixture_error(
+                    "fixture_state_update_raced",
+                    "fixture state provider row changed after validation",
+                    Some(database.path.clone()),
+                ));
+            }
+        }
+        for (row, delta) in history_updates {
+            transaction
+                .execute(
+                    "UPDATE thread_turns \
+                     SET rollout_byte_offset = rollout_byte_offset + ?1, \
+                         rollout_end_byte_offset = CASE \
+                             WHEN rollout_end_byte_offset IS NULL THEN NULL \
+                             ELSE rollout_end_byte_offset + ?1 END \
+                     WHERE thread_id = ?2",
+                    params![delta, row.thread_id],
+                )
+                .map_err(|_| {
+                    fixture_error(
+                        "fixture_history_offset_update_failed",
+                        "fixture turn byte offsets could not be shifted with the rollout header",
+                        Some(database.path.clone()),
+                    )
+                })?;
+            let changed = transaction
+                .execute(
+                    "UPDATE thread_history_projection_state \
+                     SET next_rollout_byte_offset = next_rollout_byte_offset + ?1 \
+                     WHERE thread_id = ?2 AND next_rollout_byte_offset = ?3",
+                    params![delta, row.thread_id, row.next_rollout_byte_offset],
+                )
+                .map_err(|_| {
+                    fixture_error(
+                        "fixture_projection_offset_update_failed",
+                        "fixture projection byte offset could not be shifted with the rollout header",
+                        Some(database.path.clone()),
+                    )
+                })?;
+            if changed != 1 {
+                return Err(fixture_error(
+                    "fixture_projection_offset_raced",
+                    "fixture projection byte offset changed after validation",
+                    Some(database.path.clone()),
+                ));
+            }
+        }
+        transaction.commit().map_err(|_| {
+            fixture_error(
+                "fixture_state_commit_failed",
+                "fixture state provider transaction could not commit",
+                Some(database.path.clone()),
+            )
+        })?;
+        changed_paths.insert(database.path.clone());
+    }
+
+    let after = scan_for_fixture_mutation(request)?;
+    if after.config.active_provider.as_deref() != Some(target_provider)
+        || after
+            .rollouts
+            .iter()
+            .any(|rollout| rollout.provider != target_provider)
+        || after
+            .sqlite_databases
+            .iter()
+            .flat_map(|database| database.state_rows.iter())
+            .any(|row| row.provider != target_provider)
+    {
+        return Err(fixture_error(
+            "fixture_target_validation_failed",
+            "fixture provider migration did not converge on the requested bucket",
+            None,
+        ));
+    }
+    let after_threads = build_fixture_thread_proofs(&after)?;
+    let mut expected_after_threads = before_threads.clone();
+    for thread in &mut expected_after_threads {
+        if let Some(delta) = rollout_byte_deltas.get(&thread.thread_id).copied() {
+            shift_fixture_proof_offsets(thread, delta)?;
+        }
+    }
+    if expected_after_threads != after_threads {
+        return Err(fixture_error(
+            "fixture_roundtrip_invariant_changed",
+            "thread identity, workspace, archive, visible history, lineage, ordinal, or byte offsets changed",
+            None,
+        ));
+    }
+
+    Ok(FixtureMigrationReport {
+        target,
+        changed_paths: changed_paths.into_iter().collect(),
+        before,
+        after,
+        before_threads,
+        after_threads,
+    })
+}
+
+/// Appends one deterministic fixture round to the original rollout and its
+/// official-schema paginated history projection.
+pub fn append_fixture_round(
+    request: &ScanRequest,
+    thread_id: &str,
+    round_label: &str,
+) -> Result<FixtureAppendReport, FixtureMutationError> {
+    validate_fixture_write_roots(request)?;
+    if thread_id.trim().is_empty() || round_label.trim().is_empty() {
+        return Err(fixture_error(
+            "fixture_append_identity_invalid",
+            "fixture append requires non-empty thread and round identifiers",
+            None,
+        ));
+    }
+    let before_report = scan_for_fixture_mutation(request)?;
+    let before = build_fixture_thread_proofs(&before_report)?
+        .into_iter()
+        .find(|thread| thread.thread_id == thread_id)
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_append_thread_missing",
+                "fixture append thread was not found",
+                None,
+            )
+        })?;
+    let rollout = before_report
+        .rollouts
+        .iter()
+        .find(|rollout| rollout.thread_id == thread_id)
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_append_rollout_missing",
+                "fixture append rollout was not found",
+                None,
+            )
+        })?;
+    let (history_path, history_row) = before_report
+        .sqlite_databases
+        .iter()
+        .find_map(|database| {
+            database
+                .history_rows
+                .iter()
+                .find(|row| row.thread_id == thread_id)
+                .map(|row| (database.path.clone(), row.clone()))
+        })
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_append_history_missing",
+                "fixture append requires one verified paginated history database",
+                None,
+            )
+        })?;
+    let start_byte_offset = history_row.next_rollout_byte_offset.ok_or_else(|| {
+        fixture_error(
+            "fixture_append_cursor_missing",
+            "fixture history lacks next_rollout_byte_offset",
+            Some(history_path.clone()),
+        )
+    })?;
+    let start_ordinal = history_row.next_rollout_ordinal.ok_or_else(|| {
+        fixture_error(
+            "fixture_append_cursor_missing",
+            "fixture history lacks next_rollout_ordinal",
+            Some(history_path.clone()),
+        )
+    })?;
+    let mut logical = read_rollout_logical(rollout)?;
+    if i64::try_from(logical.len()).ok() != Some(start_byte_offset) || !logical.ends_with(b"\n") {
+        return Err(fixture_error(
+            "fixture_append_projection_mismatch",
+            "fixture projection byte cursor does not equal durable rollout length",
+            Some(rollout.path.clone()),
+        ));
+    }
+
+    let turn_id = format!("poc-turn-{round_label}");
+    let user_item_id = format!("poc-user-{round_label}");
+    let agent_item_id = format!("poc-agent-{round_label}");
+    let records = [
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "turn_started", "turn_id": turn_id, "unknown_started": true},
+            "unknown_envelope": {"round": round_label}
+        }),
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": user_item_id,
+                "role": "user",
+                "content": [{"type": "input_text", "text": format!("fixture round {round_label}")}],
+                "attachment": {"path": format!("/fixture/{round_label}.png"), "unknown": 1}
+            }
+        }),
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": agent_item_id,
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": format!("fixture reply {round_label}")}],
+                "response_id": format!("resp-{round_label}"),
+                "encrypted_content": format!("encrypted-{round_label}"),
+                "unknown_payload": [1, 2, 3]
+            },
+            "unknown_envelope": "preserved"
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "turn_completed", "turn_id": turn_id, "unknown_completed": true}
+        }),
+    ];
+    for record in &records {
+        serde_json::to_writer(&mut logical, record).map_err(|_| {
+            fixture_error(
+                "fixture_append_json_failed",
+                "fixture append record could not be serialized",
+                Some(rollout.path.clone()),
+            )
+        })?;
+        logical.push(b'\n');
+    }
+    let end_byte_offset = i64::try_from(logical.len()).map_err(|_| {
+        fixture_error(
+            "fixture_append_offset_overflow",
+            "fixture rollout length exceeds SQLite integer range",
+            Some(rollout.path.clone()),
+        )
+    })?;
+    let end_ordinal = start_ordinal.checked_add(3).ok_or_else(|| {
+        fixture_error(
+            "fixture_append_ordinal_overflow",
+            "fixture rollout ordinal exceeds SQLite integer range",
+            Some(history_path.clone()),
+        )
+    })?;
+    write_rollout_logical(rollout, &logical)?;
+
+    let mut connection = Connection::open_with_flags(
+        &history_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| {
+        fixture_error(
+            "fixture_history_open_failed",
+            "fixture history database could not be opened read-write",
+            Some(history_path.clone()),
+        )
+    })?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| {
+            fixture_error(
+                "fixture_history_transaction_failed",
+                "fixture history transaction could not start",
+                Some(history_path.clone()),
+            )
+        })?;
+    transaction
+        .execute(
+            "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, \
+             rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset, status, \
+             started_at, completed_at, duration_ms, first_user_item_id, final_agent_item_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', 1, 2, 1, ?7, ?8)",
+            params![
+                thread_id,
+                turn_id,
+                start_ordinal,
+                start_byte_offset,
+                end_ordinal,
+                end_byte_offset,
+                user_item_id,
+                agent_item_id,
+            ],
+        )
+        .map_err(|_| {
+            fixture_error(
+                "fixture_history_turn_insert_failed",
+                "fixture history turn row could not be inserted",
+                Some(history_path.clone()),
+            )
+        })?;
+    let user_item = serde_json::json!({
+        "type": "userMessage",
+        "id": user_item_id,
+        "content": [{"type": "inputText", "text": format!("fixture round {round_label}")}]
+    });
+    let agent_item = serde_json::json!({
+        "type": "agentMessage",
+        "id": agent_item_id,
+        "text": format!("fixture reply {round_label}"),
+        "phase": "final_answer"
+    });
+    for (item_id, ordinal, item_type, item_json) in [
+        (
+            user_item_id.as_str(),
+            start_ordinal + 1,
+            "userMessage",
+            user_item,
+        ),
+        (
+            agent_item_id.as_str(),
+            start_ordinal + 2,
+            "agentMessage",
+            agent_item,
+        ),
+    ] {
+        transaction
+            .execute(
+                "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, \
+                 updated_at_ordinal, created_at_ms, item_type, item_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, 1, ?5, ?6)",
+                params![
+                    thread_id,
+                    turn_id,
+                    item_id,
+                    ordinal,
+                    item_type,
+                    item_json.to_string(),
+                ],
+            )
+            .map_err(|_| {
+                fixture_error(
+                    "fixture_history_item_insert_failed",
+                    "fixture history item row could not be inserted",
+                    Some(history_path.clone()),
+                )
+            })?;
+    }
+    let cursor_changed = transaction
+        .execute(
+            "UPDATE thread_history_projection_state \
+             SET next_rollout_byte_offset = ?1, next_rollout_ordinal = ?2 \
+             WHERE thread_id = ?3 AND next_rollout_byte_offset = ?4 \
+             AND next_rollout_ordinal = ?5",
+            params![
+                end_byte_offset,
+                end_ordinal + 1,
+                thread_id,
+                start_byte_offset,
+                start_ordinal,
+            ],
+        )
+        .map_err(|_| {
+            fixture_error(
+                "fixture_history_cursor_update_failed",
+                "fixture history projection cursor could not be updated",
+                Some(history_path.clone()),
+            )
+        })?;
+    if cursor_changed != 1 {
+        return Err(fixture_error(
+            "fixture_history_cursor_raced",
+            "fixture history projection cursor changed after validation",
+            Some(history_path.clone()),
+        ));
+    }
+    transaction.commit().map_err(|_| {
+        fixture_error(
+            "fixture_history_commit_failed",
+            "fixture history append transaction could not commit",
+            Some(history_path.clone()),
+        )
+    })?;
+
+    let after_report = scan_for_fixture_mutation(request)?;
+    let after = build_fixture_thread_proofs(&after_report)?
+        .into_iter()
+        .find(|thread| thread.thread_id == thread_id)
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_append_thread_lost",
+                "fixture append removed the original thread",
+                None,
+            )
+        })?;
+    let appended_turn = after
+        .history
+        .iter()
+        .flat_map(|history| history.row.turns.iter())
+        .find(|turn| turn.turn_id == turn_id)
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_append_turn_missing",
+                "fixture append turn was not projected",
+                Some(history_path.clone()),
+            )
+        })?;
+    if appended_turn.rollout_ordinal != start_ordinal
+        || appended_turn.rollout_byte_offset != Some(start_byte_offset)
+        || appended_turn.rollout_end_ordinal != Some(end_ordinal)
+        || appended_turn.rollout_end_byte_offset != Some(end_byte_offset)
+    {
+        return Err(fixture_error(
+            "fixture_append_projection_invalid",
+            "fixture append projection ordinal or byte offsets are inconsistent",
+            Some(history_path),
+        ));
+    }
+
+    Ok(FixtureAppendReport {
+        thread_id: thread_id.to_owned(),
+        turn_id,
+        start_ordinal,
+        end_ordinal,
+        start_byte_offset,
+        end_byte_offset,
+        before,
+        after,
+    })
+}
+
+fn validate_fixture_write_roots(request: &ScanRequest) -> Result<(), FixtureMutationError> {
+    validate_request(request).map_err(|error| {
+        fixture_error(
+            "fixture_root_invalid",
+            error.to_string(),
+            Some(request.codex_home.clone()),
+        )
+    })?;
+    let mut roots = vec![request.codex_home.clone()];
+    if let Some(sqlite_home) = &request.explicit_sqlite_home {
+        if !sqlite_home.is_dir() {
+            return Err(fixture_error(
+                "fixture_sqlite_root_invalid",
+                "explicit fixture SQLite home is not a directory",
+                Some(sqlite_home.clone()),
+            ));
+        }
+        if !roots.contains(sqlite_home) {
+            roots.push(sqlite_home.clone());
+        }
+    }
+    for root in roots {
+        let marker = root.join(FIXTURE_ROOT_MARKER);
+        let metadata = fs::symlink_metadata(&marker).map_err(|_| {
+            fixture_error(
+                "fixture_marker_missing",
+                "fixture writes require the E10-2 marker in every explicit root",
+                Some(marker.clone()),
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(fixture_error(
+                "fixture_marker_invalid",
+                "fixture root marker must be a regular file",
+                Some(marker),
+            ));
+        }
+        let contents = fs::read_to_string(&marker).map_err(|_| {
+            fixture_error(
+                "fixture_marker_missing",
+                "fixture writes require the E10-2 marker in every explicit root",
+                Some(marker.clone()),
+            )
+        })?;
+        if contents != FIXTURE_ROOT_MARKER_CONTENT {
+            return Err(fixture_error(
+                "fixture_marker_invalid",
+                "fixture root marker has unexpected contents",
+                Some(marker),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scan_for_fixture_mutation(request: &ScanRequest) -> Result<ScanReport, FixtureMutationError> {
+    let report = scan_codex_sessions(request).map_err(|error| {
+        fixture_error(
+            "fixture_scan_failed",
+            error.to_string(),
+            Some(request.codex_home.clone()),
+        )
+    })?;
+    if report.is_blocked() {
+        let codes = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.level == DiagnosticLevel::Blocker)
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>()
+            .join(",");
+        return Err(fixture_error(
+            "fixture_scan_blocked",
+            format!("fixture inventory contains blockers: {codes}"),
+            None,
+        ));
+    }
+    Ok(report)
+}
+
+fn rewrite_config_provider(
+    report: &ScanReport,
+    target: FixtureProviderTarget,
+) -> Result<Vec<u8>, FixtureMutationError> {
+    let source = report
+        .config
+        .active_provider
+        .as_deref()
+        .unwrap_or(OFFICIAL_PROVIDER);
+    let text = if report.config.present {
+        fs::read_to_string(&report.config.path).map_err(|_| {
+            fixture_error(
+                "fixture_config_read_failed",
+                "fixture config.toml could not be read",
+                Some(report.config.path.clone()),
+            )
+        })?
+    } else {
+        String::new()
+    };
+    let mut config = text.parse::<toml::Table>().map_err(|_| {
+        fixture_error(
+            "fixture_config_parse_failed",
+            "fixture config.toml is not valid TOML",
+            Some(report.config.path.clone()),
+        )
+    })?;
+    config.insert(
+        "model_provider".to_owned(),
+        toml::Value::String(target.provider().to_owned()),
+    );
+    if target == FixtureProviderTarget::Custom {
+        let providers = config
+            .entry("model_providers".to_owned())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                fixture_error(
+                    "fixture_config_provider_table_invalid",
+                    "fixture model_providers is not a table",
+                    Some(report.config.path.clone()),
+                )
+            })?;
+        let mut custom = if source == OFFICIAL_PROVIDER {
+            providers
+                .get(CUSTOM_PROVIDER)
+                .and_then(toml::Value::as_table)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            providers
+                .get(source)
+                .and_then(toml::Value::as_table)
+                .cloned()
+                .ok_or_else(|| {
+                    fixture_error(
+                        "fixture_source_provider_missing",
+                        "fixture source provider definition is missing",
+                        Some(report.config.path.clone()),
+                    )
+                })?
+        };
+        if source == OFFICIAL_PROVIDER {
+            custom.insert("name".to_owned(), toml::Value::String("OpenAI".to_owned()));
+            custom.insert(
+                "requires_openai_auth".to_owned(),
+                toml::Value::Boolean(true),
+            );
+            custom.insert("supports_websockets".to_owned(), toml::Value::Boolean(true));
+            custom.insert(
+                "wire_api".to_owned(),
+                toml::Value::String("responses".to_owned()),
+            );
+        }
+        providers.insert(CUSTOM_PROVIDER.to_owned(), toml::Value::Table(custom));
+    }
+    toml::to_string_pretty(&config)
+        .map(String::into_bytes)
+        .map_err(|_| {
+            fixture_error(
+                "fixture_config_serialize_failed",
+                "fixture config.toml could not be serialized",
+                Some(report.config.path.clone()),
+            )
+        })
+}
+
+fn build_fixture_thread_proofs(
+    report: &ScanReport,
+) -> Result<Vec<FixtureThreadProof>, FixtureMutationError> {
+    let mut proofs = Vec::new();
+    for rollout in &report.rollouts {
+        let logical = read_rollout_logical(rollout)?;
+        let records = rollout_records(&logical, &rollout.path)?;
+        let header = records.first().ok_or_else(|| {
+            fixture_error(
+                "fixture_rollout_empty",
+                "fixture rollout has no records",
+                Some(rollout.path.clone()),
+            )
+        })?;
+        let mut provider_neutral_header = header.value.clone();
+        provider_neutral_header
+            .get_mut("payload")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|payload| payload.remove("model_provider"));
+        let mut visible_hasher = Sha256::new();
+        let mut neutral_hasher = Sha256::new();
+        neutral_hasher.update(serde_json::to_vec(&provider_neutral_header).map_err(|_| {
+            fixture_error(
+                "fixture_rollout_digest_failed",
+                "fixture rollout header could not be normalized for digest",
+                Some(rollout.path.clone()),
+            )
+        })?);
+        for record in records.iter().skip(1) {
+            let bytes = &logical[record.start..record.end];
+            visible_hasher.update(bytes);
+            neutral_hasher.update(bytes);
+        }
+        let thread = report
+            .threads
+            .iter()
+            .find(|thread| thread.thread_id == rollout.thread_id)
+            .ok_or_else(|| {
+                fixture_error(
+                    "fixture_thread_inventory_missing",
+                    "fixture rollout has no thread inventory entry",
+                    Some(rollout.path.clone()),
+                )
+            })?;
+        let mut history = report
+            .sqlite_databases
+            .iter()
+            .flat_map(|database| {
+                database
+                    .history_rows
+                    .iter()
+                    .filter(|row| row.thread_id == rollout.thread_id)
+                    .cloned()
+                    .map(|row| FixtureHistoryProof {
+                        database: database.path.clone(),
+                        row,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        history.sort_by(|left, right| left.database.cmp(&right.database));
+        proofs.push(FixtureThreadProof {
+            thread_id: rollout.thread_id.clone(),
+            rollout_path: rollout.path.clone(),
+            state_databases: thread.state_databases.clone(),
+            workspace: rollout.workspace.clone(),
+            archived: rollout.archived,
+            visible_event_count: records.len().saturating_sub(1),
+            visible_history_digest: digest_hex(visible_hasher.finalize().as_slice()),
+            provider_neutral_digest: digest_hex(neutral_hasher.finalize().as_slice()),
+            history,
+        });
+    }
+    proofs.sort_by(|left, right| left.thread_id.cmp(&right.thread_id));
+    Ok(proofs)
+}
+
+struct RolloutRecord {
+    start: usize,
+    content_end: usize,
+    end: usize,
+    value: JsonValue,
+}
+
+fn rollout_records(
+    logical: &[u8],
+    path: &Path,
+) -> Result<Vec<RolloutRecord>, FixtureMutationError> {
+    let text = std::str::from_utf8(logical).map_err(|_| {
+        fixture_error(
+            "fixture_rollout_utf8_invalid",
+            "fixture rollout is not UTF-8 JSONL",
+            Some(path.to_path_buf()),
+        )
+    })?;
+    let mut records = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let end = offset + line.len();
+        let without_newline = line.strip_suffix('\n').unwrap_or(line);
+        let content = without_newline
+            .strip_suffix('\r')
+            .unwrap_or(without_newline);
+        let content_end = offset + content.len();
+        if !content.trim().is_empty() {
+            let value = serde_json::from_str(content).map_err(|_| {
+                fixture_error(
+                    "fixture_rollout_record_invalid",
+                    "fixture rollout contains invalid JSON",
+                    Some(path.to_path_buf()),
+                )
+            })?;
+            records.push(RolloutRecord {
+                start: offset,
+                content_end,
+                end,
+                value,
+            });
+        }
+        offset = end;
+    }
+    if offset < logical.len() {
+        return Err(fixture_error(
+            "fixture_rollout_split_failed",
+            "fixture rollout line boundaries could not be determined",
+            Some(path.to_path_buf()),
+        ));
+    }
+    Ok(records)
+}
+
+fn rewrite_rollout_header_provider(
+    logical: &[u8],
+    thread_id: &str,
+    source_provider: &str,
+    target_provider: &str,
+    path: &Path,
+) -> Result<(Vec<u8>, i64), FixtureMutationError> {
+    let records = rollout_records(logical, path)?;
+    let header = records.first().ok_or_else(|| {
+        fixture_error(
+            "fixture_rollout_header_missing",
+            "fixture rollout has no session_meta record",
+            Some(path.to_path_buf()),
+        )
+    })?;
+    let mut value = header.value.clone();
+    if value.get("type").and_then(JsonValue::as_str) != Some("session_meta") {
+        return Err(fixture_error(
+            "fixture_rollout_header_unknown",
+            "fixture rollout first record is not session_meta",
+            Some(path.to_path_buf()),
+        ));
+    }
+    let payload = value
+        .get_mut("payload")
+        .and_then(JsonValue::as_object_mut)
+        .ok_or_else(|| {
+            fixture_error(
+                "fixture_rollout_header_invalid",
+                "fixture session_meta payload is not an object",
+                Some(path.to_path_buf()),
+            )
+        })?;
+    if payload.get("id").and_then(JsonValue::as_str) != Some(thread_id)
+        || payload.get("model_provider").and_then(JsonValue::as_str) != Some(source_provider)
+    {
+        return Err(fixture_error(
+            "fixture_rollout_header_raced",
+            "fixture rollout identity or provider changed after inventory",
+            Some(path.to_path_buf()),
+        ));
+    }
+    payload.insert(
+        "model_provider".to_owned(),
+        JsonValue::String(target_provider.to_owned()),
+    );
+    let encoded = serde_json::to_vec(&value).map_err(|_| {
+        fixture_error(
+            "fixture_rollout_header_serialize_failed",
+            "fixture rollout header could not be serialized",
+            Some(path.to_path_buf()),
+        )
+    })?;
+    let original_header_len = header.content_end - header.start;
+    let padded_header_len = original_header_len.max(encoded.len());
+    let byte_delta = i64::try_from(padded_header_len)
+        .and_then(|new_len| i64::try_from(original_header_len).map(|old_len| new_len - old_len))
+        .map_err(|_| {
+            fixture_error(
+                "fixture_rollout_header_size_overflow",
+                "fixture rollout header size exceeds SQLite integer range",
+                Some(path.to_path_buf()),
+            )
+        })?;
+    let mut rewritten = Vec::with_capacity(logical.len() + padded_header_len);
+    rewritten.extend_from_slice(&logical[..header.start]);
+    rewritten.extend_from_slice(&encoded);
+    rewritten.resize(rewritten.len() + padded_header_len - encoded.len(), b' ');
+    rewritten.extend_from_slice(&logical[header.content_end..]);
+    Ok((rewritten, byte_delta))
+}
+
+fn shift_fixture_proof_offsets(
+    thread: &mut FixtureThreadProof,
+    delta: i64,
+) -> Result<(), FixtureMutationError> {
+    if delta == 0 {
+        return Ok(());
+    }
+    for history in &mut thread.history {
+        history.row.next_rollout_byte_offset = history
+            .row
+            .next_rollout_byte_offset
+            .and_then(|offset| offset.checked_add(delta));
+        if history.row.next_rollout_byte_offset.is_none() {
+            return Err(fixture_error(
+                "fixture_history_offset_overflow",
+                "fixture projection byte offset overflowed during validation",
+                Some(history.database.clone()),
+            ));
+        }
+        for turn in &mut history.row.turns {
+            turn.rollout_byte_offset = turn
+                .rollout_byte_offset
+                .and_then(|offset| offset.checked_add(delta));
+            if turn.rollout_byte_offset.is_none() {
+                return Err(fixture_error(
+                    "fixture_history_offset_overflow",
+                    "fixture turn byte offset overflowed during validation",
+                    Some(history.database.clone()),
+                ));
+            }
+            if let Some(end_offset) = turn.rollout_end_byte_offset {
+                turn.rollout_end_byte_offset =
+                    Some(end_offset.checked_add(delta).ok_or_else(|| {
+                        fixture_error(
+                            "fixture_history_offset_overflow",
+                            "fixture turn end byte offset overflowed during validation",
+                            Some(history.database.clone()),
+                        )
+                    })?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_rollout_logical(rollout: &RolloutArtifact) -> Result<Vec<u8>, FixtureMutationError> {
+    let bytes = fs::read(&rollout.path).map_err(|_| {
+        fixture_error(
+            "fixture_rollout_read_failed",
+            "fixture rollout could not be read",
+            Some(rollout.path.clone()),
+        )
+    })?;
+    match rollout.encoding {
+        RolloutEncoding::Jsonl => Ok(bytes),
+        RolloutEncoding::Zstd => {
+            let mut decoder = zstd::stream::read::Decoder::new(bytes.as_slice()).map_err(|_| {
+                fixture_error(
+                    "fixture_rollout_zstd_invalid",
+                    "fixture compressed rollout could not be decoded",
+                    Some(rollout.path.clone()),
+                )
+            })?;
+            let mut logical = Vec::new();
+            decoder.read_to_end(&mut logical).map_err(|_| {
+                fixture_error(
+                    "fixture_rollout_zstd_read_failed",
+                    "fixture compressed rollout could not be read",
+                    Some(rollout.path.clone()),
+                )
+            })?;
+            Ok(logical)
+        }
+    }
+}
+
+fn write_rollout_logical(
+    rollout: &RolloutArtifact,
+    logical: &[u8],
+) -> Result<(), FixtureMutationError> {
+    let bytes = match rollout.encoding {
+        RolloutEncoding::Jsonl => logical.to_vec(),
+        RolloutEncoding::Zstd => zstd::stream::encode_all(logical, 1).map_err(|_| {
+            fixture_error(
+                "fixture_rollout_zstd_write_failed",
+                "fixture compressed rollout could not be encoded",
+                Some(rollout.path.clone()),
+            )
+        })?,
+    };
+    fs::write(&rollout.path, bytes).map_err(|_| {
+        fixture_error(
+            "fixture_rollout_write_failed",
+            "fixture rollout could not be written",
+            Some(rollout.path.clone()),
+        )
+    })
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn fixture_error(
+    code: &'static str,
+    message: impl Into<String>,
+    path: Option<PathBuf>,
+) -> FixtureMutationError {
+    FixtureMutationError {
+        code,
+        message: message.into(),
+        path,
     }
 }

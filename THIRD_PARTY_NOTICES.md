@@ -2,7 +2,7 @@
 
 ## CC Switch
 
-Niko's `codex_sessions` module adapts read-only portions of the following CC
+Niko's `codex_sessions` module adapts portions of the following CC
 Switch files:
 
 - `src-tauri/src/codex_state_db.rs`: locating `state_5.sqlite` from the Codex
@@ -20,10 +20,27 @@ Source: `farion1231/cc-switch` commit
 Copyright (c) 2025 Jason Young. Licensed under the MIT License. The full
 license text is included at `third_party/licenses/CC-Switch-MIT.txt`.
 
-The implementation in Niko is read-only and adds isolated-root validation,
-compressed rollout discovery, multi-database inventory, schema capability
-detection, paginated history inventory, diagnostics, and dry-run planning.
-No CC Switch migration, backup, or write path is included in E10-1.
+The E10-1 implementation was read-only. E10-2 adds a fixture-only provider
+header/state-row migration PoC derived from the same MIT baseline, with an
+explicit marker required in every writable Codex/SQLite root. Niko adds
+compressed rollout handling, multi-database inventory, official paginated
+history cursor validation, provider-neutral digests, and byte-offset repair.
+No production Tauri command, provider switch, backup transaction, or user-home
+fallback is included.
+
+## OpenAI Codex Schema Reference
+
+The E10-2 tests reproduce the state `threads` capability and the exact
+thread-history migration DDL from `openai/codex` commit
+`28f3f1f9ef4e9578a5f023f6b6eba018914a5342`, including
+`thread_history_migrations/0001` through `0004`. This keeps the offset,
+ordinal, and lineage fixture representative of the official fixed schema.
+
+OpenAI Codex is licensed under the Apache License 2.0. The license text is
+included at `third_party/licenses/OpenAI-Codex-Apache-2.0.txt`. The upstream
+NOTICE from the same fixed commit is reproduced verbatim at
+`third_party/notices/OpenAI-Codex-NOTICE.txt`; it preserves the OpenAI Codex
+copyright and the Ratatui attribution carried by that source distribution.
 
 ## Codex++ Compatibility Reference
 

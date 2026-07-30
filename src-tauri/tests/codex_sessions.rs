@@ -74,12 +74,45 @@ fn create_state_db(path: &Path, rows: &[StateSeed<'_>], wal: bool) -> Connection
     }
     connection
         .execute_batch(
-            "CREATE TABLE threads (
+            // Final `threads` shape produced by the official Codex state
+            // migrations at openai/codex@28f3f1f9 (0001, 0005, 0007, 0013,
+            // 0020, 0022, 0025, 0030, 0032, 0039, 0040, 0041, 0043, 0045).
+            "CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE threads (
                 id TEXT PRIMARY KEY,
                 rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
                 model_provider TEXT NOT NULL,
                 cwd TEXT NOT NULL,
-                archived INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                sandbox_policy TEXT NOT NULL,
+                approval_mode TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                agent_nickname TEXT,
+                agent_role TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                preview TEXT NOT NULL DEFAULT '',
+                recency_at INTEGER NOT NULL DEFAULT 0,
+                recency_at_ms INTEGER NOT NULL DEFAULT 0,
+                history_mode TEXT NOT NULL DEFAULT 'legacy',
+                name TEXT,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                thread_section_id TEXT REFERENCES thread_sections(id) ON DELETE SET NULL,
                 future_column TEXT
             );
             CREATE INDEX idx_threads_provider_fixture ON threads(model_provider);
@@ -90,8 +123,10 @@ fn create_state_db(path: &Path, rows: &[StateSeed<'_>], wal: bool) -> Connection
         connection
             .execute(
                 "INSERT INTO threads
-                 (id, rollout_path, model_provider, cwd, archived, future_column)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'unknown-column-is-tolerated')",
+                 (id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+                  title, sandbox_policy, approval_mode, archived, future_column)
+                 VALUES (?1, ?2, 1, 1, 'cli', ?3, ?4, 'fixture', '{}', 'never', ?5,
+                         'unknown-column-is-tolerated')",
                 params![
                     row.id,
                     row.rollout_path.to_string_lossy(),
@@ -110,14 +145,22 @@ fn create_history_db(path: &Path, thread_ids: &[&str]) -> Connection {
     let connection = Connection::open(path).unwrap();
     connection
         .execute_batch(
+            // Exact official thread-history migrations at
+            // openai/codex@28f3f1f9: 0001 through 0004.
             "CREATE TABLE thread_turns (
                 thread_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL,
                 rollout_ordinal INTEGER NOT NULL,
                 status TEXT NOT NULL,
+                error_json TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER,
+                first_user_item_id TEXT,
+                final_agent_item_id TEXT,
                 PRIMARY KEY (thread_id, turn_id)
             );
-            CREATE UNIQUE INDEX idx_thread_turns_page_fixture
+            CREATE UNIQUE INDEX idx_thread_turns_page
                 ON thread_turns(thread_id, rollout_ordinal);
             CREATE TABLE thread_items (
                 thread_id TEXT NOT NULL,
@@ -126,16 +169,29 @@ fn create_history_db(path: &Path, thread_ids: &[&str]) -> Connection {
                 rollout_ordinal INTEGER NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 item_json TEXT NOT NULL,
-                future_column TEXT,
                 PRIMARY KEY (thread_id, turn_id, item_id)
             );
-            CREATE INDEX idx_thread_items_page_fixture
+            CREATE UNIQUE INDEX idx_thread_items_page
                 ON thread_items(thread_id, rollout_ordinal);
+            CREATE INDEX idx_thread_items_by_turn_page
+                ON thread_items(thread_id, turn_id, rollout_ordinal);
             CREATE TABLE thread_history_projection_state (
                 thread_id TEXT PRIMARY KEY,
                 next_rollout_byte_offset INTEGER NOT NULL,
                 next_rollout_ordinal INTEGER NOT NULL
-            );",
+            );
+            ALTER TABLE thread_items ADD COLUMN item_type TEXT NOT NULL DEFAULT '';
+            CREATE INDEX idx_thread_items_user_messages
+                ON thread_items(thread_id, rollout_ordinal)
+                WHERE item_type = 'userMessage';
+            ALTER TABLE thread_turns ADD COLUMN rollout_byte_offset INTEGER;
+            ALTER TABLE thread_turns ADD COLUMN rollout_end_ordinal INTEGER;
+            ALTER TABLE thread_turns ADD COLUMN rollout_end_byte_offset INTEGER;
+            ALTER TABLE thread_items ADD COLUMN updated_at_ordinal INTEGER NOT NULL DEFAULT 0;
+            CREATE INDEX idx_thread_items_updated_page
+                ON thread_items(thread_id, updated_at_ordinal);
+            CREATE INDEX idx_thread_items_by_turn_updated_page
+                ON thread_items(thread_id, turn_id, updated_at_ordinal);",
         )
         .unwrap();
     for thread_id in thread_ids {
@@ -146,16 +202,25 @@ fn create_history_db(path: &Path, thread_ids: &[&str]) -> Connection {
             connection
                 .execute(
                     "INSERT INTO thread_turns
-                     (thread_id, turn_id, rollout_ordinal, status)
-                     VALUES (?1, ?2, ?3, 'completed')",
-                    params![thread_id, turn_id, ordinal],
+                     (thread_id, turn_id, rollout_ordinal, status, rollout_byte_offset,
+                      rollout_end_ordinal, rollout_end_byte_offset)
+                     VALUES (?1, ?2, ?3, 'completed', ?4, ?5, ?6)",
+                    params![
+                        thread_id,
+                        turn_id,
+                        ordinal,
+                        page * 1000 + 10,
+                        ordinal + 2,
+                        page * 1000 + 110,
+                    ],
                 )
                 .unwrap();
             connection
                 .execute(
                     "INSERT INTO thread_items
-                     (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, future_column)
-                     VALUES (?1, ?2, ?3, ?4, 1, ?5, 'unknown-column-is-tolerated')",
+                     (thread_id, turn_id, item_id, rollout_ordinal, updated_at_ordinal,
+                      created_at_ms, item_json, item_type)
+                     VALUES (?1, ?2, ?3, ?4, ?4, 1, ?5, 'userMessage')",
                     params![thread_id, turn_id, item_id, ordinal + 1, BODY_SENTINEL],
                 )
                 .unwrap();
@@ -164,7 +229,7 @@ fn create_history_db(path: &Path, thread_ids: &[&str]) -> Connection {
             .execute(
                 "INSERT INTO thread_history_projection_state
                  (thread_id, next_rollout_byte_offset, next_rollout_ordinal)
-                 VALUES (?1, 4096, 301)",
+                 VALUES (?1, 4096, 303)",
                 [thread_id],
             )
             .unwrap();
@@ -329,8 +394,14 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
         row.turn_count == 3
             && row.item_count == 3
             && row.first_ordinal == Some(0)
-            && row.last_ordinal == Some(201)
-            && row.next_rollout_ordinal == Some(301)
+            && row.last_ordinal == Some(202)
+            && row.next_rollout_byte_offset == Some(4096)
+            && row.next_rollout_ordinal == Some(303)
+            && row.turns.iter().all(|turn| {
+                turn.rollout_byte_offset.is_some()
+                    && turn.rollout_end_ordinal.is_some()
+                    && turn.rollout_end_byte_offset.is_some()
+            })
     }));
     assert_eq!(report.threads.len(), 3);
     assert!(report
