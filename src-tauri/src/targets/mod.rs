@@ -51,6 +51,9 @@ pub trait Target: Send + Sync {
 /// Codex config.toml 里我们独占的 provider 段名
 const CODEX_PROVIDER: &str = "momotoken";
 
+/// 纯 API 模式固定使用 Codex 当前支持的最高推理档。
+const CODEX_MAX_REASONING_EFFORT: &str = "ultra";
+
 /// 其他 Codex 切换工具写在 config.toml 顶层、会覆盖本次配置效果的键。
 /// - `model_context_window` / `model_auto_compact_token_limit`：压低桌面端上下文与自动压缩阈值
 /// - `service_tier`：OpenAI 官方专属参数，透传给第三方上游会报错
@@ -103,10 +106,9 @@ fn merge_toml_codex_provider(
                 toml::Value::String(key.to_owned()),
             );
         }
-        // 纯 API 模式：从 auth.json 的 OPENAI_API_KEY 取密钥
-        None => {
-            provider.insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
-        }
+        // 纯 API 模式：requires_openai_auth 让 Codex 从 auth.json 读取密钥。
+        // 不能设置 env_key；它只读取 Codex 进程环境，桌面启动不会从 auth.json 注入环境变量。
+        None => {}
     }
     let provider = toml::Value::Table(provider);
 
@@ -126,6 +128,16 @@ fn merge_toml_codex_provider(
         if doc.get("model") != Some(&new_model) {
             doc.insert("model".to_owned(), new_model);
             changed.push("model".to_owned());
+        }
+    }
+
+    // 纯 API 模式不依赖 ChatGPT 账号权益，直接为所选 API 模型开启最高推理档。
+    // 混用模式不强制改写，保留用户现有偏好。
+    if mixed_api_key.is_none() {
+        let max_reasoning = toml::Value::String(CODEX_MAX_REASONING_EFFORT.to_owned());
+        if doc.get("model_reasoning_effort") != Some(&max_reasoning) {
+            doc.insert("model_reasoning_effort".to_owned(), max_reasoning);
+            changed.push("model_reasoning_effort".to_owned());
         }
     }
 
@@ -196,6 +208,33 @@ fn remove_json_keys(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
         if obj.remove(*k).is_some() {
             changed.push(format!("-{k}"));
         }
+    }
+
+    if !changed.is_empty() {
+        let content = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+        let snap = fsx::write_with_snapshot(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+
+    Ok(changed)
+}
+
+/// 移除 Codex 的 API Key 登录态，同时保留已有 ChatGPT tokens。
+fn remove_codex_api_auth(path: &Path) -> Result<Vec<String>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
+    let mut changed = Vec::new();
+
+    if obj.remove("OPENAI_API_KEY").is_some() {
+        changed.push("-OPENAI_API_KEY".to_owned());
+    }
+    if obj.get("auth_mode").and_then(Value::as_str) == Some("apikey") {
+        obj.remove("auth_mode");
+        changed.push("-auth_mode".to_owned());
     }
 
     if !changed.is_empty() {
@@ -506,13 +545,16 @@ impl Target for CodexTarget {
         if plan.codex_mixed {
             // 混用模式：auth.json 里同时存在 OPENAI_API_KEY 和 ChatGPT tokens 时，Codex 优先吃
             // api key，官方登录态就等于失效。必须把这个键移除，密钥改由 provider 段承载。
-            changed.append(&mut remove_json_keys(&auth_path, &["OPENAI_API_KEY"])?);
+            changed.append(&mut remove_codex_api_auth(&auth_path)?);
         } else {
-            // 纯 API 模式：Codex 只认 OPENAI_API_KEY 这个键；整体覆写会清掉桌面端已有的
-            // ChatGPT 登录态，所以只合并这一个键。
+            // 纯 API 模式必须同时选中 apikey 鉴权；否则已有 auth_mode=chatgpt 时会忽略新 Key。
+            // 只合并这两个键，桌面端已有的 ChatGPT tokens 继续保留，切回混用模式时还能恢复。
             changed.append(&mut merge_json_keys(
                 &auth_path,
-                &[("OPENAI_API_KEY", Value::String(plan.api_key.clone()))],
+                &[
+                    ("OPENAI_API_KEY", Value::String(plan.api_key.clone())),
+                    ("auth_mode", Value::String("apikey".to_owned())),
+                ],
             )?);
         }
 
@@ -904,6 +946,11 @@ fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
         .map_err(|e| format!("~/.codex/config.toml 解析失败，未做任何修改：{e}"))?;
 
     let mut changed = Vec::new();
+    let owns_config = doc.get("model_provider").and_then(|v| v.as_str()) == Some(CODEX_PROVIDER)
+        || doc
+            .get("model_providers")
+            .and_then(|v| v.as_table())
+            .is_some_and(|providers| providers.contains_key(CODEX_PROVIDER));
     if let Some(providers) = doc.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
         if providers.remove(CODEX_PROVIDER).is_some() {
             changed.push(format!("-model_providers.{CODEX_PROVIDER}"));
@@ -916,6 +963,13 @@ fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
     }
     if doc.remove("model").is_some() {
         changed.push("-model".to_owned());
+    }
+    if owns_config
+        && doc.get("model_reasoning_effort").and_then(|v| v.as_str())
+            == Some(CODEX_MAX_REASONING_EFFORT)
+    {
+        doc.remove("model_reasoning_effort");
+        changed.push("-model_reasoning_effort".to_owned());
     }
 
     if !changed.is_empty() {
@@ -938,8 +992,8 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
             let _ = save_backup(target_id, &config_path);
             let _ = save_backup(target_id, &auth_path);
             changed.append(&mut remove_toml_codex_provider(&config_path)?);
-            // 移除中转密钥，ChatGPT 登录态（tokens / preferred_auth_method）保持不动
-            changed.append(&mut remove_json_keys(&auth_path, &["OPENAI_API_KEY"])?);
+            // 移除中转密钥与对应登录模式，ChatGPT tokens 保持不动
+            changed.append(&mut remove_codex_api_auth(&auth_path)?);
         }
         "claude-desktop" => {
             let settings_path = h.join(".claude").join("settings.json");
@@ -995,6 +1049,14 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
             } else if auth_key != Some(&plan.api_key) {
                 mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
             }
+            let auth_mode = auth.get("auth_mode").and_then(Value::as_str);
+            if plan.codex_mixed {
+                if auth_mode == Some("apikey") {
+                    mismatched.push("auth.json:auth_mode".to_owned());
+                }
+            } else if auth_mode != Some("apikey") {
+                mismatched.push("auth.json:auth_mode".to_owned());
+            }
             let config_path = h.join(".codex").join("config.toml");
             if config_path.exists() {
                 let raw = fs::read_to_string(&config_path).unwrap_or_default();
@@ -1026,10 +1088,9 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                     mismatched
                         .push(format!("config.toml:model_providers.{CODEX_PROVIDER}.experimental_bearer_token"));
                 }
-                // 纯 API 模式靠 env_key 从 auth.json 取密钥，缺了就等于没配
+                // auth.json 鉴权与 env_key 是两条独立路径；这里不应依赖进程环境。
                 let env_key = provider.and_then(|t| t.get("env_key")).and_then(|v| v.as_str());
-                let expected_env_key = (!plan.codex_mixed).then_some("OPENAI_API_KEY");
-                if env_key != expected_env_key {
+                if env_key.is_some() {
                     mismatched
                         .push(format!("config.toml:model_providers.{CODEX_PROVIDER}.env_key"));
                 }
@@ -1037,6 +1098,12 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                     if doc.get("model").and_then(|v| v.as_str()) != Some(model.as_str()) {
                         mismatched.push("config.toml:model".to_owned());
                     }
+                }
+                if !plan.codex_mixed
+                    && doc.get("model_reasoning_effort").and_then(|v| v.as_str())
+                        != Some(CODEX_MAX_REASONING_EFFORT)
+                {
+                    mismatched.push("config.toml:model_reasoning_effort".to_owned());
                 }
                 // 别家工具留下的顶层键仍在，说明配置被它们的设置压制
                 for key in CODEX_CONFLICTING_ROOT_KEYS {
@@ -1151,6 +1218,10 @@ mod tests {
         );
         assert_eq!(doc.get("model_provider").and_then(|v| v.as_str()), Some("momotoken"));
         assert_eq!(doc.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4-6"));
+        assert_eq!(
+            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some(CODEX_MAX_REASONING_EFFORT)
+        );
 
         let providers = doc.get("model_providers").unwrap().as_table().unwrap();
         assert!(providers.contains_key("custom"), "用户已有 provider 必须保留");
@@ -1161,7 +1232,8 @@ mod tests {
         );
         // 新版 Codex 已拒绝 wire_api = "chat"
         assert_eq!(ours.get("wire_api").and_then(|v| v.as_str()), Some("responses"));
-        assert_eq!(ours.get("env_key").and_then(|v| v.as_str()), Some("OPENAI_API_KEY"));
+        assert!(ours.get("env_key").is_none());
+        assert_eq!(ours.get("requires_openai_auth").and_then(|v| v.as_bool()), Some(true));
 
         // 幂等：同样的 plan 不应再产生改动
         assert!(
@@ -1171,9 +1243,9 @@ mod tests {
         );
     }
 
-    /// CC Switch / CodexPlusPlus 会在顶层写上下文与 service_tier，这些键会压制本次配置
+    /// 纯 API 模式清掉其他切换器的冲突键，并把旧推理档纠正为最高档
     #[test]
-    fn codex_toml_clears_conflicting_root_keys_from_other_switchers() {
+    fn codex_pure_api_clears_conflicts_and_uses_max_reasoning() {
         let p = tmp_path("config.toml");
         fs::write(
             &p,
@@ -1187,10 +1259,9 @@ mod tests {
         for key in CODEX_CONFLICTING_ROOT_KEYS {
             assert!(doc.get(*key).is_none(), "{key} 必须被清除");
         }
-        // 与本次配置无冲突的用户偏好要保留
         assert_eq!(
             doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
-            Some("high")
+            Some(CODEX_MAX_REASONING_EFFORT)
         );
     }
 
@@ -1207,26 +1278,29 @@ mod tests {
         assert_eq!(fs::read_to_string(&p).unwrap(), broken, "原文件必须保持不变");
     }
 
-    /// Codex 桌面端可能已有 ChatGPT 登录态，写 API Key 不能清掉它
+    /// 纯 API 模式选中 apikey 鉴权，同时保留已有 ChatGPT tokens 供切回混用模式
     #[test]
-    fn codex_auth_json_merges_api_key_and_keeps_chatgpt_login() {
+    fn codex_auth_json_selects_api_key_and_keeps_chatgpt_tokens() {
         let p = tmp_path("auth.json");
         fs::write(
             &p,
-            r#"{"preferred_auth_method":"chatgpt","tokens":{"id_token":"keep"}}"#,
+            r#"{"auth_mode":"chatgpt","tokens":{"id_token":"keep"}}"#,
         )
         .unwrap();
 
-        let changed =
-            merge_json_keys(&p, &[("OPENAI_API_KEY", Value::String("sk-abc".to_owned()))]).unwrap();
-        assert_eq!(changed, vec!["OPENAI_API_KEY".to_owned()]);
+        let changed = merge_json_keys(
+            &p,
+            &[
+                ("OPENAI_API_KEY", Value::String("sk-abc".to_owned())),
+                ("auth_mode", Value::String("apikey".to_owned())),
+            ],
+        )
+        .unwrap();
+        assert_eq!(changed, vec!["OPENAI_API_KEY".to_owned(), "auth_mode".to_owned()]);
 
         let v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v.get("OPENAI_API_KEY").and_then(Value::as_str), Some("sk-abc"));
-        assert_eq!(
-            v.get("preferred_auth_method").and_then(Value::as_str),
-            Some("chatgpt")
-        );
+        assert_eq!(v.get("auth_mode").and_then(Value::as_str), Some("apikey"));
         assert_eq!(
             v.pointer("/tokens/id_token").and_then(Value::as_str),
             Some("keep")
@@ -1240,21 +1314,24 @@ mod tests {
         let auth = tmp_path("auth.json");
         fs::write(
             &auth,
-            r#"{"OPENAI_API_KEY":"sk-old","preferred_auth_method":"chatgpt","tokens":{"id_token":"keep"}}"#,
+            r#"{"OPENAI_API_KEY":"sk-old","auth_mode":"apikey","tokens":{"id_token":"keep"}}"#,
         )
         .unwrap();
-        let removed = remove_json_keys(&auth, &["OPENAI_API_KEY"]).unwrap();
-        assert_eq!(removed, vec!["-OPENAI_API_KEY".to_owned()]);
+        let removed = remove_codex_api_auth(&auth).unwrap();
+        assert_eq!(removed, vec!["-OPENAI_API_KEY".to_owned(), "-auth_mode".to_owned()]);
 
         let v: Value = serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
         assert!(v.get("OPENAI_API_KEY").is_none());
-        assert_eq!(
-            v.get("preferred_auth_method").and_then(Value::as_str),
-            Some("chatgpt")
-        );
+        assert!(v.get("auth_mode").is_none());
         assert_eq!(v.pointer("/tokens/id_token").and_then(Value::as_str), Some("keep"));
 
+        fs::write(&auth, r#"{"auth_mode":"chatgpt","tokens":{"id_token":"keep"}}"#).unwrap();
+        assert!(remove_codex_api_auth(&auth).unwrap().is_empty());
+        let v: Value = serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+        assert_eq!(v.get("auth_mode").and_then(Value::as_str), Some("chatgpt"));
+
         let cfg = tmp_path("config.toml");
+        fs::write(&cfg, "model_reasoning_effort = \"high\"\n").unwrap();
         merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, Some("sk-new")).unwrap();
         let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
         let ours = doc
@@ -1270,14 +1347,29 @@ mod tests {
             ours.get("experimental_bearer_token").and_then(|v| v.as_str()),
             Some("sk-new")
         );
-        assert!(ours.get("env_key").is_none(), "混用模式不该再从 auth.json 取密钥");
+        assert!(ours.get("env_key").is_none(), "混用模式不该依赖进程环境");
+        assert_eq!(
+            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some("high"),
+            "混用模式不应强制改写用户的推理偏好"
+        );
     }
 
-    /// 从混用切回纯 API 时，provider 段里的 bearer token 必须被清掉，否则残留旧密钥
+    /// 从混用或旧版 env_key 配置切回纯 API 时，只保留 auth.json 鉴权路径
     #[test]
-    fn codex_pure_api_mode_clears_mixed_bearer_token() {
+    fn codex_pure_api_mode_uses_auth_json_without_process_env() {
         let cfg = tmp_path("config.toml");
         merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, Some("sk-mixed")).unwrap();
+        let mut doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
+        doc.get_mut("model_providers")
+            .and_then(|v| v.as_table_mut())
+            .and_then(|t| t.get_mut("momotoken"))
+            .and_then(|v| v.as_table_mut())
+            .unwrap()
+            .insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
+        doc.insert("model_reasoning_effort".to_owned(), toml::Value::String("high".to_owned()));
+        fs::write(&cfg, toml::to_string_pretty(&doc).unwrap()).unwrap();
+
         merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", None, None).unwrap();
 
         let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
@@ -1291,7 +1383,33 @@ mod tests {
             .as_table()
             .unwrap();
         assert!(ours.get("experimental_bearer_token").is_none());
-        assert_eq!(ours.get("env_key").and_then(|v| v.as_str()), Some("OPENAI_API_KEY"));
+        assert!(ours.get("env_key").is_none());
+        assert_eq!(ours.get("requires_openai_auth").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some(CODEX_MAX_REASONING_EFFORT)
+        );
+    }
+
+    /// 恢复官方配置时清掉 Niko 在纯 API 模式写入的最高推理档。
+    #[test]
+    fn codex_restore_removes_niko_max_reasoning() {
+        let cfg = tmp_path("config.toml");
+        fs::write(&cfg, "approval_policy = \"on-request\"\n").unwrap();
+        merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", Some("gpt-5.6-sol"), None)
+            .unwrap();
+
+        let changed = remove_toml_codex_provider(&cfg).unwrap();
+        assert!(changed.contains(&"-model_reasoning_effort".to_owned()));
+
+        let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
+        assert_eq!(
+            doc.get("approval_policy").and_then(|v| v.as_str()),
+            Some("on-request")
+        );
+        assert!(doc.get("model_reasoning_effort").is_none());
+        assert!(doc.get("model_provider").is_none());
+        assert!(doc.get("model").is_none());
     }
 
     /// Claude Desktop 只读 settings.json 的 env 块，顶层 apiKey 不被识别
