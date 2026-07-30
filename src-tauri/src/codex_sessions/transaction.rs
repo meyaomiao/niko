@@ -1559,6 +1559,7 @@ fn snapshot_all(
                     &request.options,
                     &entry.journal.artifact_id,
                 )?;
+                copy_permissions_if_present(&entry.absolute_path, &backup)?;
                 verify_sqlite_file(&backup, &entry.journal.artifact_id)?;
             } else {
                 copy_file_synced(
@@ -1604,6 +1605,7 @@ fn stage_all(
                 copy_file_synced(&backup, &stage, Some(&entry.journal.artifact_id))?;
                 apply_sqlite_mutation(&stage, mutation, &entry.journal.artifact_id)?;
                 verify_sqlite_file(&stage, &entry.journal.artifact_id)?;
+                copy_permissions_if_present(&entry.absolute_path, &stage)?;
                 File::open(&stage)
                     .and_then(|file| file.sync_all())
                     .map_err(|error| {
@@ -2503,14 +2505,24 @@ fn read_journals(roots: &ApprovedRoots) -> Result<Vec<MigrationJournal>, Migrati
         let Some(id) = name.to_str().filter(|name| is_migration_id(name)) else {
             continue;
         };
-        let bytes = fs::read(entry.path().join(JOURNAL_FILE)).map_err(|_| {
-            migration_error(
-                MigrationErrorKind::JournalCorrupt,
-                "migration_journal_missing",
-                "a transaction directory lacks a readable migration journal",
-                None,
-            )
-        })?;
+        let bytes = match fs::read(entry.path().join(JOURNAL_FILE)) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && operation_is_unstarted(roots, id)? =>
+            {
+                cleanup_unstarted_operation(roots, id);
+                continue;
+            }
+            Err(_) => {
+                return Err(migration_error(
+                    MigrationErrorKind::JournalCorrupt,
+                    "migration_journal_missing",
+                    "a transaction directory lacks a readable migration journal",
+                    None,
+                ))
+            }
+        };
         let journal: MigrationJournal = serde_json::from_slice(&bytes).map_err(|_| {
             migration_error(
                 MigrationErrorKind::JournalCorrupt,
@@ -2653,6 +2665,79 @@ fn clear_verified_stale_lock(
         )
     })?;
     sync_parent(&lock)
+}
+
+fn operation_is_unstarted(
+    roots: &ApprovedRoots,
+    migration_id: &str,
+) -> Result<bool, MigrationError> {
+    for (_, root) in roots.distinct() {
+        let operation = operation_root(root, migration_id);
+        let metadata = match fs::symlink_metadata(&operation) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(classify_io(
+                    error,
+                    "migration_unstarted_metadata_failed",
+                    "an unstarted transaction directory could not be inspected",
+                    None,
+                ))
+            }
+        };
+        if !metadata.file_type().is_dir() {
+            return Ok(false);
+        }
+
+        let entries = fs::read_dir(&operation).map_err(|error| {
+            classify_io(
+                error,
+                "migration_unstarted_directory_unreadable",
+                "an unstarted transaction directory could not be read",
+                None,
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                classify_io(
+                    error,
+                    "migration_unstarted_entry_unreadable",
+                    "an unstarted transaction directory entry could not be read",
+                    None,
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                classify_io(
+                    error,
+                    "migration_unstarted_entry_type_failed",
+                    "an unstarted transaction directory entry could not be inspected",
+                    None,
+                )
+            })?;
+            match entry.file_name().to_str() {
+                Some("backup" | "staged") if file_type.is_dir() => {
+                    if !directory_is_empty(&entry.path())? {
+                        return Ok(false);
+                    }
+                }
+                Some("journal.json.tmp") if file_type.is_file() => {}
+                _ => return Ok(false),
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, MigrationError> {
+    let mut entries = fs::read_dir(path).map_err(|error| {
+        classify_io(
+            error,
+            "migration_unstarted_child_unreadable",
+            "an unstarted transaction child directory could not be read",
+            None,
+        )
+    })?;
+    Ok(entries.next().is_none())
 }
 
 fn clear_verified_stale_provider_lock(
@@ -3427,7 +3512,18 @@ fn copy_permissions_if_present(source: &Path, destination: &Path) -> Result<(), 
             "artifact permissions could not be preserved",
             None,
         )
-    })
+    })?;
+    File::open(destination)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            classify_io(
+                error,
+                "migration_permissions_sync_failed",
+                "artifact permissions could not be flushed",
+                None,
+            )
+        })?;
+    sync_parent(destination)
 }
 
 #[cfg(unix)]

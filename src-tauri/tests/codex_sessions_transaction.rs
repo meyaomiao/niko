@@ -744,6 +744,44 @@ fn provider_sync_and_unverifiable_niko_locks_are_distinct_and_zero_write() {
 }
 
 #[test]
+fn unstarted_transaction_directories_are_cleaned_and_do_not_block_retry() {
+    let fixture = create_fixture(OFFICIAL_PROVIDER);
+    let before = raw_business_snapshot(&fixture);
+    let migration_id = "0123456789abcdef0123456789abcdef";
+
+    for root in [&fixture.codex_home, &fixture.sqlite_home] {
+        let operation = root.join(".niko-session-migrations").join(migration_id);
+        fs::create_dir_all(operation.join("backup")).unwrap();
+        fs::create_dir_all(operation.join("staged")).unwrap();
+    }
+    fs::write(
+        fixture
+            .codex_home
+            .join(".niko-session-migrations")
+            .join(migration_id)
+            .join("journal.json.tmp"),
+        b"{",
+    )
+    .unwrap();
+
+    let recovery = recover_codex_session_migrations(&fixture.request).unwrap();
+    assert!(recovery.migrations.is_empty());
+    assert_eq!(raw_business_snapshot(&fixture), before);
+    assert!(transaction_directories(&fixture).is_empty());
+    assert!(!fixture
+        .sqlite_home
+        .join(".niko-session-migrations")
+        .join(migration_id)
+        .exists());
+
+    let report =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+            .unwrap();
+    assert_eq!(report.outcome, MigrationOutcome::Committed);
+    assert_provider(&fixture, CUSTOM_PROVIDER);
+}
+
+#[test]
 fn live_niko_owner_is_not_cleared() {
     let fixture = create_fixture(OFFICIAL_PROVIDER);
     let barrier = Arc::new(Barrier::new(2));
@@ -1040,6 +1078,51 @@ fn unreadable_auth_json_is_not_part_of_the_transaction() {
     let journal = serde_json::to_string(&latest_journal(&fixture)).unwrap();
     assert!(!journal.contains("auth.json"));
     assert!(!journal.contains(AUTH_SENTINEL));
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_backup_stage_and_target_preserve_source_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = create_fixture(OFFICIAL_PROVIDER);
+    fs::set_permissions(&fixture.databases[0], fs::Permissions::from_mode(0o600)).unwrap();
+
+    let report =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+            .unwrap();
+    assert_eq!(report.outcome, MigrationOutcome::Committed);
+    assert_eq!(
+        fs::metadata(&fixture.databases[0])
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let journal = latest_journal(&fixture);
+    let entry = journal["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == "sqlite" && entry["locator"]["root"] == "codex")
+        .unwrap();
+    let artifact_id = entry["artifact_id"].as_str().unwrap();
+    let transaction = transaction_directories(&fixture).pop().unwrap();
+    for path in [
+        transaction
+            .join("backup")
+            .join(format!("{artifact_id}.backup")),
+        transaction
+            .join("staged")
+            .join(format!("{artifact_id}.stage")),
+    ] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
 
 #[test]
