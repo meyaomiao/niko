@@ -1,0 +1,606 @@
+use niko_lib::codex_sessions::{
+    scan_codex_sessions, DiagnosticLevel, NormalizationStatus, PlanAction, ProviderLayout,
+    RolloutEncoding, ScanError, ScanRequest, SqliteSchemaKind, SqliteSidecarKind,
+};
+use rusqlite::{params, Connection};
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tempfile::tempdir;
+
+const BODY_SENTINEL: &str = "BODY-MUST-NOT-APPEAR";
+const AUTH_SENTINEL: &str = "AUTH-MUST-NOT-APPEAR";
+const INDEX_SENTINEL: &str = "INDEX-MUST-NOT-APPEAR";
+
+#[derive(Clone)]
+struct StateSeed<'a> {
+    id: &'a str,
+    rollout_path: PathBuf,
+    provider: &'a str,
+    cwd: &'a str,
+    archived: bool,
+}
+
+fn config_with_provider(provider: &str, sqlite_home: Option<&Path>) -> String {
+    let mut config = format!(
+        "model_provider = {provider:?}\n\n[model_providers.{provider}]\nname = {provider:?}\n"
+    );
+    if let Some(sqlite_home) = sqlite_home {
+        config = format!(
+            "sqlite_home = {:?}\n{config}",
+            sqlite_home.to_string_lossy()
+        );
+    }
+    config
+}
+
+fn write_rollout(path: &Path, thread_id: &str, provider: &str, cwd: &str, compressed: bool) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let header = json!({
+        "type": "session_meta",
+        "payload": {
+            "id": thread_id,
+            "model_provider": provider,
+            "cwd": cwd,
+            "cli_version": "0.99.0-fixture",
+            "future_field": {"kept": true}
+        },
+        "future_envelope": [1, 2, 3]
+    });
+    let body = json!({
+        "type": "response_item",
+        "payload": {"role": "user", "content": BODY_SENTINEL}
+    });
+    let contents = format!("{header}\n{body}\n");
+    if compressed {
+        let encoded = zstd::stream::encode_all(contents.as_bytes(), 1).unwrap();
+        fs::write(path, encoded).unwrap();
+    } else {
+        fs::write(path, contents).unwrap();
+    }
+}
+
+fn create_state_db(path: &Path, rows: &[StateSeed<'_>], wal: bool) -> Connection {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let connection = Connection::open(path).unwrap();
+    if wal {
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+    }
+    connection
+        .execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                archived INTEGER NOT NULL,
+                future_column TEXT
+            );
+            CREATE INDEX idx_threads_provider_fixture ON threads(model_provider);
+            CREATE TABLE future_state_metadata (key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+    for row in rows {
+        connection
+            .execute(
+                "INSERT INTO threads
+                 (id, rollout_path, model_provider, cwd, archived, future_column)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'unknown-column-is-tolerated')",
+                params![
+                    row.id,
+                    row.rollout_path.to_string_lossy(),
+                    row.provider,
+                    row.cwd,
+                    i64::from(row.archived),
+                ],
+            )
+            .unwrap();
+    }
+    connection
+}
+
+fn create_history_db(path: &Path, thread_ids: &[&str]) -> Connection {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE thread_turns (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                rollout_ordinal INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                PRIMARY KEY (thread_id, turn_id)
+            );
+            CREATE UNIQUE INDEX idx_thread_turns_page_fixture
+                ON thread_turns(thread_id, rollout_ordinal);
+            CREATE TABLE thread_items (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                rollout_ordinal INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                item_json TEXT NOT NULL,
+                future_column TEXT,
+                PRIMARY KEY (thread_id, turn_id, item_id)
+            );
+            CREATE INDEX idx_thread_items_page_fixture
+                ON thread_items(thread_id, rollout_ordinal);
+            CREATE TABLE thread_history_projection_state (
+                thread_id TEXT PRIMARY KEY,
+                next_rollout_byte_offset INTEGER NOT NULL,
+                next_rollout_ordinal INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+    for thread_id in thread_ids {
+        for page in 0..3_i64 {
+            let turn_id = format!("turn-{page}");
+            let item_id = format!("item-{page}");
+            let ordinal = page * 100;
+            connection
+                .execute(
+                    "INSERT INTO thread_turns
+                     (thread_id, turn_id, rollout_ordinal, status)
+                     VALUES (?1, ?2, ?3, 'completed')",
+                    params![thread_id, turn_id, ordinal],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO thread_items
+                     (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, future_column)
+                     VALUES (?1, ?2, ?3, ?4, 1, ?5, 'unknown-column-is-tolerated')",
+                    params![thread_id, turn_id, item_id, ordinal + 1, BODY_SENTINEL],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO thread_history_projection_state
+                 (thread_id, next_rollout_byte_offset, next_rollout_ordinal)
+                 VALUES (?1, 4096, 301)",
+                [thread_id],
+            )
+            .unwrap();
+    }
+    connection
+}
+
+fn snapshot_files(paths: &[PathBuf]) -> BTreeMap<PathBuf, Vec<u8>> {
+    paths
+        .iter()
+        .map(|path| (path.clone(), fs::read(path).unwrap()))
+        .collect()
+}
+
+fn sqlite_sidecar_path(database: &Path, suffix: &str) -> PathBuf {
+    let mut path = database.as_os_str().to_os_string();
+    path.push(suffix);
+    path.into()
+}
+
+#[test]
+fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    let sqlite_home = temp.path().join("independent-sqlite-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::create_dir_all(&sqlite_home).unwrap();
+
+    let active = codex_home.join("sessions/2026/07/active-a.jsonl");
+    let archived = codex_home.join("archived_sessions/archive-b.jsonl.zst");
+    let external = codex_home.join("sessions/2026/07/external-c.jsonl");
+    write_rollout(&active, "thread-a", "custom", "/workspace/a", false);
+    write_rollout(&archived, "thread-b", "custom", "/workspace/b", true);
+    write_rollout(&external, "thread-c", "custom", "/workspace/c", false);
+
+    let config_path = codex_home.join("config.toml");
+    fs::write(
+        &config_path,
+        config_with_provider("custom", Some(&sqlite_home)),
+    )
+    .unwrap();
+    let auth_path = codex_home.join("auth.json");
+    fs::write(&auth_path, format!(r#"{{"token":"{AUTH_SENTINEL}"}}"#)).unwrap();
+    let index_path = codex_home.join("session_index.jsonl");
+    fs::write(
+        &index_path,
+        format!(r#"{{"id":"thread-a","thread_name":"{INDEX_SENTINEL}"}}"#),
+    )
+    .unwrap();
+
+    let top_state_path = codex_home.join("state_5.sqlite");
+    let modern_state_path = codex_home.join("sqlite/codex-dev.db");
+    let external_state_path = sqlite_home.join("state_5.sqlite");
+    let history_path = sqlite_home.join("thread_history_1.sqlite");
+    let top_state = create_state_db(
+        &top_state_path,
+        &[StateSeed {
+            id: "thread-a",
+            rollout_path: active.clone(),
+            provider: "custom",
+            cwd: "/workspace/a",
+            archived: false,
+        }],
+        true,
+    );
+    let modern_state = create_state_db(
+        &modern_state_path,
+        &[StateSeed {
+            id: "thread-b",
+            rollout_path: archived.with_extension(""),
+            provider: "custom",
+            cwd: "/workspace/b",
+            archived: true,
+        }],
+        false,
+    );
+    let external_state = create_state_db(
+        &external_state_path,
+        &[StateSeed {
+            id: "thread-c",
+            rollout_path: external.clone(),
+            provider: "custom",
+            cwd: "/workspace/c",
+            archived: false,
+        }],
+        false,
+    );
+    let history = create_history_db(&history_path, &["thread-a", "thread-b", "thread-c"]);
+
+    let protected_paths = vec![
+        active.clone(),
+        archived.clone(),
+        external.clone(),
+        config_path.clone(),
+        auth_path.clone(),
+        index_path.clone(),
+        top_state_path.clone(),
+        // SQLite readers may update transient read marks in SHM. Durable DB and
+        // WAL bytes must remain unchanged.
+        sqlite_sidecar_path(&top_state_path, "-wal"),
+        modern_state_path.clone(),
+        external_state_path.clone(),
+        history_path.clone(),
+    ];
+    let before = snapshot_files(&protected_paths);
+    let report =
+        scan_codex_sessions(&ScanRequest::new(&codex_home).with_sqlite_home(&sqlite_home)).unwrap();
+    let after = snapshot_files(&protected_paths);
+
+    let changed_paths = before
+        .iter()
+        .filter(|(path, contents)| after.get(*path) != Some(*contents))
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        changed_paths.is_empty(),
+        "inventory and dry-run changed fixtures: {changed_paths:?}"
+    );
+    assert!(
+        !report.is_blocked(),
+        "diagnostics: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(report.rollouts.len(), 3);
+    assert_eq!(
+        report
+            .rollouts
+            .iter()
+            .filter(|rollout| rollout.archived)
+            .count(),
+        1
+    );
+    assert!(report
+        .rollouts
+        .iter()
+        .any(|rollout| rollout.encoding == RolloutEncoding::Zstd));
+    assert_eq!(report.sqlite_databases.len(), 4);
+    assert!(report.sqlite_databases.iter().any(|database| {
+        database.path == top_state_path
+            && database.schema_kind == SqliteSchemaKind::State
+            && database
+                .sidecars
+                .iter()
+                .any(|sidecar| sidecar.kind == SqliteSidecarKind::Wal)
+            && database
+                .sidecars
+                .iter()
+                .any(|sidecar| sidecar.kind == SqliteSidecarKind::Shm)
+            && database
+                .indexes
+                .iter()
+                .any(|index| index.name == "idx_threads_provider_fixture")
+    }));
+    let history_db = report
+        .sqlite_databases
+        .iter()
+        .find(|database| database.path == history_path)
+        .unwrap();
+    assert_eq!(history_db.schema_kind, SqliteSchemaKind::ThreadHistory);
+    assert_eq!(history_db.history_rows.len(), 3);
+    assert!(history_db.history_rows.iter().all(|row| {
+        row.turn_count == 3
+            && row.item_count == 3
+            && row.first_ordinal == Some(0)
+            && row.last_ordinal == Some(201)
+            && row.next_rollout_ordinal == Some(301)
+    }));
+    assert_eq!(report.threads.len(), 3);
+    assert!(report
+        .threads
+        .iter()
+        .all(|thread| !thread.history_databases.is_empty()));
+    assert_eq!(report.provider_layout, ProviderLayout::CcSwitchCustom);
+    assert_eq!(report.normalization.status, NormalizationStatus::NoChanges);
+    assert!(report.normalization.actions.is_empty());
+    let session_index = report.session_index.as_ref().unwrap();
+    assert_eq!(session_index.path, index_path);
+    assert_eq!(session_index.entry_count, 1);
+    assert_eq!(session_index.thread_ids, vec!["thread-a"]);
+
+    let debug_report = format!("{report:#?}");
+    for secret in [BODY_SENTINEL, AUTH_SENTINEL, INDEX_SENTINEL] {
+        assert!(!debug_report.contains(secret));
+    }
+
+    drop((top_state, modern_state, external_state, history));
+}
+
+fn create_single_layout_fixture(provider: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    if provider == "openai" {
+        fs::write(codex_home.join("config.toml"), "model = \"fixture\"\n").unwrap();
+    } else {
+        fs::write(
+            codex_home.join("config.toml"),
+            config_with_provider(provider, None),
+        )
+        .unwrap();
+    }
+    let rollout = codex_home.join("sessions/thread.jsonl");
+    write_rollout(
+        &rollout,
+        "thread-layout",
+        provider,
+        "/workspace/layout",
+        false,
+    );
+    drop(create_state_db(
+        &codex_home.join("state_5.sqlite"),
+        &[StateSeed {
+            id: "thread-layout",
+            rollout_path: rollout,
+            provider,
+            cwd: "/workspace/layout",
+            archived: false,
+        }],
+        false,
+    ));
+    (temp, codex_home)
+}
+
+#[test]
+fn classifies_legacy_buckets_and_builds_deterministic_dry_runs() {
+    for (provider, expected_layout) in [
+        ("openai", ProviderLayout::Official),
+        ("momotoken", ProviderLayout::NikoMomotoken),
+        ("codexpp-provider", ProviderLayout::CodexPlusPlusCompatible),
+    ] {
+        let (_temp, codex_home) = create_single_layout_fixture(provider);
+        let request = ScanRequest::new(&codex_home);
+        let first = scan_codex_sessions(&request).unwrap();
+        let second = scan_codex_sessions(&request).unwrap();
+
+        assert_eq!(first.provider_layout, expected_layout);
+        assert_eq!(first.normalization, second.normalization);
+        assert_eq!(
+            first.normalization.status,
+            NormalizationStatus::WouldNormalize
+        );
+        assert_eq!(first.normalization.actions.len(), 3);
+        assert!(matches!(
+            first.normalization.actions[0],
+            PlanAction::ConfigureCustomBucket { .. }
+        ));
+        assert!(!first.is_blocked(), "diagnostics: {:#?}", first.diagnostics);
+    }
+}
+
+#[test]
+fn mixed_official_and_niko_buckets_have_a_deterministic_plan() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        config_with_provider("momotoken", None),
+    )
+    .unwrap();
+    let official = codex_home.join("sessions/official.jsonl");
+    let niko = codex_home.join("archived_sessions/niko.jsonl");
+    write_rollout(
+        &official,
+        "thread-official",
+        "openai",
+        "/workspace/official",
+        false,
+    );
+    write_rollout(&niko, "thread-niko", "momotoken", "/workspace/niko", false);
+    drop(create_state_db(
+        &codex_home.join("state_5.sqlite"),
+        &[
+            StateSeed {
+                id: "thread-official",
+                rollout_path: official,
+                provider: "openai",
+                cwd: "/workspace/official",
+                archived: false,
+            },
+            StateSeed {
+                id: "thread-niko",
+                rollout_path: niko,
+                provider: "momotoken",
+                cwd: "/workspace/niko",
+                archived: true,
+            },
+        ],
+        false,
+    ));
+
+    let request = ScanRequest::new(&codex_home);
+    let first = scan_codex_sessions(&request).unwrap();
+    let second = scan_codex_sessions(&request).unwrap();
+    assert_eq!(first.provider_layout, ProviderLayout::Mixed);
+    assert_eq!(first.normalization, second.normalization);
+    assert_eq!(first.normalization.actions.len(), 5);
+    assert_eq!(
+        first.normalization.status,
+        NormalizationStatus::WouldNormalize
+    );
+    assert!(!first.is_blocked(), "diagnostics: {:#?}", first.diagnostics);
+}
+
+#[test]
+fn unknown_schema_corruption_and_duplicate_thread_ids_block_the_plan() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        config_with_provider("custom", None),
+    )
+    .unwrap();
+    fs::write(codex_home.join("session_index.jsonl"), "{invalid-json}\n").unwrap();
+    let first = codex_home.join("sessions/duplicate-a.jsonl");
+    let second = codex_home.join("archived_sessions/duplicate-b.jsonl");
+    write_rollout(
+        &first,
+        "duplicate-thread",
+        "custom",
+        "/workspace/duplicate",
+        false,
+    );
+    write_rollout(
+        &second,
+        "duplicate-thread",
+        "custom",
+        "/workspace/duplicate",
+        false,
+    );
+    let corrupt = codex_home.join("sessions/corrupt.jsonl.zst");
+    fs::write(&corrupt, b"not a zstd stream").unwrap();
+    drop(create_state_db(
+        &codex_home.join("state_5.sqlite"),
+        &[
+            StateSeed {
+                id: "duplicate-thread",
+                rollout_path: first,
+                provider: "custom",
+                cwd: "/workspace/duplicate",
+                archived: false,
+            },
+            StateSeed {
+                id: "invalid-state-row",
+                rollout_path: codex_home.join("sessions/missing.jsonl"),
+                provider: "",
+                cwd: "/workspace/invalid",
+                archived: false,
+            },
+        ],
+        false,
+    ));
+    drop(create_history_db(
+        &codex_home.join("sqlite/history-a.db"),
+        &["history-duplicate"],
+    ));
+    drop(create_history_db(
+        &codex_home.join("sqlite/history-b.db"),
+        &["history-duplicate"],
+    ));
+    let unknown_path = codex_home.join("sqlite/future.db");
+    fs::create_dir_all(unknown_path.parent().unwrap()).unwrap();
+    let unknown = Connection::open(&unknown_path).unwrap();
+    unknown
+        .execute("CREATE TABLE mystery (future_value TEXT)", [])
+        .unwrap();
+    drop(unknown);
+
+    let report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
+    let codes = report
+        .diagnostics
+        .iter()
+        .filter(|item| item.level == DiagnosticLevel::Blocker)
+        .map(|item| item.code)
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"duplicate_thread_id"));
+    assert!(codes.contains(&"session_index_entry_invalid"));
+    assert!(codes.contains(&"sqlite_state_row_invalid"));
+    assert!(codes.contains(&"sqlite_schema_unknown"));
+    assert!(
+        codes.contains(&"rollout_header_unreadable") || codes.contains(&"rollout_zstd_invalid")
+    );
+    assert!(report.diagnostics.iter().any(|item| {
+        item.code == "duplicate_thread_id" && item.thread_id.as_deref() == Some("history-duplicate")
+    }));
+    assert_eq!(report.normalization.status, NormalizationStatus::Blocked);
+    assert!(report.normalization.actions.is_empty());
+}
+
+#[test]
+fn refuses_implicit_or_unapproved_roots_without_scanning_them() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    let unapproved = temp.path().join("outside-sqlite-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::create_dir_all(&unapproved).unwrap();
+    fs::write(unapproved.join("state_5.sqlite"), b"must not be opened").unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        config_with_provider("custom", Some(&unapproved)),
+    )
+    .unwrap();
+
+    let report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|item| item.code == "sqlite_home_not_approved"));
+    assert!(report
+        .sqlite_databases
+        .iter()
+        .all(|database| !database.path.starts_with(&unapproved)));
+    assert!(!report
+        .diagnostics
+        .iter()
+        .any(|item| item.code == "sqlite_unreadable"
+            && item
+                .path
+                .as_ref()
+                .is_some_and(|path| path.starts_with(&unapproved))));
+
+    fs::write(
+        codex_home.join("config.toml"),
+        "sqlite_home = \"~/.codex\"\nmodel_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\n",
+    )
+    .unwrap();
+    let tilde_report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
+    assert!(tilde_report
+        .diagnostics
+        .iter()
+        .any(|item| item.code == "config_sqlite_home_invalid"));
+
+    let relative = scan_codex_sessions(&ScanRequest::new("relative-codex-home"));
+    assert!(matches!(
+        relative,
+        Err(ScanError::CodexHomeMustBeAbsolute(_))
+    ));
+}
