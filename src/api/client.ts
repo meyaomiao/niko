@@ -15,6 +15,10 @@ export interface SiteConfig {
   server_version: string;
 }
 
+export interface StatusData {
+  quota_per_unit: number | string;
+}
+
 export interface LoginResult {
   require_2fa: boolean;
   pending_token?: string;
@@ -76,7 +80,12 @@ export interface PricingItem {
 }
 
 export interface BootstrapData {
-  site: { base_url: string; system_name: string; server_version: string };
+  site: {
+    base_url: string;
+    system_name: string;
+    server_version: string;
+    quota_per_unit?: number | string;
+  };
   user: { id: number; quota: number; group: string };
   models: string[];
   groups?: GroupOption[];
@@ -131,7 +140,7 @@ async function postLogin(path: string, body: unknown): Promise<LoginResult> {
 async function get<T>(path: string, token?: string): Promise<T> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${BASE_URL}/api${path}`, { headers });
+  const res = await fetch(`${BASE_URL}/api${path}`, { headers, cache: "no-store" });
   const json = await res.json() as { success: boolean; message?: string; data?: T };
   if (!json.success) throw new Error(json.message ?? "请求失败");
   return (json.data ?? json) as T;
@@ -196,6 +205,9 @@ export interface EpayOrder {
 }
 
 export const api = {
+  status(): Promise<StatusData> {
+    return get<StatusData>("/status");
+  },
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");
   },

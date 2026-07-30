@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { api, DeviceLimitError, REGISTER_URL, type DeviceItem } from "../api/client";
+import { parseBalanceSnapshot } from "../lib/balance";
 import { saveAuth } from "../store/auth";
 import { BRAND } from "../lib/brand";
 import {
@@ -607,13 +608,22 @@ export default function Login() {
       // 钥匙串不可用时不阻断登录
     }
     try {
-      const bootstrap = await api.bootstrap(token);
+      const [bootstrap, status] = await Promise.all([
+        api.bootstrap(token),
+        api.status().catch(() => null),
+      ]);
       const provision = await api.provision(token, bootstrap.user.group);
+      const balance = parseBalanceSnapshot(
+        bootstrap.user.quota,
+        bootstrap.site.quota_per_unit ?? status?.quota_per_unit,
+      );
       saveAuth({
         accessToken: token,
         username: uname,
         userId: bootstrap.user.id,
         quota: bootstrap.user.quota,
+        quotaPerUnit: balance?.quotaPerUnit,
+        balanceUpdatedAt: balance?.updatedAt,
         group: bootstrap.user.group,
         apiKey: provision.api_key,
       });

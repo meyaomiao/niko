@@ -3,6 +3,8 @@ export interface AuthState {
   username: string;
   userId: number;
   quota: number;
+  quotaPerUnit?: number;
+  balanceUpdatedAt?: number;
   group: string;
   apiKey: string;
 }
@@ -27,8 +29,10 @@ export function clearAuth() {
   localStorage.removeItem(KEY);
 }
 
-/** 以新 bootstrap 数据刷新存储的用量/分组，不改变 token 和 apiKey */
-export function refreshAuthMeta(patch: Partial<Pick<AuthState, "quota" | "group">>) {
+/** 以服务端数据刷新存储的余额/分组，不改变 token 和 apiKey */
+export function refreshAuthMeta(
+  patch: Partial<Pick<AuthState, "quota" | "quotaPerUnit" | "balanceUpdatedAt" | "group">>,
+) {
   const cur = loadAuth();
   if (!cur) return;
   saveAuth({ ...cur, ...patch });

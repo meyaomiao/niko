@@ -5,6 +5,7 @@ import { loadAuth, saveAuth } from "../store/auth";
 import { api, type PayMethod, type TopUpInfo, type TopUpRecord } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { ArrowLeftIcon } from "../components/Icons";
+import { formatBalanceUSD, parseBalanceSnapshot, type BalanceSnapshot } from "../lib/balance";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -15,11 +16,6 @@ const GHOST_BTN = "nk-btn-secondary";
 
 /** 这两种支付方式只在网页端可用，客户端不展示 */
 const LAUNCHER_UNSUPPORTED_METHODS = new Set(["alipay_official", "paypal"]);
-
-/** 充值 1 单位 = 站内 1 美元额度，与网页端换算保持一致 */
-function usd(quota: number): string {
-  return (quota / 1_000_000).toFixed(2);
-}
 
 function statusLabel(status: string): { text: string; cls: string } {
   switch (status) {
@@ -55,11 +51,47 @@ export default function TopUp() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [waiting, setWaiting] = useState(false);
-  const [quota, setQuota] = useState(auth?.quota ?? 0);
+  const [balance, setBalance] = useState<BalanceSnapshot | null>(() =>
+    parseBalanceSnapshot(auth?.quota, auth?.quotaPerUnit, auth?.balanceUpdatedAt),
+  );
+  const balanceRef = useRef(balance);
+  const quotaRef = useRef(auth?.quota);
   const [records, setRecords] = useState<TopUpRecord[]>([]);
   const pollRef = useRef<number | null>(null);
 
   const token = auth?.accessToken ?? "";
+
+  const updateBalance = (snapshot: BalanceSnapshot, groupName: string) => {
+    balanceRef.current = snapshot;
+    quotaRef.current = snapshot.quota;
+    setBalance(snapshot);
+    const cur = loadAuth();
+    if (cur) {
+      saveAuth({
+        ...cur,
+        quota: snapshot.quota,
+        quotaPerUnit: snapshot.quotaPerUnit,
+        balanceUpdatedAt: snapshot.updatedAt,
+        group: groupName,
+      });
+    }
+  };
+
+  const loadBalance = async (refreshUnit = false) => {
+    const previousQuota = quotaRef.current;
+    const shouldLoadUnit = refreshUnit || !balanceRef.current?.quotaPerUnit;
+    const [boot, status] = await Promise.all([
+      api.bootstrap(token),
+      shouldLoadUnit ? api.status() : Promise.resolve(null),
+    ]);
+    const snapshot = parseBalanceSnapshot(
+      boot.user.quota,
+      boot.site.quota_per_unit ?? status?.quota_per_unit ?? balanceRef.current?.quotaPerUnit,
+    );
+    if (!snapshot) throw new Error("余额单位暂时无法读取");
+    updateBalance(snapshot, boot.user.group);
+    return { snapshot, changed: previousQuota !== snapshot.quota };
+  };
 
   // 客户端只实现了易支付收银台流程；支付宝官方（单笔≤50 元）与 PayPal 需要网页端的
   // 独立下单/回跳链路，放在这里点了必然失败，因此直接从可选项里剔除。
@@ -108,6 +140,7 @@ export default function TopUp() {
         setLoading(false);
       }
     })();
+    void loadBalance(true).catch(() => undefined);
     loadHistory();
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
@@ -134,15 +167,12 @@ export default function TopUp() {
         return;
       }
       try {
-        const [boot, history] = await Promise.all([
-          api.bootstrap(token),
+        const [{ changed }, history] = await Promise.all([
+          loadBalance(),
           api.topupHistory(token),
         ]);
         setRecords(history.items ?? []);
-        if (boot.user.quota !== quota) {
-          setQuota(boot.user.quota);
-          const cur = loadAuth();
-          if (cur) saveAuth({ ...cur, quota: boot.user.quota, group: boot.user.group });
+        if (changed) {
           if (pollRef.current) window.clearInterval(pollRef.current);
           setWaiting(false);
           await invoke("close_cashier").catch(() => undefined);
@@ -178,7 +208,7 @@ export default function TopUp() {
           <ArrowLeftIcon />
         </button>
         <h1 className={TITLE}>充值</h1>
-        <span className={`ml-auto ${SUBTLE}`}>可用余额 ${usd(quota)}</span>
+        <span className={`ml-auto ${SUBTLE}`}>可用余额 {formatBalanceUSD(balance)}</span>
       </header>
 
       <main className="nk-page">

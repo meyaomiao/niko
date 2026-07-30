@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { loadAuth, saveAuth } from "../store/auth";
+import { loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
 import { api, type BootstrapData, type GroupOption, type DeviceItem } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
@@ -11,6 +11,13 @@ import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
 import { LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
 import TargetAppIcon from "../components/TargetAppIcon";
+import {
+  balanceReducer,
+  formatBalanceUSD,
+  formatBalanceUpdatedAt,
+  parseBalanceSnapshot,
+  type BalanceSnapshot,
+} from "../lib/balance";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -32,10 +39,6 @@ interface ApplyResult {
   ok: boolean;
   changed?: string[];
   error?: string;
-}
-
-function quotaToUSD(quota: number): string {
-  return (quota / 1_000_000).toFixed(2);
 }
 
 function formatTime(ts: number): string {
@@ -69,6 +72,17 @@ export default function Home() {
 
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [loading, setLoading] = useState(true);
+  const initialBalance = parseBalanceSnapshot(
+    auth?.quota,
+    auth?.quotaPerUnit,
+    auth?.balanceUpdatedAt,
+  );
+  const [balance, dispatchBalance] = useReducer(balanceReducer, {
+    snapshot: initialBalance,
+    refreshing: false,
+    error: "",
+  });
+  const balanceRequestRef = useRef<Promise<BootstrapData | null> | null>(null);
   const [group, setGroup] = useState(auth?.group ?? "");
   const [model, setModel] = useState("");
   const [modelFilter, setModelFilter] = useState("");
@@ -97,16 +111,56 @@ export default function Home() {
   const [tokenTipOpen, setTokenTipOpen] = useState(false);
   const [revoking, setRevoking] = useState<number | "others" | null>(null);
 
+  const persistBalance = useCallback((snapshot: BalanceSnapshot, groupName: string) => {
+    refreshAuthMeta({
+      quota: snapshot.quota,
+      quotaPerUnit: snapshot.quotaPerUnit,
+      balanceUpdatedAt: snapshot.updatedAt,
+      group: groupName,
+    });
+  }, []);
+
+  const refreshBalance = useCallback(async () => {
+    if (!auth?.accessToken || balanceRequestRef.current) return balanceRequestRef.current;
+    dispatchBalance({ type: "refresh-started" });
+    const request = (async (): Promise<BootstrapData | null> => {
+      let data: BootstrapData | null = null;
+      try {
+        const [bootstrapResult, statusResult] = await Promise.allSettled([
+          api.bootstrap(auth.accessToken),
+          api.status(),
+        ]);
+        if (bootstrapResult.status === "rejected") throw bootstrapResult.reason;
+
+        data = bootstrapResult.value;
+        setBootstrap(data);
+        const quotaPerUnit =
+          data.site.quota_per_unit ??
+          (statusResult.status === "fulfilled" ? statusResult.value.quota_per_unit : undefined);
+        const snapshot = parseBalanceSnapshot(data.user.quota, quotaPerUnit);
+        if (!snapshot) throw new Error("余额单位暂时无法读取");
+
+        dispatchBalance({ type: "refresh-succeeded", snapshot });
+        persistBalance(snapshot, data.user.group);
+      } catch {
+        dispatchBalance({ type: "refresh-failed", error: "余额刷新失败，请稍后重试" });
+      }
+      return data;
+    })().finally(() => {
+      balanceRequestRef.current = null;
+    });
+    balanceRequestRef.current = request;
+    return request;
+  }, [auth?.accessToken, persistBalance]);
+
   useEffect(() => {
     if (!auth?.accessToken) {
       navigate("/login", { replace: true });
       return;
     }
-    api
-      .bootstrap(auth.accessToken)
+    void refreshBalance()
       .then((data) => {
-        setBootstrap(data);
-        saveAuth({ ...auth, quota: data.user.quota, group: data.user.group });
+        if (!data) return;
         // 分组不在这里定：等选好应用后按应用推荐（见下方 effect）
         const groups = data.groups ?? [];
         const remembered = groups.find((g) => g.name === auth.group);
@@ -116,7 +170,6 @@ export default function Home() {
           setGroupTouched(true);
         }
       })
-      .catch(() => {})
       .finally(() => setLoading(false));
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
@@ -133,6 +186,18 @@ export default function Home() {
       .catch(() => {});
     api.listDevices(auth.accessToken).then(setDevices).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const refreshVisibleBalance = () => {
+      if (document.visibilityState === "visible") void refreshBalance();
+    };
+    window.addEventListener("focus", refreshVisibleBalance);
+    document.addEventListener("visibilitychange", refreshVisibleBalance);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleBalance);
+      document.removeEventListener("visibilitychange", refreshVisibleBalance);
+    };
+  }, [refreshBalance]);
 
   const groups: GroupOption[] = bootstrap?.groups ?? [];
   const deviceLimit = bootstrap?.device_limit ?? 0;
@@ -406,7 +471,6 @@ export default function Home() {
     );
   }
 
-  const quota = bootstrap?.user.quota ?? auth?.quota ?? 0;
   const otherDevices = devices.filter((d) => !d.is_current).length;
 
   return (
@@ -437,10 +501,35 @@ export default function Home() {
               <div className="flex items-end justify-between">
                 <div>
                   <p className={LABEL}>{auth?.username ?? "已登录"}</p>
-                  <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
-                    ${quotaToUSD(quota)}
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <p className="text-2xl font-semibold text-gray-900 dark:text-white" aria-live="polite">
+                      {formatBalanceUSD(balance.snapshot)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void refreshBalance()}
+                      disabled={balance.refreshing}
+                      aria-label="刷新余额"
+                      title="刷新余额"
+                      className="nk-btn-ghost min-h-7 px-2"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`text-base leading-none ${balance.refreshing ? "animate-spin motion-reduce:animate-none" : ""}`}
+                      >
+                        ↻
+                      </span>
+                    </button>
+                  </div>
+                  <p className={`mt-1 ${SUBTLE}`}>
+                    可用余额
+                    {balance.snapshot ? ` · ${formatBalanceUpdatedAt(balance.snapshot)}` : ""}
                   </p>
-                  <p className={`mt-1 ${SUBTLE}`}>可用余额</p>
+                  {balance.error && (
+                    <p className="mt-1 text-[11px] text-[var(--nk-danger)]" role="status">
+                      {balance.error}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
