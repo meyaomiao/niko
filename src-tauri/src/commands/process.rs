@@ -75,7 +75,19 @@ fn app_process_running(path: &std::path::Path) -> bool {
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     sys.processes()
         .values()
-        .any(|proc| proc.exe().is_some_and(|exe| exe.starts_with(path)))
+        .any(|proc| proc.exe().is_some_and(|exe| is_app_executable(exe, path)))
+}
+
+fn is_app_executable(exe: &std::path::Path, path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Electron 的 crashpad 等 helper 退出主应用后仍可能驻留，不能阻塞重新启动。
+        exe.parent() == Some(path.join("Contents/MacOS").as_path())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        exe == path
+    }
 }
 
 fn quit_app(target_id: &str, path: &std::path::Path) -> Result<(), String> {
@@ -169,4 +181,44 @@ pub async fn check_all_processes() -> Vec<ProcessStatus> {
             pid: found_pid,
         }
     }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_executable_ignores_macos_bundle_helpers() {
+        let app = std::path::Path::new("/Applications/ChatGPT.app");
+
+        assert!(is_app_executable(
+            std::path::Path::new("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+            app,
+        ));
+        assert!(!is_app_executable(
+            std::path::Path::new(
+                "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/browser_crashpad_handler",
+            ),
+            app,
+        ));
+        assert!(!is_app_executable(
+            std::path::Path::new(
+                "/Applications/ChatGPT.app/Contents/Frameworks/Codex Helper.app/Contents/MacOS/Codex Helper",
+            ),
+            app,
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn app_executable_matches_exact_launch_path() {
+        let app = std::path::Path::new(r"C:\Users\me\AppData\Local\ChatGPT\ChatGPT.exe");
+
+        assert!(is_app_executable(app, app));
+        assert!(!is_app_executable(
+            std::path::Path::new(r"C:\Users\me\AppData\Local\ChatGPT\helper.exe"),
+            app,
+        ));
+    }
 }
