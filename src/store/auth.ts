@@ -7,13 +7,14 @@ export interface AuthState {
   balanceUpdatedAt?: number;
   group: string;
   apiKey: string;
+  remember: boolean;
 }
 
 const KEY = "niko_auth";
 
-export function loadAuth(): AuthState | null {
+function loadStoredAuth(storage: Storage): AuthState | null {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = storage.getItem(KEY);
     if (!raw) return null;
     return JSON.parse(raw) as AuthState;
   } catch {
@@ -21,12 +22,28 @@ export function loadAuth(): AuthState | null {
   }
 }
 
+export function loadAuth(): AuthState | null {
+  const session = loadStoredAuth(sessionStorage);
+  if (session) return session;
+
+  const persisted = loadStoredAuth(localStorage);
+  return persisted?.remember ? persisted : null;
+}
+
 export function saveAuth(state: AuthState) {
-  localStorage.setItem(KEY, JSON.stringify(state));
+  const value = JSON.stringify(state);
+  if (state.remember) {
+    localStorage.setItem(KEY, value);
+    sessionStorage.removeItem(KEY);
+  } else {
+    sessionStorage.setItem(KEY, value);
+    localStorage.removeItem(KEY);
+  }
 }
 
 export function clearAuth() {
   localStorage.removeItem(KEY);
+  sessionStorage.removeItem(KEY);
 }
 
 /** 以服务端数据刷新存储的余额/分组，不改变 token 和 apiKey */

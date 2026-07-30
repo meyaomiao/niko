@@ -712,11 +712,12 @@ export default function Login() {
         balanceUpdatedAt: balance?.updatedAt,
         group: bootstrap.user.group,
         apiKey: provision.api_key,
+        remember,
       });
       navigate("/home");
     } catch {
       // bootstrap/provision 失败不阻断登录，仍跳首页
-      saveAuth({ accessToken: token, username: uname, userId: 0, quota: 0, group: "", apiKey: "" });
+      saveAuth({ accessToken: token, username: uname, userId: 0, quota: 0, group: "", apiKey: "", remember });
       navigate("/home");
     }
   };
