@@ -4,12 +4,6 @@ import { APP_VERSION } from "../lib/version";
 
 const BASE_URL = "https://momotoken.win";
 
-/** 网页端注册页，登录器无注册功能，引导用户去官网注册 */
-export const REGISTER_URL = `${BASE_URL}/register`;
-
-/** 网页端充值页，仅用于站内充值不可用时的兜底跳转 */
-export const TOPUP_URL = `${BASE_URL}/console/topup`;
-
 export interface SiteConfig {
   system_name: string;
   server_version: string;

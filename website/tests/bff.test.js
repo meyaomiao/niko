@@ -351,7 +351,23 @@ test("upstream requests carry a verifiable HMAC and never expose auth tokens", a
   assert.equal("csrf_token" in extracted.payload.data, false);
 });
 
-test("login and custom top-up bodies match the upstream contract", async () => {
+test("registration, login, and custom top-up bodies match the upstream contract", async () => {
+  const registerRoute = matchRoute("POST", "auth/register");
+  const registerRequest = new Request("https://niko-ai.cc/api/niko/v1/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: "niko-user",
+      password: "Password123",
+      turnstile_token: "t".repeat(20),
+    }),
+  });
+  assert.deepEqual(await parseBody(registerRequest, registerRoute), {
+    username: "niko-user",
+    password: "Password123",
+    turnstile_token: "t".repeat(20),
+  });
+
   const loginRoute = matchRoute("POST", "auth/login");
   const loginRequest = new Request("https://niko-ai.cc/api/niko/v1/auth/login", {
     method: "POST",

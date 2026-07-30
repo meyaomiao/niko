@@ -53,7 +53,7 @@ function VersionGate({ children }: { children: React.ReactNode }) {
         if (semverLt(APP_VERSION, minVer)) {
           setUpgradeInfo({
             minVersion: minVer,
-            downloadUrl: data.download_url ?? "https://momotoken.win/download",
+            downloadUrl: data.download_url ?? "https://niko-ai.cc/",
             announcement: data.announcement?.content,
           });
         }

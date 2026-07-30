@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "test:balance": "node --experimental-strip-types --test tests/balance.test.ts",
     "test:login": "node --experimental-strip-types --test tests/loginTargets.test.ts",
+    "test:registration": "node --experimental-strip-types --test tests/registration.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

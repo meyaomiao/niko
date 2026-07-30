@@ -3,5 +3,6 @@ pub mod bootstrap;
 pub mod diagnostics;
 pub mod payment;
 pub mod process;
+pub mod registration;
 pub mod targets;
 pub mod snapshots;

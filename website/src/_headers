@@ -14,6 +14,9 @@
 /register/*
   Cache-Control: public, max-age=0, must-revalidate
 
+/desktop/verify/*
+  Cache-Control: no-store
+
 /account/*
   Cache-Control: public, max-age=0, must-revalidate
 

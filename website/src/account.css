@@ -339,6 +339,44 @@ button {
   font-weight: 750;
 }
 
+.desktop-verification {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.desktop-verification-panel {
+  width: min(100%, 340px);
+  text-align: center;
+}
+
+.desktop-verification-panel > img {
+  width: 48px;
+  height: 48px;
+}
+
+.desktop-verification-panel .account-eyebrow {
+  margin: 0.6rem 0 0;
+}
+
+.desktop-verification-panel h1 {
+  margin: 0.2rem 0 0;
+  color: var(--account-ink);
+  font-size: 1.35rem;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.desktop-verification-panel .turnstile-field {
+  margin-top: 1.3rem;
+  text-align: left;
+}
+
+.desktop-verification-panel .form-status {
+  margin-top: 0.8rem;
+}
+
 .account-main {
   width: min(1120px, calc(100% - 40px));
   margin: 0 auto;

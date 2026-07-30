@@ -10,6 +10,31 @@ import {
   logoutFromNavigation,
   renderSessionNavigation,
 } from "../src/js/site-session.js";
+import {
+  DESKTOP_TURNSTILE_ACTION,
+  validDesktopNonce,
+  validDesktopSiteKey,
+  verificationCallbackUrl,
+} from "../src/js/desktop-verification.js";
+
+test("desktop verification keeps the production action and nonce/site-key-bound callback", () => {
+  const nonce = "a".repeat(32);
+  const siteKey = "0x4AAAAAAD_7tPGZn65hZ-Ov";
+  const token = `token+/${"x".repeat(20)}`;
+  assert.equal(DESKTOP_TURNSTILE_ACTION, "niko_register");
+  assert.equal(validDesktopNonce(nonce), true);
+  assert.equal(validDesktopNonce("wrong"), false);
+  assert.equal(validDesktopSiteKey(siteKey), true);
+  assert.equal(validDesktopSiteKey("wrong"), false);
+
+  const callback = new URL(verificationCallbackUrl(nonce, siteKey, token));
+  assert.equal(callback.protocol, "niko-register:");
+  assert.equal(callback.host, "verified");
+  assert.equal(callback.searchParams.get("nonce"), nonce);
+  assert.equal(callback.searchParams.get("site_key"), siteKey);
+  assert.equal(callback.searchParams.get("token"), token);
+  assert.throws(() => verificationCallbackUrl(nonce, "wrong", token));
+});
 
 function fakeDocument() {
   const appended = [];

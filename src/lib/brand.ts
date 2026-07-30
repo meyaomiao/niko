@@ -6,6 +6,5 @@ export const BRAND = {
   fullName: "Niko 登录器",
   tagline: "一键接入 AI 助手",
   version: APP_VERSION,
-  /** 服务端地址仍指向 momotoken 中转站，属技术依赖，不对外作为品牌展示 */
-  siteUrl: "https://momotoken.win",
+  siteUrl: "https://niko-ai.cc",
 } as const;

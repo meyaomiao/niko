@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>Niko 安全验证</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles-wordmark.css" />
+    <link rel="stylesheet" href="/account.css" />
+    <script
+      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+      async
+      defer
+    ></script>
+    <script type="module" src="/js/desktop-verification.js"></script>
+  </head>
+  <body class="account-body" data-desktop-verification="true">
+    <main class="desktop-verification" aria-labelledby="verification-title">
+      <section class="desktop-verification-panel">
+        <img src="/assets/niko-mark.svg" alt="" width="48" height="48" />
+        <p class="account-eyebrow">Niko</p>
+        <h1 id="verification-title">安全验证</h1>
+        <div class="turnstile-field" data-turnstile-container>
+          <div class="turnstile-loading">正在准备安全验证…</div>
+        </div>
+        <p class="form-status" data-verification-status role="status" aria-live="polite"></p>
+      </section>
+    </main>
+  </body>
+</html>

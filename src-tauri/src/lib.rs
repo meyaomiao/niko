@@ -8,6 +8,7 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(commands::registration::RegistrationState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
@@ -25,6 +26,10 @@ pub fn run() {
             commands::auth::save_remembered_login,
             commands::auth::load_remembered_login,
             commands::auth::clear_remembered_login,
+            commands::registration::start_registration_challenge,
+            commands::registration::registration_challenge_status,
+            commands::registration::cancel_registration_challenge,
+            commands::registration::register_niko_account,
             commands::bootstrap::get_bootstrap,
             commands::targets::list_targets,
             commands::targets::apply_target,
