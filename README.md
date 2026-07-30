@@ -123,6 +123,8 @@ npm run tauri dev
 npm run tauri build
 ```
 
+正式发布时，macOS 必须在发布者本机完成 universal 构建、Developer ID 签名、Apple 公证和装订；GitHub Actions 只生成 Windows 安装包。完整步骤见 [发布流程](docs/release-process.md)。
+
 主要技术栈：Tauri 2、React 19、TypeScript、Tailwind CSS 和 Rust。
 
 ## 问题反馈

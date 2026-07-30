@@ -1,25 +1,29 @@
-name: Niko Release
+name: Niko Windows Release Artifacts
+
+# macOS release artifacts are intentionally excluded from GitHub Actions.
+# Build, sign, notarize, and staple macOS releases on the owner's local Mac:
+# docs/release-process.md
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. niko-v0.1.1)"
+        description: "Release tag (e.g. niko-v0.1.3)"
         required: true
       confirm:
-        description: "Type RELEASE to confirm"
+        description: "Type WINDOWS to confirm this Windows-only build"
         required: true
 
 concurrency:
-  group: niko-release-${{ inputs.tag }}
+  group: niko-windows-release-${{ inputs.tag }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate-release:
-    name: Validate release request
+    name: Validate Windows build request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -31,12 +35,12 @@ jobs:
           RELEASE_CONFIRM: ${{ inputs.confirm }}
         run: |
           if [ "$GITHUB_REF_NAME" != "main" ]; then
-            echo "::error::Releases must be dispatched from main"
+            echo "::error::Release artifacts must be built from main"
             exit 1
           fi
 
-          if [ "$RELEASE_CONFIRM" != "RELEASE" ]; then
-            echo "::error::Confirmation must be exactly RELEASE"
+          if [ "$RELEASE_CONFIRM" != "WINDOWS" ]; then
+            echo "::error::Confirmation must be exactly WINDOWS"
             exit 1
           fi
 
@@ -47,146 +51,13 @@ jobs:
             exit 1
           fi
 
-          echo "Validated release $RELEASE_TAG from main"
+          echo "Validated Windows artifacts for $RELEASE_TAG from main"
 
-  # ──────────────────────────────────────────────────────────────
-  # E9-1: macOS — 签名 + 公证
-  # ──────────────────────────────────────────────────────────────
-  build-macos:
-    name: macOS (signed + notarized)
-    needs: validate-release
-    runs-on: macos-latest
-    timeout-minutes: 45
-    outputs:
-      app_version: ${{ steps.version.outputs.version }}
-      macos_sig: ${{ steps.sig.outputs.signature }}
-      macos_filename: ${{ steps.sig.outputs.filename }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
-
-      - name: Install frontend deps
-        run: npm ci
-
-      - name: Read version
-        id: version
-        run: |
-          VERSION=$(node -e "const c=require('./src-tauri/tauri.conf.json'); console.log(c.version)")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Import Apple Developer Certificate
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -lut 21600 build.keychain
-          security list-keychains -d user -s build.keychain
-          security import /tmp/certificate.p12 \
-            -k build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm /tmp/certificate.p12
-          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
-            | grep "Developer ID Application" | head -1 | sed -n 's/.*"\(.*\)".*/\1/p')
-          if [ -z "$IDENTITY" ]; then
-            echo "::error::No Developer ID Application identity found in build.keychain"
-            exit 1
-          fi
-          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-
-      - name: Build (universal) & Notarize
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          npx tauri build --target universal-apple-darwin
-
-      - name: Compute SHA256 & extract updater sig
-        id: sig
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd src-tauri/target/universal-apple-darwin/release/bundle
-
-          shopt -s nullglob
-          updater_files=(macos/*.app.tar.gz)
-          dmg_files=(dmg/*.dmg)
-          if [ "${#updater_files[@]}" -ne 1 ] || [ "${#dmg_files[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one macOS updater archive and one DMG"
-            exit 1
-          fi
-
-          updater_file="${updater_files[0]}"
-          signature_file="${updater_file}.sig"
-          if [ ! -s "$signature_file" ]; then
-            echo "::error::Missing updater signature: $signature_file"
-            exit 1
-          fi
-
-          artifacts=("${dmg_files[0]}" "$updater_file")
-          for f in "${artifacts[@]}"; do
-            shasum -a 256 "$f"
-          done > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-          SIG=$(tr -d '\r\n' < "$signature_file")
-          if [ -z "$SIG" ]; then
-            echo "::error::macOS updater signature is empty"
-            exit 1
-          fi
-
-          echo "signature=$SIG" >> "$GITHUB_OUTPUT"
-          echo "filename=$(basename "$updater_file")" >> "$GITHUB_OUTPUT"
-
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-universal
-          path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz.sig
-            src-tauri/target/universal-apple-darwin/release/bundle/SHA256SUMS.txt
-          if-no-files-found: error
-
-  # ──────────────────────────────────────────────────────────────
-  # E9-2: Windows — 未签名产物 + SHA256 公示
-  # ──────────────────────────────────────────────────────────────
   build-windows:
     name: Windows (unsigned + SHA256)
     needs: validate-release
     runs-on: windows-latest
     timeout-minutes: 45
-    outputs:
-      win_sig: ${{ steps.sig.outputs.signature }}
-      win_filename: ${{ steps.sig.outputs.filename }}
     steps:
       - uses: actions/checkout@v4
 
@@ -205,21 +76,20 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      - name: Build
+      - name: Build Windows installers
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
-      - name: Compute SHA256 & extract updater sig
-        id: sig
+      - name: Compute SHA256 and validate updater signatures
         shell: pwsh
         run: |
           $bundles = Get-ChildItem `
             -Path "src-tauri/target/release/bundle" `
             -Recurse `
             -Include "*.msi","*.exe","*.nsis" |
-            Where-Object { $_.Name -notlike "*debug*" }
+          Where-Object { $_.Name -notlike "*debug*" }
           $out = @()
           foreach ($f in $bundles) {
             $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
@@ -234,21 +104,17 @@ jobs:
             throw "Expected exactly one MSI and one EXE installer"
           }
 
-          $msiFile = $msiFiles[0]
-          $sigFile = Get-Item "$($msiFile.FullName).sig" -ErrorAction Stop
-          $exeSigFile = Get-Item "$($exeFiles[0].FullName).sig" -ErrorAction Stop
-          $sig = (Get-Content $sigFile.FullName -Raw).Trim()
-          if ([string]::IsNullOrWhiteSpace($sig) -or $exeSigFile.Length -eq 0) {
+          $msiSig = Get-Item "$($msiFiles[0].FullName).sig" -ErrorAction Stop
+          $exeSig = Get-Item "$($exeFiles[0].FullName).sig" -ErrorAction Stop
+          if ($msiSig.Length -eq 0 -or $exeSig.Length -eq 0) {
             throw "Windows updater signature is missing or empty"
           }
 
-          echo "signature=$sig" >> $env:GITHUB_OUTPUT
-          echo "filename=$($msiFile.Name)" >> $env:GITHUB_OUTPUT
-
-      - name: Upload Windows artifacts
+      - name: Upload Windows artifacts for local release assembly
         uses: actions/upload-artifact@v4
         with:
           name: windows-unsigned
+          retention-days: 7
           path: |
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.msi.sig
@@ -257,137 +123,17 @@ jobs:
             SHA256SUMS_win.txt
           if-no-files-found: error
 
-  # ──────────────────────────────────────────────────────────────
-  # E9-4: 生成 latest.json（Tauri updater 所需）
-  # ──────────────────────────────────────────────────────────────
-  release:
-    name: Create Release
-    needs: [build-macos, build-windows]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-
-      - name: List artifacts
-        run: find release-artifacts -type f | sort
-
-      - name: Validate artifacts & generate latest.json
+      - name: Record the local macOS next step
+        shell: pwsh
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-          APP_VERSION: ${{ needs.build-macos.outputs.app_version }}
-          MACOS_SIGNATURE: ${{ needs.build-macos.outputs.macos_sig }}
-          MACOS_FILENAME: ${{ needs.build-macos.outputs.macos_filename }}
-          WINDOWS_SIGNATURE: ${{ needs.build-windows.outputs.win_sig }}
-          WINDOWS_FILENAME: ${{ needs.build-windows.outputs.win_filename }}
         run: |
-          node <<'NODE'
-          const fs = require("node:fs");
-          const path = require("node:path");
+          @"
+          ## Windows artifacts ready
 
-          const required = [
-            "RELEASE_TAG",
-            "APP_VERSION",
-            "MACOS_SIGNATURE",
-            "MACOS_FILENAME",
-            "WINDOWS_SIGNATURE",
-            "WINDOWS_FILENAME",
-          ];
-          for (const name of required) {
-            if (!process.env[name]?.trim()) {
-              throw new Error(`${name} is empty`);
-            }
-          }
+          Download the **windows-unsigned** artifact to the owner's Mac.
+          Build, sign, notarize, and staple macOS locally, then assemble the draft GitHub Release locally.
 
-          const files = [];
-          function walk(directory) {
-            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-              const target = path.join(directory, entry.name);
-              if (entry.isDirectory()) walk(target);
-              else files.push(target);
-            }
-          }
-          walk("release-artifacts");
-
-          function exactlyOne(filename) {
-            if (path.basename(filename) !== filename) {
-              throw new Error(`Invalid artifact filename: ${filename}`);
-            }
-            const matches = files.filter((file) => path.basename(file) === filename);
-            if (matches.length !== 1) {
-              throw new Error(`Expected exactly one ${filename}, found ${matches.length}`);
-            }
-            return matches[0];
-          }
-
-          const macosArchive = exactlyOne(process.env.MACOS_FILENAME);
-          const windowsInstaller = exactlyOne(process.env.WINDOWS_FILENAME);
-          const macosSignatureFile = exactlyOne(`${process.env.MACOS_FILENAME}.sig`);
-          const windowsSignatureFile = exactlyOne(`${process.env.WINDOWS_FILENAME}.sig`);
-          const macosSignature = fs.readFileSync(macosSignatureFile, "utf8").trim();
-          const windowsSignature = fs.readFileSync(windowsSignatureFile, "utf8").trim();
-
-          if (!fs.statSync(macosArchive).size || !fs.statSync(windowsInstaller).size) {
-            throw new Error("Updater artifact is empty");
-          }
-          if (macosSignature !== process.env.MACOS_SIGNATURE.trim()) {
-            throw new Error("macOS signature output does not match its artifact");
-          }
-          if (windowsSignature !== process.env.WINDOWS_SIGNATURE.trim()) {
-            throw new Error("Windows signature output does not match its artifact");
-          }
-
-          const tag = process.env.RELEASE_TAG;
-          const baseUrl = `https://github.com/meyaomiao/niko/releases/download/${tag}`;
-          const latest = {
-            version: process.env.APP_VERSION,
-            notes: `查看 Release Notes：https://github.com/meyaomiao/niko/releases/tag/${tag}`,
-            pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-            platforms: {
-              "darwin-universal": {
-                signature: macosSignature,
-                url: `${baseUrl}/${process.env.MACOS_FILENAME}`,
-              },
-              "windows-x86_64": {
-                signature: windowsSignature,
-                url: `${baseUrl}/${process.env.WINDOWS_FILENAME}`,
-              },
-            },
-          };
-          fs.writeFileSync("latest.json", `${JSON.stringify(latest, null, 2)}\n`);
-          console.log(fs.readFileSync("latest.json", "utf8"));
-          NODE
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: "Niko v${{ needs.build-macos.outputs.app_version }}"
-          draft: true
-          fail_on_unmatched_files: true
-          body: |
-            ## 下载
-
-            | 平台 | 文件 | 说明 |
-            |---|---|---|
-            | macOS (Apple Silicon + Intel) | `*.dmg` | 已签名 + 公证，直接安装 |
-            | Windows 10/11 | `*.msi` / `*_setup.exe` | **未签名**，首次运行会有 SmartScreen 提示，见下方说明 |
-
-            ## SHA256 校验
-
-            见附件中的 `SHA256SUMS.txt` / `SHA256SUMS_win.txt`
-
-            ## Windows SmartScreen
-
-            首次运行安装包时，Windows SmartScreen 会提示"Windows 已保护你的电脑"。
-            点击 **更多信息** → **仍要运行** 即可继续安装。
-            这是因为当前版本尚未购买 Windows 代码签名证书。
-            附件提供了 SHA256 校验值，可用于核对下载文件完整性。
-          files: |
-            release-artifacts/**/*
-            latest.json
+          Release tag: ``$env:RELEASE_TAG``
+          Procedure: ``docs/release-process.md``
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY

@@ -544,11 +544,11 @@ sequenceDiagram
 
 1. `tauri build --target universal-apple-darwin` 出 universal 二进制，同时覆盖 Intel 与 Apple Silicon
 2. 签名：Developer ID Application 证书 + 启用 Hardened Runtime + `--options runtime --timestamp`
-3. 公证：`xcrun notarytool submit --wait`，凭证用 App Store Connect API Key 存进 CI secrets
+3. 公证：`xcrun notarytool submit --wait`，使用发布者本机保存的 Apple 凭证
 4. 装订：`xcrun stapler staple`，让用户离线也能通过 Gatekeeper
 5. 产物：`.dmg`，附 SHA256
 
-CI secrets 清单：`APPLE_CERTIFICATE`（p12 的 base64）、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_TEAM_ID`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER_ID`、`APPLE_API_KEY`（.p8 的 base64）。
+固定规则：macOS 安装包只在发布者本机完成构建、签名、公证和装订，不使用 GitHub Actions Runner，也不向 GitHub Secrets 上传 Apple 证书。GitHub Actions 只负责 Windows 产物，最终 Release 在本机统一组装。操作步骤见 `docs/release-process.md`。
 
 ### 11.2 Windows
 
@@ -581,7 +581,7 @@ CI secrets 清单：`APPLE_CERTIFICATE`（p12 的 base64）、`APPLE_CERTIFICATE
 | E6 三个接入目标 | E6-1 Codex；E6-2 Claude Desktop（含重启引导）；E6-3 Claude Code CLI；E6-4 角色映射与兜底 | E5-1 |
 | E7 跨协议验证 | E7-1 每个「模型 × 目标」组合的连通性自检；E7-2 兼容等级与实测结果对齐；E7-3 失败诊断与日志导出 | E6 全部 |
 | E8 稳定性与体验 | E8-1 托盘与开机自启；E8-2 目标应用运行状态探测；E8-3 公告展示；E8-4 设备管理页 | E4、E6 |
-| E9 打包发布 | E9-1 macOS 签名公证流水线；E9-2 Windows 未签名产物与 SHA256；E9-3 SmartScreen 图文引导；E9-4 自动更新；E9-5 下载页与使用文档 | E7、E8 |
+| E9 打包发布 | E9-1 macOS 本机构建与签名公证；E9-2 Windows Actions 未签名产物与 SHA256；E9-3 SmartScreen 图文引导；E9-4 自动更新；E9-5 下载页与使用文档 | E7、E8 |
 
 关键路径：E1-1 → E1-3 → E3-2 → E1-5 → E5-1 → E6-2 → E7-1 → E9。E2 与 E1 可并行。
 

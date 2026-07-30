@@ -232,7 +232,7 @@ momo 登录器（Tauri 2 + React，全部自有代码）
 | Epic | 子 Issue | 依赖 | 验收 |
 | --- | --- | --- | --- |
 | E1 服务端 | 引导包接口、设备列表与撤销、登录风控加固 | 无 | 联调通过，风控生效 |
-| E2 客户端骨架 | 仓库初始化、Tauri 2 + React、品牌与设计、双平台打包与 CI（macOS 签名公证，Windows 未签名产物 + 输出 SHA256） | 无 | 双平台产物可安装启动，macOS 公证通过 |
+| E2 客户端骨架 | 仓库初始化、Tauri 2 + React、品牌与设计、双平台打包（macOS 本机签名公证，Windows Actions 未签名产物 + 输出 SHA256） | 无 | 双平台产物可安装启动，macOS 公证通过 |
 | E3 原生登录 | 登录页与人机验证、2FA 二次验证、Key 自动签发、凭证存储、登出与切换账号 | E1、E2 | 登录到拿到 Key 全链路通过，Key 不可见 |
 | E4 额度与选型 | 余额与今日消耗、分组与模型列表、倍率与预估价、兼容等级标签 | E1、E3 | 数据与网页端一致，3 次点击内切换 |
 | E5 配置引擎 | 原子写与备份回滚框架、环境探测、重启引导、恢复官方登录 | E3 | 写入失败必回滚，还原成功率 100% |
@@ -269,9 +269,9 @@ momo 登录器（Tauri 2 + React，全部自有代码）
 | 必须开启 | Hardened Runtime，否则公证不通过 |
 | 公证工具 | `notarytool`（`altool` 已废弃），用 App Store Connect API Key 或 app-specific password |
 | 装订 | 公证通过后对 dmg 执行 `stapler staple`，让离线环境也能验证 |
-| CI 凭证 | 证书导出 p12 后 base64 存入 GitHub Secrets，配合 Team ID 与 API Key |
+| 凭证位置 | Developer ID 证书与公证凭证只保存在发布者本机，不上传 GitHub Secrets |
 
-Tauri 原生支持这条链路，配置签名身份与公证凭证后 `tauri build` 自动完成签名、公证、装订。首次公证通常几分钟内返回。
+固定发布方式：在发布者本机配置签名身份与公证凭证后，由 `tauri build --target universal-apple-darwin` 完成 universal 构建、签名、公证和装订。GitHub Actions 不生成 macOS 安装包，只负责 Windows 产物。完整步骤见 `docs/release-process.md`。
 
 ### 16.2 Windows：首版不办证书，用图文引导过 SmartScreen（已定）
 
