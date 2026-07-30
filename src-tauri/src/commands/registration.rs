@@ -468,7 +468,7 @@ fn navigation_action(
     if is_https_origin(url, "challenges.cloudflare.com") {
         return NavigationAction::Allow;
     }
-    if url.as_str() == "about:blank" {
+    if matches!(url.as_str(), "about:blank" | "about:srcdoc") {
         return NavigationAction::Allow;
     }
     if url.scheme() != "niko-register"
@@ -1071,6 +1071,10 @@ mod tests {
             navigation_action(&"about:blank".parse().unwrap(), &nonce, site_key),
             NavigationAction::Allow
         ));
+        assert!(matches!(
+            navigation_action(&"about:srcdoc".parse().unwrap(), &nonce, site_key),
+            NavigationAction::Allow
+        ));
 
         let callback: tauri::Url = format!(
             "niko-register://verified?nonce={nonce}&site_key={site_key}&token={}",
@@ -1131,6 +1135,14 @@ mod tests {
         ));
         assert!(matches!(
             navigation_action(&"about:blank#x".parse().unwrap(), &nonce, site_key),
+            NavigationAction::Deny
+        ));
+        assert!(matches!(
+            navigation_action(&"about:srcdoc?x=1".parse().unwrap(), &nonce, site_key),
+            NavigationAction::Deny
+        ));
+        assert!(matches!(
+            navigation_action(&"about:srcdoc#x".parse().unwrap(), &nonce, site_key),
             NavigationAction::Deny
         ));
         assert!(matches!(
