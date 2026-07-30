@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { api, DeviceLimitError, type DeviceItem } from "../api/client";
 import { parseBalanceSnapshot } from "../lib/balance";
-import { saveAuth } from "../store/auth";
+import { saveAuth, shouldPersistAuthSession } from "../store/auth";
 import { BRAND } from "../lib/brand";
 import {
   getTargetRenderState,
@@ -679,6 +679,7 @@ export default function Login() {
   };
 
   const finishLogin = async (token: string, uname: string, updateRememberedLogin: boolean) => {
+    const rememberSession = shouldPersistAuthSession(updateRememberedLogin, remember);
     // 记住我：凭证写入系统钥匙串；未勾选则清掉历史记录
     if (updateRememberedLogin) {
       try {
@@ -712,12 +713,20 @@ export default function Login() {
         balanceUpdatedAt: balance?.updatedAt,
         group: bootstrap.user.group,
         apiKey: provision.api_key,
-        remember,
+        remember: rememberSession,
       });
       navigate("/home");
     } catch {
       // bootstrap/provision 失败不阻断登录，仍跳首页
-      saveAuth({ accessToken: token, username: uname, userId: 0, quota: 0, group: "", apiKey: "", remember });
+      saveAuth({
+        accessToken: token,
+        username: uname,
+        userId: 0,
+        quota: 0,
+        group: "",
+        apiKey: "",
+        remember: rememberSession,
+      });
       navigate("/home");
     }
   };

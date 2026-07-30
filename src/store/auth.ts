@@ -30,6 +30,13 @@ export function loadAuth(): AuthState | null {
   return persisted?.remember ? persisted : null;
 }
 
+export function shouldPersistAuthSession(
+  updateRememberedLogin: boolean,
+  remember: boolean,
+): boolean {
+  return updateRememberedLogin && remember;
+}
+
 export function saveAuth(state: AuthState) {
   const value = JSON.stringify(state);
   if (state.remember) {
