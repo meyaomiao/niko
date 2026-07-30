@@ -367,6 +367,23 @@ test("registration, login, and custom top-up bodies match the upstream contract"
     password: "Password123",
     turnstile_token: "t".repeat(20),
   });
+  for (const body of [
+    { username: "u".repeat(21), password: "Password123" },
+    { username: "niko-user", password: "p".repeat(21) },
+  ]) {
+    const invalidRegisterRequest = new Request(
+      "https://niko-ai.cc/api/niko/v1/auth/register",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, turnstile_token: "t".repeat(20) }),
+      },
+    );
+    await assert.rejects(
+      parseBody(invalidRegisterRequest, registerRoute),
+      (error) => error.code === "INVALID_REQUEST",
+    );
+  }
 
   const loginRoute = matchRoute("POST", "auth/login");
   const loginRequest = new Request("https://niko-ai.cc/api/niko/v1/auth/login", {

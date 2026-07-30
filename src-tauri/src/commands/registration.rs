@@ -677,7 +677,7 @@ fn sanitized_remote_error(
             RegistrationError::new("CSRF_REJECTED", "注册安全会话已过期，请重新验证。")
         }
         "RATE_LIMITED" => RegistrationError::rate_limited(retry_after),
-        "INVALID_REQUEST" => {
+        "INVALID_ARGUMENT" | "INVALID_REQUEST" => {
             RegistrationError::new("INVALID_REQUEST", "注册信息格式无效，请检查后重试。")
         }
         _ if status == StatusCode::TOO_MANY_REQUESTS => {
@@ -688,20 +688,20 @@ fn sanitized_remote_error(
 }
 
 fn validate_registration_input(username: &str, password: &str) -> Result<(), RegistrationError> {
-    if !(2..=32).contains(&username.chars().count())
+    if !(2..=20).contains(&username.chars().count())
         || username.chars().any(|character| character.is_control())
     {
         return Err(RegistrationError::new(
             "INVALID_REQUEST",
-            "用户名需为 2-32 个字符。",
+            "用户名需为 2-20 个字符。",
         ));
     }
-    if !(8..=128).contains(&password.chars().count())
+    if !(8..=20).contains(&password.chars().count())
         || password.chars().any(|character| character.is_control())
     {
         return Err(RegistrationError::new(
             "INVALID_REQUEST",
-            "密码需为 8-128 个字符。",
+            "密码需为 8-20 个字符。",
         ));
     }
     Ok(())
@@ -903,6 +903,23 @@ mod tests {
     }
 
     #[test]
+    fn registration_input_matches_the_account_source_bounds() {
+        assert!(validate_registration_input(&"a".repeat(20), &"p".repeat(20)).is_ok());
+        assert_eq!(
+            validate_registration_input(&"a".repeat(21), "Password123")
+                .unwrap_err()
+                .code,
+            "INVALID_REQUEST"
+        );
+        assert_eq!(
+            validate_registration_input("alice", &"p".repeat(21))
+                .unwrap_err()
+                .code,
+            "INVALID_REQUEST"
+        );
+    }
+
+    #[test]
     fn remote_errors_are_mapped_without_echoing_sensitive_details() {
         let body = br#"{"error":{"code":"UNKNOWN","message":"NIKO_BFF_SECRET=server-only"}}"#;
         let error = sanitized_remote_error(StatusCode::BAD_GATEWAY, body, None);
@@ -920,6 +937,16 @@ mod tests {
         assert!(!serde_json::to_string(&conflict)
             .unwrap()
             .contains("internal id"));
+
+        let invalid = sanitized_remote_error(
+            StatusCode::BAD_REQUEST,
+            br#"{"code":"INVALID_ARGUMENT","message":"internal validation detail"}"#,
+            None,
+        );
+        assert_eq!(invalid.code, "INVALID_REQUEST");
+        assert!(!serde_json::to_string(&invalid)
+            .unwrap()
+            .contains("internal validation detail"));
     }
 
     #[test]

@@ -1034,10 +1034,10 @@ export default function Login() {
                 value={registrationUsername}
                 onChange={(event) => setRegistrationUsername(event.target.value)}
                 className="nk-input w-full"
-                placeholder="2-32 个字符"
+                placeholder="2-20 个字符"
                 autoComplete="username"
                 minLength={2}
-                maxLength={32}
+                maxLength={20}
                 disabled={loading}
               />
             </div>
@@ -1048,10 +1048,10 @@ export default function Login() {
                 value={registrationPassword}
                 onChange={(event) => setRegistrationPassword(event.target.value)}
                 className="nk-input w-full"
-                placeholder="8-128 个字符"
+                placeholder="8-20 个字符"
                 autoComplete="new-password"
                 minLength={8}
-                maxLength={128}
+                maxLength={20}
                 disabled={loading}
               />
             </div>
@@ -1065,7 +1065,7 @@ export default function Login() {
                 placeholder="再次输入密码"
                 autoComplete="new-password"
                 minLength={8}
-                maxLength={128}
+                maxLength={20}
                 disabled={loading}
               />
             </div>

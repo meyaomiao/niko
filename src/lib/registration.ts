@@ -12,11 +12,11 @@ export function toggleAuthMode(mode: AuthMode): AuthMode {
 
 export function validateRegistration(fields: RegistrationFields): string {
   const username = fields.username.trim();
-  if (username.length < 2 || username.length > 32) {
-    return "用户名需为 2-32 个字符";
+  if (username.length < 2 || username.length > 20) {
+    return "用户名需为 2-20 个字符";
   }
-  if (fields.password.length < 8 || fields.password.length > 128) {
-    return "密码需为 8-128 个字符";
+  if (fields.password.length < 8 || fields.password.length > 20) {
+    return "密码需为 8-20 个字符";
   }
   if (fields.password !== fields.passwordConfirmation) {
     return "两次输入的密码不一致";

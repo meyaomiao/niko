@@ -18,12 +18,22 @@ test("validates username, password length, and matching confirmation", () => {
     username: "a",
     password: "Password123",
     passwordConfirmation: "Password123",
-  }), "用户名需为 2-32 个字符");
+  }), "用户名需为 2-20 个字符");
+  assert.equal(validateRegistration({
+    username: "a".repeat(21),
+    password: "Password123",
+    passwordConfirmation: "Password123",
+  }), "用户名需为 2-20 个字符");
   assert.equal(validateRegistration({
     username: "alice",
     password: "short",
     passwordConfirmation: "short",
-  }), "密码需为 8-128 个字符");
+  }), "密码需为 8-20 个字符");
+  assert.equal(validateRegistration({
+    username: "alice",
+    password: "a".repeat(21),
+    passwordConfirmation: "a".repeat(21),
+  }), "密码需为 8-20 个字符");
   assert.equal(validateRegistration({
     username: "alice",
     password: "Password123",

@@ -109,8 +109,8 @@ function turnstileToken(body, allowMissingTurnstile) {
 function registerBody(body, allowMissingTurnstile) {
   assertAllowedKeys(body, ["username", "password", "turnstile_token"]);
   return {
-    username: requiredString(body, "username", { min: 2, max: 32, trim: true }),
-    password: requiredString(body, "password", { min: 8, max: 128 }),
+    username: requiredString(body, "username", { min: 2, max: 20, trim: true }),
+    password: requiredString(body, "password", { min: 8, max: 20 }),
     turnstile_token: turnstileToken(body, allowMissingTurnstile),
   };
 }
