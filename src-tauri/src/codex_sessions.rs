@@ -9,6 +9,10 @@
 //! Callers must provide the Codex home, and must separately approve an
 //! external SQLite home before configuration can lead the scan outside it.
 
+mod transaction;
+
+pub use transaction::*;
+
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};

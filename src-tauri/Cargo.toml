@@ -27,7 +27,7 @@ cookie = "0.18"
 getrandom = "0.3"
 tokio = { version = "1", features = ["time"] }
 zeroize = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 zstd = "0.13"
 
 [dev-dependencies]

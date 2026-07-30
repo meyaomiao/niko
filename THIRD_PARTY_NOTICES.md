@@ -22,11 +22,13 @@ license text is included at `third_party/licenses/CC-Switch-MIT.txt`.
 
 The E10-1 implementation was read-only. E10-2 adds a fixture-only provider
 header/state-row migration PoC derived from the same MIT baseline, with an
-explicit marker required in every writable Codex/SQLite root. Niko adds
-compressed rollout handling, multi-database inventory, official paginated
-history cursor validation, provider-neutral digests, and byte-offset repair.
-No production Tauri command, provider switch, backup transaction, or user-home
-fallback is included.
+explicit marker required in every writable Codex/SQLite root. E10-3 reuses
+that transformation boundary in Niko's own journaled transaction engine.
+Niko adds compressed rollout handling, multi-database inventory, official
+paginated history cursor validation, provider-neutral digests, byte-offset
+repair, consistent SQLite backup, staged atomic replacement, and crash
+recovery. No production Tauri command, user-home fallback, or additional CC
+Switch source is included.
 
 ## OpenAI Codex Schema Reference
 
@@ -46,5 +48,6 @@ copyright and the Ratatui attribution carried by that source distribution.
 
 Codex++ commit `2924333c6770497470090235f484519154698651` was inspected only to
 confirm observable on-disk compatibility cases, including arbitrary provider
-buckets and databases under `CODEX_HOME/sqlite/`. Codex++ is licensed
-AGPL-3.0-only. No Codex++ source code is copied or adapted by Niko.
+buckets, databases under `CODEX_HOME/sqlite/`, and the
+`tmp/provider-sync.lock` coordination path. Codex++ is licensed AGPL-3.0-only.
+No Codex++ source code is copied or adapted by Niko.
