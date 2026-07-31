@@ -1,9 +1,9 @@
 use crate::codex_sessions::{
     codex_migration_ids, migrate_codex_sessions_transactional, preflight_codex_session_migration,
-    recover_codex_migration_since, scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy,
-    DiagnosticLevel, MigrationErrorKind, MigrationOptions, MigrationOutcome,
-    MigrationProviderTarget, MigrationRequest, NormalizationStatus, ScanReport, ScanRequest,
-    ThreadInventory, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
+    recover_codex_migration_since, recover_codex_session_migrations, scan_codex_sessions,
+    CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationErrorKind, MigrationOptions,
+    MigrationOutcome, MigrationProviderTarget, MigrationRequest, NormalizationStatus, ScanReport,
+    ScanRequest, ThreadInventory, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
 };
 use crate::commands::safe_error::SafeCommandError;
 use serde::Serialize;
@@ -41,18 +41,7 @@ pub struct CodexSessionMutationOutcome {
 }
 
 fn home_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(r"C:\Users\default"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"))
-    }
+    crate::targets::user_home_dir()
 }
 
 fn codex_home() -> PathBuf {
@@ -77,13 +66,26 @@ fn report_status(report: &ScanReport) -> &'static str {
     }
 }
 
+fn thread_route_is_healthy(
+    active_provider: Option<&str>,
+    archived: Option<bool>,
+    providers: &[String],
+) -> bool {
+    archived == Some(false)
+        && providers.len() == 1
+        && active_provider == providers.first().map(String::as_str)
+}
+
 fn thread_is_healthy(report: &ScanReport, thread: &ThreadInventory) -> bool {
     is_uuid_like(&thread.thread_id)
         && thread.rollout_paths.len() == 1
         && thread.state_databases.len() == 1
         && thread.history_databases.len() <= 1
-        && thread.providers.len() == 1
-        && thread.archived.is_some()
+        && thread_route_is_healthy(
+            report.config.active_provider.as_deref(),
+            thread.archived,
+            &thread.providers,
+        )
         && !report.diagnostics.iter().any(|diagnostic| {
             diagnostic.level == DiagnosticLevel::Blocker
                 && (diagnostic.thread_id.is_none()
@@ -303,6 +305,15 @@ pub(crate) fn recover_codex_session_storage_since(
         .map_err(|error| map_migration_error(error.kind, error.retryable))
 }
 
+pub(crate) fn recover_codex_session_storage() -> Result<(), SafeCommandError> {
+    if !codex_home().exists() {
+        return Ok(());
+    }
+    recover_codex_session_migrations(&mutation_request(None))
+        .map(|_| ())
+        .map_err(|error| map_migration_error(error.kind, error.retryable))
+}
+
 pub(crate) fn prepare_codex_session_restart(
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
@@ -410,5 +421,26 @@ mod tests {
         assert!(!restart_needs_normalization(Some("openai")));
         assert!(restart_needs_normalization(Some("custom")));
         assert!(restart_needs_normalization(Some("momotoken")));
+    }
+
+    #[test]
+    fn continuation_requires_active_non_archived_provider_route() {
+        let custom = vec!["custom".to_owned()];
+        let official = vec!["openai".to_owned()];
+        assert!(thread_route_is_healthy(
+            Some("custom"),
+            Some(false),
+            &custom,
+        ));
+        assert!(!thread_route_is_healthy(
+            Some("custom"),
+            Some(true),
+            &custom,
+        ));
+        assert!(!thread_route_is_healthy(
+            Some("custom"),
+            Some(false),
+            &official,
+        ));
     }
 }

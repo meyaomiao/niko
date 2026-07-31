@@ -202,6 +202,10 @@ pub enum FaultPoint {
     PreflightSpace,
     PreflightSqliteBusy,
     PlannedPersisted,
+    AuthArtifactCreated,
+    AuthArtifactWrite,
+    AuthArtifactFileSync,
+    AuthArtifactParentSync,
     SnapshotArtifact,
     SnapshottedPersisted,
     StageArtifact,
@@ -211,6 +215,8 @@ pub enum FaultPoint {
     ValidatingPersisted,
     Validation,
     CommittedPersisted,
+    CleanupCommitted,
+    ReleaseCommittedLocks,
     RollingBackPersisted,
     RollbackArtifact,
     RolledBackPersisted,
@@ -490,10 +496,21 @@ pub fn recover_codex_migration_since(
     request: &MigrationRequest,
     known_ids: &[String],
 ) -> Result<Option<MigrationOutcome>, MigrationError> {
-    recover_codex_session_migrations(request)?;
     let roots = approve_roots(&request.scan)?;
     let known = known_ids.iter().collect::<BTreeSet<_>>();
-    let mut journals = read_journals(&roots)?
+    if let Some(outcome) = latest_terminal_outcome_since(&roots, &known)? {
+        let _ = recover_codex_session_migrations(request);
+        return Ok(Some(outcome));
+    }
+    recover_codex_session_migrations(request)?;
+    latest_terminal_outcome_since(&roots, &known)
+}
+
+fn latest_terminal_outcome_since(
+    roots: &ApprovedRoots,
+    known: &BTreeSet<&String>,
+) -> Result<Option<MigrationOutcome>, MigrationError> {
+    let mut journals = read_journals(roots)?
         .into_iter()
         .filter(|journal| !known.contains(&journal.migration_id))
         .collect::<Vec<_>>();
@@ -1825,13 +1842,15 @@ fn execute_plan(
 
     match result {
         Ok(()) => {
-            prune_completed_transactions(
+            inject(faults, FaultPoint::CleanupCommitted, None)?;
+            let _ = prune_completed_transactions(
                 &plan.roots,
                 request.options.retained_transactions,
                 Some(&migration_id),
-            )?;
-            provider_lock.release()?;
-            lock.release()?;
+            );
+            inject(faults, FaultPoint::ReleaseCommittedLocks, None)?;
+            let _ = provider_lock.release();
+            let _ = lock.release();
             Ok(MigrationReport {
                 migration_id: Some(migration_id),
                 outcome: MigrationOutcome::Committed,
@@ -1895,7 +1914,14 @@ fn snapshot_all(
     for (index, entry) in plan.entries.iter_mut().enumerate() {
         let backup = backup_path(&plan.roots, &journal.migration_id, &entry.journal)?;
         let backup_hash = if entry.journal.existed {
-            if entry.journal.kind == ArtifactKind::Sqlite {
+            if entry.journal.kind == ArtifactKind::Auth {
+                write_auth_artifact_secure(
+                    &backup,
+                    AuthArtifactPayload::Copy(&entry.absolute_path),
+                    &entry.journal.artifact_id,
+                    faults,
+                )?;
+            } else if entry.journal.kind == ArtifactKind::Sqlite {
                 sqlite_consistent_backup(
                     &entry.absolute_path,
                     &backup,
@@ -1910,7 +1936,13 @@ fn snapshot_all(
                     &backup,
                     Some(&entry.journal.artifact_id),
                 )?;
+                copy_permissions_if_present(&entry.absolute_path, &backup)?;
             }
+            secure_auth_artifact_permissions(
+                entry.journal.kind,
+                &entry.journal.artifact_id,
+                &backup,
+            )?;
             Some(sha256_file(&backup, Some(&entry.journal.artifact_id))?)
         } else {
             None
@@ -1939,6 +1971,14 @@ fn stage_all(
         }
         let stage = staged_path(&plan.roots, &journal.migration_id, &entry.journal)?;
         match &entry.payload {
+            StagePayload::Bytes(bytes) if entry.journal.kind == ArtifactKind::Auth => {
+                write_auth_artifact_secure(
+                    &stage,
+                    AuthArtifactPayload::Bytes(bytes),
+                    &entry.journal.artifact_id,
+                    faults,
+                )?;
+            }
             StagePayload::Bytes(bytes) => {
                 write_file_synced(&stage, bytes, Some(&entry.journal.artifact_id))?;
                 copy_permissions_if_present(&entry.absolute_path, &stage)?;
@@ -1969,6 +2009,7 @@ fn stage_all(
                 ));
             }
         }
+        secure_auth_artifact_permissions(entry.journal.kind, &entry.journal.artifact_id, &stage)?;
         let staged_hash = sha256_file(&stage, Some(&entry.journal.artifact_id))?;
         inject(
             faults,
@@ -2021,10 +2062,12 @@ fn commit_journal_entry(
     let target = resolve_locator(roots, &entry.locator)?;
     let stage = staged_path(roots, &journal.migration_id, entry)?;
     verify_expected_hash(&stage, entry.staged_hash.as_deref(), entry)?;
+    secure_auth_artifact_permissions(entry.kind, &entry.artifact_id, &stage)?;
     if entry.kind == ArtifactKind::Sqlite {
         normalize_sqlite_target(&target, &entry.artifact_id)?;
     }
     atomic_install(&stage, &target, &entry.artifact_id)?;
+    secure_auth_artifact_permissions(entry.kind, &entry.artifact_id, &target)?;
     if entry.kind == ArtifactKind::Sqlite {
         remove_sqlite_sidecars(&target, &entry.artifact_id)?;
     }
@@ -2456,6 +2499,9 @@ fn recover_one(
                 continue;
             }
             if target_matches_staged(roots, journal, index)? {
+                let entry = &journal.entries[index];
+                let target = resolve_locator(roots, &entry.locator)?;
+                secure_auth_artifact_permissions(entry.kind, &entry.artifact_id, &target)?;
                 journal.entries[index].applied = true;
                 persist_journal(roots, journal)?;
                 continue;
@@ -2577,10 +2623,12 @@ fn restore_journal_entry(
     if entry.existed {
         let backup = backup_path(roots, &journal.migration_id, entry)?;
         verify_expected_hash(&backup, entry.backup_hash.as_deref(), entry)?;
+        secure_auth_artifact_permissions(entry.kind, &entry.artifact_id, &backup)?;
         if entry.kind == ArtifactKind::Sqlite && target.exists() {
             normalize_sqlite_target(&target, &entry.artifact_id)?;
         }
         atomic_install(&backup, &target, &entry.artifact_id)?;
+        secure_auth_artifact_permissions(entry.kind, &entry.artifact_id, &target)?;
         if entry.kind == ArtifactKind::Sqlite {
             remove_sqlite_sidecars(&target, &entry.artifact_id)?;
         }
@@ -3666,12 +3714,13 @@ fn atomic_install(source: &Path, target: &Path, artifact_id: &str) -> Result<(),
         })?;
     }
     copy_file_synced(source, &swap, Some(artifact_id))?;
+    copy_permissions_if_present(source, &swap)?;
     atomic_replace_file(&swap, target, Some(artifact_id))?;
     sync_parent(target)
 }
 
 #[cfg(unix)]
-fn atomic_replace_file(
+pub(crate) fn atomic_replace_file(
     replacement: &Path,
     target: &Path,
     artifact_id: Option<&str>,
@@ -3687,7 +3736,7 @@ fn atomic_replace_file(
 }
 
 #[cfg(windows)]
-fn atomic_replace_file(
+pub(crate) fn atomic_replace_file(
     replacement: &Path,
     target: &Path,
     artifact_id: Option<&str>,
@@ -3748,7 +3797,7 @@ fn atomic_replace_file(
 }
 
 #[cfg(not(any(unix, windows)))]
-fn atomic_replace_file(
+pub(crate) fn atomic_replace_file(
     replacement: &Path,
     target: &Path,
     artifact_id: Option<&str>,
@@ -3808,6 +3857,165 @@ fn write_file_synced(
         )
     })?;
     sync_parent(path)
+}
+
+enum AuthArtifactPayload<'a> {
+    Copy(&'a Path),
+    Bytes(&'a [u8]),
+}
+
+struct OwnedAuthArtifact {
+    path: PathBuf,
+    file: Option<File>,
+    keep: bool,
+}
+
+impl OwnedAuthArtifact {
+    fn create(path: &Path, artifact_id: &str) -> Result<Self, MigrationError> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path).map_err(|error| {
+            classify_io(
+                error,
+                "migration_auth_artifact_create_failed",
+                "an authentication artifact could not be created",
+                Some(artifact_id.to_owned()),
+            )
+        })?;
+        Ok(Self {
+            path: path.to_owned(),
+            file: Some(file),
+            keep: false,
+        })
+    }
+
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("owned auth artifact is open")
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file.as_mut().expect("owned auth artifact is open")
+    }
+
+    fn keep(mut self) {
+        self.file.take();
+        self.keep = true;
+    }
+}
+
+impl Drop for OwnedAuthArtifact {
+    fn drop(&mut self) {
+        self.file.take();
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn write_auth_artifact_secure(
+    path: &Path,
+    payload: AuthArtifactPayload<'_>,
+    artifact_id: &str,
+    faults: &dyn MigrationFaultInjector,
+) -> Result<(), MigrationError> {
+    let mut artifact = OwnedAuthArtifact::create(path, artifact_id)?;
+    inject(faults, FaultPoint::AuthArtifactCreated, Some(artifact_id))?;
+    confirm_auth_file_permissions(artifact.file(), artifact_id)?;
+    inject(faults, FaultPoint::AuthArtifactWrite, Some(artifact_id))?;
+    match payload {
+        AuthArtifactPayload::Copy(source) => {
+            let mut source = File::open(source).map_err(|error| {
+                classify_io(
+                    error,
+                    "migration_auth_source_open_failed",
+                    "authentication settings could not be opened for backup",
+                    Some(artifact_id.to_owned()),
+                )
+            })?;
+            io::copy(&mut source, artifact.file_mut()).map_err(|error| {
+                classify_io(
+                    error,
+                    "migration_auth_artifact_copy_failed",
+                    "authentication settings could not be copied",
+                    Some(artifact_id.to_owned()),
+                )
+            })?;
+        }
+        AuthArtifactPayload::Bytes(bytes) => {
+            artifact.file_mut().write_all(bytes).map_err(|error| {
+                classify_io(
+                    error,
+                    "migration_auth_artifact_write_failed",
+                    "authentication settings could not be staged",
+                    Some(artifact_id.to_owned()),
+                )
+            })?;
+        }
+    }
+    inject(faults, FaultPoint::AuthArtifactFileSync, Some(artifact_id))?;
+    artifact.file().sync_all().map_err(|error| {
+        classify_io(
+            error,
+            "migration_auth_artifact_sync_failed",
+            "an authentication artifact could not be flushed",
+            Some(artifact_id.to_owned()),
+        )
+    })?;
+    inject(
+        faults,
+        FaultPoint::AuthArtifactParentSync,
+        Some(artifact_id),
+    )?;
+    sync_parent(path)?;
+    artifact.keep();
+    Ok(())
+}
+
+#[cfg(unix)]
+fn confirm_auth_file_permissions(file: &File, artifact_id: &str) -> Result<(), MigrationError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| {
+            classify_io(
+                error,
+                "migration_auth_permissions_failed",
+                "authentication settings could not be secured",
+                Some(artifact_id.to_owned()),
+            )
+        })?;
+    let mode = file
+        .metadata()
+        .map_err(|error| {
+            classify_io(
+                error,
+                "migration_auth_permissions_read_failed",
+                "authentication settings permissions could not be verified",
+                Some(artifact_id.to_owned()),
+            )
+        })?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o600 {
+        return Err(migration_error(
+            MigrationErrorKind::PermissionDenied,
+            "migration_auth_permissions_invalid",
+            "authentication settings permissions are not private",
+            Some(artifact_id.to_owned()),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn confirm_auth_file_permissions(_file: &File, _artifact_id: &str) -> Result<(), MigrationError> {
+    Ok(())
 }
 
 fn copy_file_synced(
@@ -3872,7 +4080,48 @@ fn copy_permissions_if_present(source: &Path, destination: &Path) -> Result<(), 
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), MigrationError> {
+fn secure_auth_artifact_permissions(
+    kind: ArtifactKind,
+    artifact_id: &str,
+    path: &Path,
+) -> Result<(), MigrationError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if kind != ArtifactKind::Auth {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+        classify_io(
+            error,
+            "migration_auth_permissions_failed",
+            "authentication settings could not be secured",
+            Some(artifact_id.to_owned()),
+        )
+    })?;
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            classify_io(
+                error,
+                "migration_auth_permissions_sync_failed",
+                "authentication settings permissions could not be flushed",
+                Some(artifact_id.to_owned()),
+            )
+        })?;
+    sync_parent(path)
+}
+
+#[cfg(not(unix))]
+fn secure_auth_artifact_permissions(
+    _kind: ArtifactKind,
+    _artifact_id: &str,
+    _path: &Path,
+) -> Result<(), MigrationError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory(path: &Path) -> Result<(), MigrationError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
@@ -3886,7 +4135,7 @@ fn sync_directory(path: &Path) -> Result<(), MigrationError> {
 }
 
 #[cfg(windows)]
-fn sync_directory(_path: &Path) -> Result<(), MigrationError> {
+pub(crate) fn sync_directory(_path: &Path) -> Result<(), MigrationError> {
     // ReplaceFileW/MoveFileExW use write-through. Opening directories for
     // FlushFileBuffers requires platform-specific privileges and is not
     // consistently available to desktop applications.
@@ -3894,11 +4143,11 @@ fn sync_directory(_path: &Path) -> Result<(), MigrationError> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn sync_directory(_path: &Path) -> Result<(), MigrationError> {
+pub(crate) fn sync_directory(_path: &Path) -> Result<(), MigrationError> {
     Ok(())
 }
 
-fn sync_parent(path: &Path) -> Result<(), MigrationError> {
+pub(crate) fn sync_parent(path: &Path) -> Result<(), MigrationError> {
     match path.parent() {
         Some(parent) => sync_directory(parent),
         None => Ok(()),

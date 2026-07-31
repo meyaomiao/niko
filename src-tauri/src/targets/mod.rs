@@ -313,6 +313,10 @@ fn merge_json_env(path: &Path, vars: &[(&str, String)]) -> Result<Vec<String>, S
 }
 
 fn home_dir() -> PathBuf {
+    user_home_dir()
+}
+
+pub(crate) fn user_home_dir() -> PathBuf {
     dirs_home()
 }
 
@@ -321,13 +325,15 @@ fn dirs_home() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         std::env::var("USERPROFILE")
-            .or_else(|_| {
-                let drive = std::env::var("HOMEDRIVE").unwrap_or_default();
-                let path = std::env::var("HOMEPATH").unwrap_or_default();
-                Ok::<String, std::env::VarError>(format!("{drive}{path}"))
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                let drive = std::env::var("HOMEDRIVE").ok()?;
+                let path = std::env::var("HOMEPATH").ok()?;
+                (!drive.is_empty() && !path.is_empty()).then(|| format!("{drive}{path}"))
             })
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("C:\\Users\\default"))
+            .unwrap_or_else(|| PathBuf::from("C:\\Users\\default"))
     }
     #[cfg(not(target_os = "windows"))]
     {

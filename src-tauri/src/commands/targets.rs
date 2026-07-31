@@ -1,4 +1,7 @@
-use crate::codex_sessions::CodexMigrationInput;
+use crate::codex_sessions::{
+    atomic_replace_file as atomic_replace_codex_file, sync_parent as sync_codex_parent,
+    CodexMigrationInput,
+};
 use crate::commands::codex_sessions::{
     normalize_codex_session_storage_inner, normalize_codex_session_storage_with_input,
     preflight_codex_session_storage, recover_codex_session_storage_since,
@@ -6,8 +9,8 @@ use crate::commands::codex_sessions::{
 use crate::commands::safe_error::SafeCommandError;
 use crate::targets::{all_targets, preflight_target_apply, transaction_paths, ApplyPlan};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -43,11 +46,150 @@ fn provider_transaction_root() -> PathBuf {
     base.join(".niko").join("provider-transaction")
 }
 
-fn sync_parent(path: &Path) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+fn sync_parent(path: &Path) -> Result<(), SafeCommandError> {
+    sync_codex_parent(path).map_err(|_| SafeCommandError::change_failed(false))
+}
+
+fn durable_replace(temporary: &Path, target: &Path) -> Result<(), SafeCommandError> {
+    atomic_replace_codex_file(temporary, target, None)
+        .map_err(|_| SafeCommandError::change_failed(false))?;
+    sync_parent(target)
+}
+
+pub(crate) fn replace_from_backup(source: &Path, target: &Path) -> Result<(), SafeCommandError> {
+    replace_from_backup_with_hook(source, target, |_| Ok(()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackupReplaceStep {
+    Copy,
+    Permissions,
+    Sync,
+    Replace,
+}
+
+struct TemporaryReplacement {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl TemporaryReplacement {
+    fn create_in(parent: &Path) -> io::Result<Self> {
+        for _ in 0..32 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
+            let suffix = random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let path = parent.join(format!(".niko-restore-{suffix}"));
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    })
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "temporary replacement names are occupied",
+        ))
     }
-    Ok(())
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("temporary file is open")
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file.as_mut().expect("temporary file is open")
+    }
+
+    fn close(&mut self) {
+        self.file.take();
+    }
+}
+
+impl Drop for TemporaryReplacement {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn replace_from_backup_with_hook(
+    source: &Path,
+    target: &Path,
+    mut before: impl FnMut(BackupReplaceStep) -> Result<(), SafeCommandError>,
+) -> Result<(), SafeCommandError> {
+    let source_metadata =
+        fs::symlink_metadata(source).map_err(|_| SafeCommandError::change_failed(false))?;
+    if !source_metadata.file_type().is_file() {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| SafeCommandError::change_failed(false))?;
+    fs::create_dir_all(parent).map_err(|_| SafeCommandError::change_failed(false))?;
+    let mut source_file = File::open(source).map_err(|_| SafeCommandError::change_failed(false))?;
+    let mut temporary = TemporaryReplacement::create_in(parent)
+        .map_err(|_| SafeCommandError::change_failed(false))?;
+
+    before(BackupReplaceStep::Copy)?;
+    io::copy(&mut source_file, temporary.file_mut())
+        .map_err(|_| SafeCommandError::change_failed(false))?;
+    before(BackupReplaceStep::Permissions)?;
+    apply_backup_permissions(target, temporary.path(), source_metadata.permissions())?;
+    before(BackupReplaceStep::Sync)?;
+    temporary
+        .file()
+        .sync_all()
+        .map_err(|_| SafeCommandError::change_failed(false))?;
+    sync_parent(temporary.path())?;
+
+    temporary.close();
+    before(BackupReplaceStep::Replace)?;
+    durable_replace(temporary.path(), target)
+}
+
+#[cfg(unix)]
+fn apply_backup_permissions(
+    target: &Path,
+    temporary: &Path,
+    source_permissions: fs::Permissions,
+) -> Result<(), SafeCommandError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let permissions = if target.file_name().and_then(|name| name.to_str()) == Some("auth.json") {
+        fs::Permissions::from_mode(0o600)
+    } else {
+        source_permissions
+    };
+    fs::set_permissions(temporary, permissions).map_err(|_| SafeCommandError::change_failed(false))
+}
+
+#[cfg(not(unix))]
+fn apply_backup_permissions(
+    _target: &Path,
+    temporary: &Path,
+    source_permissions: fs::Permissions,
+) -> Result<(), SafeCommandError> {
+    fs::set_permissions(temporary, source_permissions)
+        .map_err(|_| SafeCommandError::change_failed(false))
 }
 
 fn persist_provider_manifest(
@@ -63,9 +205,7 @@ fn persist_provider_manifest(
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|_| SafeCommandError::change_failed(false))?;
-    fs::rename(&temporary, &path)
-        .and_then(|_| sync_parent(&path))
-        .map_err(|_| SafeCommandError::change_failed(false))
+    durable_replace(&temporary, &path)
 }
 
 fn begin_provider_transaction_at(
@@ -118,25 +258,14 @@ fn restore_provider_transaction_at(
     for (index, (path, existed)) in paths.iter().zip(&manifest.existed).enumerate() {
         if *existed {
             let backup = root.join(format!("{index}.backup"));
-            let parent = path
-                .parent()
-                .ok_or_else(|| SafeCommandError::change_failed(false))?;
-            fs::create_dir_all(parent).map_err(|_| SafeCommandError::change_failed(false))?;
-            let temporary = path.with_extension("niko-restore");
-            fs::copy(&backup, &temporary)
-                .and_then(|_| File::open(&temporary)?.sync_all())
-                .and_then(|_| fs::rename(&temporary, path))
-                .and_then(|_| sync_parent(path))
-                .map_err(|_| SafeCommandError::change_failed(false))?;
+            replace_from_backup(&backup, path)?;
         } else if path.exists() {
-            fs::remove_file(path)
-                .and_then(|_| sync_parent(path))
-                .map_err(|_| SafeCommandError::change_failed(false))?;
+            fs::remove_file(path).map_err(|_| SafeCommandError::change_failed(false))?;
+            sync_parent(path)?;
         }
     }
-    fs::remove_dir_all(&root)
-        .and_then(|_| sync_parent(&root))
-        .map_err(|_| SafeCommandError::change_failed(false))
+    fs::remove_dir_all(root).map_err(|_| SafeCommandError::change_failed(false))?;
+    sync_parent(root)
 }
 
 fn restore_provider_transaction(
@@ -147,45 +276,58 @@ fn restore_provider_transaction(
     restore_provider_transaction_at(&provider_transaction_root(), &paths, manifest)
 }
 
-fn finish_provider_transaction() -> Result<(), SafeCommandError> {
-    let root = provider_transaction_root();
+fn finish_provider_transaction_at(root: &Path) -> Result<(), SafeCommandError> {
     if !root.exists() {
         return Ok(());
     }
-    fs::remove_dir_all(&root)
-        .and_then(|_| sync_parent(&root))
-        .map_err(|_| SafeCommandError::change_failed(false))
+    fs::remove_dir_all(root).map_err(|_| SafeCommandError::change_failed(false))?;
+    sync_parent(root)
 }
 
-fn recover_provider_transaction() -> Result<(), SafeCommandError> {
-    let root = provider_transaction_root();
+fn finish_provider_transaction() -> Result<(), SafeCommandError> {
+    finish_provider_transaction_at(&provider_transaction_root())
+}
+
+fn recover_provider_transaction_at(
+    root: &Path,
+    paths: &[PathBuf],
+    recover_codex: impl FnOnce(&[String]) -> Result<Option<bool>, SafeCommandError>,
+) -> Result<(), SafeCommandError> {
     if !root.exists() {
         return Ok(());
     }
     let bytes = match fs::read(root.join("manifest.json")) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return finish_provider_transaction();
+            return finish_provider_transaction_at(root);
         }
         Err(_) => return Err(SafeCommandError::change_failed(false)),
     };
     let manifest: ProviderTransactionManifest =
         serde_json::from_slice(&bytes).map_err(|_| SafeCommandError::change_failed(false))?;
     match manifest.phase {
-        ProviderTransactionPhase::Committed => finish_provider_transaction(),
+        ProviderTransactionPhase::Committed => finish_provider_transaction_at(root),
         ProviderTransactionPhase::CodexStarted => {
-            if recover_codex_session_storage_since(&manifest.known_codex_transactions)?
-                == Some(true)
-            {
-                finish_provider_transaction()
+            if recover_codex(&manifest.known_codex_transactions)? == Some(true) {
+                finish_provider_transaction_at(root)
             } else {
-                restore_provider_transaction(&manifest)
+                restore_provider_transaction_at(root, paths, &manifest)
             }
         }
         ProviderTransactionPhase::Prepared | ProviderTransactionPhase::ClaudeApplied => {
-            restore_provider_transaction(&manifest)
+            restore_provider_transaction_at(root, paths, &manifest)
         }
     }
+}
+
+fn recover_provider_transaction() -> Result<(), SafeCommandError> {
+    let paths =
+        transaction_paths("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))?;
+    recover_provider_transaction_at(
+        &provider_transaction_root(),
+        &paths,
+        recover_codex_session_storage_since,
+    )
 }
 
 pub(crate) fn lock_and_recover_provider_transaction(
@@ -349,21 +491,38 @@ pub async fn apply_all_targets(
         }
     };
     manifest.phase = ProviderTransactionPhase::ClaudeApplied;
-    persist_provider_manifest(&provider_transaction_root(), &manifest)?;
+    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+        restore_provider_transaction(&manifest)?;
+        return Err(error);
+    }
     manifest.phase = ProviderTransactionPhase::CodexStarted;
-    persist_provider_manifest(&provider_transaction_root(), &manifest)?;
+    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+        restore_provider_transaction(&manifest)?;
+        return Err(error);
+    }
 
     let codex_outcome =
         match normalize_codex_session_storage_with_input("custom".to_owned(), Some(codex_input)) {
             Ok(outcome) => outcome,
             Err(error) => {
-                restore_provider_transaction(&manifest)?;
-                return Err(error);
+                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
+                    Ok(Some(true)) => {
+                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
+                            status: "applied",
+                            message: "已完成检查，可以继续使用。",
+                        }
+                    }
+                    Ok(_) => {
+                        restore_provider_transaction(&manifest)?;
+                        return Err(error);
+                    }
+                    Err(recovery_error) => return Err(recovery_error),
+                }
             }
         };
     manifest.phase = ProviderTransactionPhase::Committed;
-    persist_provider_manifest(&provider_transaction_root(), &manifest)?;
-    finish_provider_transaction()?;
+    let _ = persist_provider_manifest(&provider_transaction_root(), &manifest);
+    let _ = finish_provider_transaction();
 
     Ok(vec![
         serde_json::json!({
@@ -562,6 +721,27 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
 mod tests {
     use super::*;
 
+    fn temporary_replace_artifacts(parent: &Path) -> Vec<PathBuf> {
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".niko-restore-")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    #[test]
+    fn coordinator_rejects_concurrent_writer() {
+        let _held = PROVIDER_TRANSACTION_LOCK.try_lock().unwrap();
+        let error = lock_and_recover_provider_transaction().unwrap_err();
+        assert_eq!(error, SafeCommandError::busy());
+    }
+
     #[test]
     fn durable_backups_restore_both_target_failure_orders() {
         for first in [0usize, 1usize] {
@@ -593,5 +773,149 @@ mod tests {
         fs::write(&path, b"new").unwrap();
         restore_provider_transaction_at(&root, &paths, &manifest).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn prepared_transaction_recovers_before_following_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        let target = temp.path().join("settings.json");
+        let snapshot = temp.path().join("snapshot.json");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&snapshot, b"snapshot").unwrap();
+        begin_provider_transaction_at(&root, std::slice::from_ref(&target), Vec::new()).unwrap();
+        fs::write(&target, b"interrupted").unwrap();
+
+        recover_provider_transaction_at(&root, std::slice::from_ref(&target), |_| Ok(None))
+            .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        replace_from_backup(&snapshot, &target).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"snapshot");
+    }
+
+    #[test]
+    fn backup_replace_handles_existing_and_absent_targets() {
+        for target_exists in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source.json");
+            let target = temp.path().join("settings.json");
+            fs::write(&source, b"new").unwrap();
+            if target_exists {
+                fs::write(&target, b"old").unwrap();
+            }
+
+            replace_from_backup(&source, &target).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), b"new");
+            assert!(temporary_replace_artifacts(temp.path()).is_empty());
+        }
+    }
+
+    #[test]
+    fn fixed_temporary_file_preoccupation_is_not_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.json");
+        let target = temp.path().join("settings.json");
+        let occupied = target.with_extension("niko-restore");
+        fs::write(&source, b"new").unwrap();
+        fs::write(&occupied, b"occupied").unwrap();
+
+        replace_from_backup(&source, &target).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"new");
+        assert_eq!(fs::read(occupied).unwrap(), b"occupied");
+        assert!(temporary_replace_artifacts(temp.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_preoccupation_and_symlink_source_never_touch_sentinel() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.json");
+        let target = temp.path().join("auth.json");
+        let sentinel = temp.path().join("outside-sentinel");
+        let occupied = target.with_extension("niko-restore");
+        fs::write(&source, b"new").unwrap();
+        fs::write(&sentinel, b"sentinel").unwrap();
+        symlink(&sentinel, &occupied).unwrap();
+
+        replace_from_backup(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert_eq!(fs::read(&sentinel).unwrap(), b"sentinel");
+
+        let linked_source = temp.path().join("linked-source.json");
+        symlink(&sentinel, &linked_source).unwrap();
+        let rejected_target = temp.path().join("config.toml");
+        assert!(replace_from_backup(&linked_source, &rejected_target).is_err());
+        assert!(!rejected_target.exists());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"sentinel");
+        assert!(temporary_replace_artifacts(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn every_backup_replace_failure_cleans_random_temporary_file() {
+        for failed_step in [
+            BackupReplaceStep::Copy,
+            BackupReplaceStep::Permissions,
+            BackupReplaceStep::Sync,
+            BackupReplaceStep::Replace,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source.json");
+            let target = temp.path().join("settings.json");
+            fs::write(&source, b"new").unwrap();
+            fs::write(&target, b"old").unwrap();
+
+            let result = replace_from_backup_with_hook(&source, &target, |step| {
+                if step == failed_step {
+                    Err(SafeCommandError::change_failed(false))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err(), "{failed_step:?}");
+            assert_eq!(fs::read(&target).unwrap(), b"old", "{failed_step:?}");
+            assert!(
+                temporary_replace_artifacts(temp.path()).is_empty(),
+                "{failed_step:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_started_uses_durable_inner_outcome_for_outer_recovery() {
+        for committed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("transaction");
+            let target = temp.path().join("settings.json");
+            fs::write(&target, b"old").unwrap();
+            let mut manifest = begin_provider_transaction_at(
+                &root,
+                std::slice::from_ref(&target),
+                vec!["known".to_owned()],
+            )
+            .unwrap();
+            fs::write(&target, b"new").unwrap();
+            manifest.phase = ProviderTransactionPhase::CodexStarted;
+            persist_provider_manifest(&root, &manifest).unwrap();
+
+            recover_provider_transaction_at(&root, std::slice::from_ref(&target), |known| {
+                assert_eq!(known, ["known".to_owned()]);
+                Ok(Some(committed))
+            })
+            .unwrap();
+            assert_eq!(
+                fs::read(&target).unwrap(),
+                if committed { b"new" } else { b"old" },
+            );
+            assert!(!root.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_coordinator_uses_platform_atomic_replace() {
+        let _replace: fn(&Path, &Path) -> Result<(), SafeCommandError> = durable_replace;
+        let _sync: fn(&Path) -> Result<(), SafeCommandError> = sync_parent;
     }
 }

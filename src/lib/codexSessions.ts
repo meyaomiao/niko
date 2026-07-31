@@ -96,7 +96,11 @@ export function beginRequest(state: RequestGuard, kind: RequestKind) {
 }
 
 export function unmountRequests(state: RequestGuard): RequestGuard {
-  return { ...state, mounted: false };
+  return {
+    mounted: false,
+    scan: state.scan + 1,
+    action: state.action + 1,
+  };
 }
 
 export function mountRequests(state: RequestGuard): RequestGuard {

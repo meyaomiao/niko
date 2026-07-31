@@ -33,7 +33,9 @@ test("late scan, unmount, and repeated action responses are rejected", () => {
   guard = unmountRequests(guard);
   assert.equal(acceptsResponse(guard, "action", secondAction.generation), false);
   guard = mountRequests(guard);
-  assert.equal(acceptsResponse(guard, "action", secondAction.generation), true);
+  assert.equal(acceptsResponse(guard, "action", secondAction.generation), false);
+  const remountedAction = beginRequest(guard, "action"); guard = remountedAction.state;
+  assert.equal(acceptsResponse(guard, "action", remountedAction.generation), true);
 });
 
 test("search input is bounded before crossing the command boundary", () => {

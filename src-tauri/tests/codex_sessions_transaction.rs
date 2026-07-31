@@ -1,5 +1,6 @@
 use niko_lib::codex_sessions::{
-    migrate_codex_sessions_transactional, migrate_codex_sessions_transactional_with_faults,
+    codex_migration_ids, migrate_codex_sessions_transactional,
+    migrate_codex_sessions_transactional_with_faults, recover_codex_migration_since,
     recover_codex_session_migrations, recover_codex_session_migrations_with_faults,
     scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, FaultPoint, InjectedFaultKind,
     MigrationErrorKind, MigrationFaultInjector, MigrationOutcome, MigrationProviderTarget,
@@ -57,6 +58,76 @@ struct OneFault {
 struct NthFault {
     point: FaultPoint,
     remaining: Mutex<usize>,
+}
+
+#[cfg(unix)]
+struct ObservedAuthArtifactFault {
+    codex_home: PathBuf,
+    point: FaultPoint,
+    occurrence: usize,
+    seen: Mutex<usize>,
+    observed_path: Mutex<Option<PathBuf>>,
+}
+
+#[cfg(unix)]
+impl ObservedAuthArtifactFault {
+    fn new(codex_home: PathBuf, point: FaultPoint, occurrence: usize) -> Self {
+        Self {
+            codex_home,
+            point,
+            occurrence,
+            seen: Mutex::new(0),
+            observed_path: Mutex::new(None),
+        }
+    }
+
+    fn observed_path(&self) -> PathBuf {
+        self.observed_path.lock().unwrap().clone().unwrap()
+    }
+}
+
+#[cfg(unix)]
+impl MigrationFaultInjector for ObservedAuthArtifactFault {
+    fn inject(&self, point: FaultPoint, artifact_id: Option<&str>) -> Option<InjectedFaultKind> {
+        use std::os::unix::fs::PermissionsExt;
+
+        if point != self.point {
+            return None;
+        }
+        let mut seen = self.seen.lock().unwrap();
+        *seen += 1;
+        if *seen != self.occurrence {
+            return None;
+        }
+        let artifact_id = artifact_id.unwrap();
+        let transaction = fs::read_dir(self.codex_home.join(".niko-session-migrations"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .unwrap()
+            .path();
+        let directory = if self.occurrence == 1 {
+            "backup"
+        } else {
+            "staged"
+        };
+        let suffix = if self.occurrence == 1 {
+            "backup"
+        } else {
+            "stage"
+        };
+        let path = transaction
+            .join(directory)
+            .join(format!("{artifact_id}.{suffix}"));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "{point:?} occurrence {}",
+            self.occurrence
+        );
+        *self.observed_path.lock().unwrap() = Some(path);
+        Some(InjectedFaultKind::Crash)
+    }
 }
 
 impl NthFault {
@@ -489,6 +560,35 @@ fn latest_journal(fixture: &Fixture) -> JsonValue {
     serde_json::from_slice(&fs::read(journals.last().unwrap()).unwrap()).unwrap()
 }
 
+fn latest_artifact_paths(fixture: &Fixture, kind: &str) -> (PathBuf, PathBuf) {
+    let journal = latest_journal(fixture);
+    let entry = journal["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == kind)
+        .unwrap();
+    let artifact_id = entry["artifact_id"].as_str().unwrap();
+    let transaction = transaction_directories(fixture).pop().unwrap();
+    (
+        transaction
+            .join("backup")
+            .join(format!("{artifact_id}.backup")),
+        transaction
+            .join("staged")
+            .join(format!("{artifact_id}.stage")),
+    )
+}
+
+#[cfg(unix)]
+fn existing_auth_runtime_artifacts(fixture: &Fixture) -> Vec<PathBuf> {
+    let (backup, stage) = latest_artifact_paths(fixture, "auth");
+    [backup, stage]
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
+}
+
 fn assert_no_runtime_writes(fixture: &Fixture) {
     assert!(transaction_directories(fixture).is_empty());
     assert!(!fixture
@@ -774,6 +874,31 @@ fn crash_matrix_recovers_only_complete_old_or_complete_new_state() {
             .unwrap()
             .migrations
             .is_empty());
+    }
+}
+
+#[test]
+fn committed_cleanup_failures_remain_durably_committed() {
+    for point in [
+        FaultPoint::CleanupCommitted,
+        FaultPoint::ReleaseCommittedLocks,
+    ] {
+        let fixture = create_fixture(OFFICIAL_PROVIDER);
+        let known = codex_migration_ids(&fixture.request).unwrap();
+        let fault = OneFault::new(point, InjectedFaultKind::Crash);
+        let error = migrate_codex_sessions_transactional_with_faults(
+            &fixture.request,
+            MigrationProviderTarget::Custom,
+            &fault,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, MigrationErrorKind::InjectedCrash, "{point:?}");
+        assert_eq!(
+            recover_codex_migration_since(&fixture.request, &known).unwrap(),
+            Some(MigrationOutcome::Committed),
+            "{point:?}"
+        );
+        assert_provider(&fixture, CUSTOM_PROVIDER);
     }
 }
 
@@ -1290,6 +1415,201 @@ fn sqlite_backup_stage_and_target_preserve_source_permissions() {
             .join("staged")
             .join(format!("{artifact_id}.stage")),
     ] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn new_auth_stage_and_final_file_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fs::remove_file(&fixture.auth_path).unwrap();
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-private-secret".to_owned()),
+        model: None,
+        mixed: false,
+    });
+    let crash = OneFault::new(FaultPoint::StagedPersisted, InjectedFaultKind::Crash);
+    migrate_codex_sessions_transactional_with_faults(
+        &fixture.request,
+        MigrationProviderTarget::Custom,
+        &crash,
+    )
+    .unwrap_err();
+
+    let journal = latest_journal(&fixture);
+    let auth = journal["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == "auth")
+        .unwrap();
+    let stage = transaction_directories(&fixture)
+        .pop()
+        .unwrap()
+        .join("staged")
+        .join(format!("{}.stage", auth["artifact_id"].as_str().unwrap()));
+    assert_eq!(
+        fs::metadata(stage).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    recover_codex_session_migrations(&fixture.request).unwrap();
+    migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+        .unwrap();
+    assert_eq!(
+        fs::metadata(&fixture.auth_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_backup_and_stage_are_private_at_every_observable_failure_point() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for occurrence in [1usize, 2usize] {
+        for point in [
+            FaultPoint::AuthArtifactCreated,
+            FaultPoint::AuthArtifactWrite,
+            FaultPoint::AuthArtifactFileSync,
+            FaultPoint::AuthArtifactParentSync,
+        ] {
+            let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+            fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o644)).unwrap();
+            fixture.request.codex = Some(CodexMigrationInput {
+                base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+                api_key: Some("fixture-private-secret".to_owned()),
+                model: None,
+                mixed: false,
+            });
+            let fault =
+                ObservedAuthArtifactFault::new(fixture.codex_home.clone(), point, occurrence);
+            let error = migrate_codex_sessions_transactional_with_faults(
+                &fixture.request,
+                MigrationProviderTarget::Custom,
+                &fault,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, MigrationErrorKind::InjectedCrash);
+            assert!(!fault.observed_path().exists(), "{point:?} {occurrence}");
+            for path in existing_auth_runtime_artifacts(&fixture) {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600,
+                    "{point:?} {occurrence}"
+                );
+            }
+
+            recover_codex_session_migrations(&fixture.request).unwrap();
+            for path in existing_auth_runtime_artifacts(&fixture) {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600,
+                    "recovery {point:?} {occurrence}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_auth_is_private_across_commit_while_regular_files_keep_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&fixture.config_path, fs::Permissions::from_mode(0o640)).unwrap();
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-private-secret".to_owned()),
+        model: None,
+        mixed: false,
+    });
+    migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+        .unwrap();
+
+    let (auth_backup, auth_stage) = latest_artifact_paths(&fixture, "auth");
+    for path in [auth_backup, auth_stage, fixture.auth_path.clone()] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let (config_backup, config_stage) = latest_artifact_paths(&fixture, "config");
+    for path in [config_backup, config_stage, fixture.config_path.clone()] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_auth_is_private_after_crash_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o644)).unwrap();
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-private-secret".to_owned()),
+        model: None,
+        mixed: false,
+    });
+    let crash = NthFault::new(FaultPoint::CommitArtifact, 5);
+    migrate_codex_sessions_transactional_with_faults(
+        &fixture.request,
+        MigrationProviderTarget::Custom,
+        &crash,
+    )
+    .unwrap_err();
+    recover_codex_session_migrations(&fixture.request).unwrap();
+
+    let (backup, stage) = latest_artifact_paths(&fixture, "auth");
+    for path in [backup, stage, fixture.auth_path.clone()] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_wide_auth_backup_stage_and_rollback_become_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o644)).unwrap();
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-private-secret".to_owned()),
+        model: None,
+        mixed: false,
+    });
+    let failure = OneFault::new(FaultPoint::Validation, InjectedFaultKind::ValidationFailed);
+    migrate_codex_sessions_transactional_with_faults(
+        &fixture.request,
+        MigrationProviderTarget::Custom,
+        &failure,
+    )
+    .unwrap_err();
+
+    let (backup, stage) = latest_artifact_paths(&fixture, "auth");
+    for path in [backup, stage, fixture.auth_path.clone()] {
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
