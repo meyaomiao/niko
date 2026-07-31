@@ -1,3 +1,7 @@
+use crate::active_groups::{
+    clear_record_at, detect_active_group_at, record_for, record_path, write_record_at,
+    ActiveGroupStatus,
+};
 use crate::codex_sessions::{
     atomic_replace_file as atomic_replace_codex_file, sync_parent as sync_codex_parent,
     CodexMigrationInput,
@@ -8,10 +12,11 @@ use crate::commands::codex_sessions::{
 };
 use crate::commands::safe_error::SafeCommandError;
 use crate::targets::{all_targets, preflight_target_apply, transaction_paths, ApplyPlan};
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 static PROVIDER_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
@@ -21,17 +26,32 @@ const PROVIDER_TRANSACTION_VERSION: u8 = 1;
 #[serde(rename_all = "snake_case")]
 enum ProviderTransactionPhase {
     Prepared,
+    RecordsApplied,
     ClaudeApplied,
     CodexStarted,
     Committed,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderTransactionManifest {
     version: u8,
     phase: ProviderTransactionPhase,
     existed: Vec<bool>,
     known_codex_transactions: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_target_ids",
+        skip_serializing_if = "Option::is_none"
+    )]
+    target_ids: Option<Vec<String>>,
+}
+
+fn deserialize_target_ids<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 
 fn provider_transaction_root() -> PathBuf {
@@ -208,10 +228,20 @@ fn persist_provider_manifest(
     durable_replace(&temporary, &path)
 }
 
+#[cfg(test)]
 fn begin_provider_transaction_at(
     root: &Path,
     paths: &[PathBuf],
     known_codex_transactions: Vec<String>,
+) -> Result<ProviderTransactionManifest, SafeCommandError> {
+    begin_provider_transaction_at_with_targets(root, paths, known_codex_transactions, None)
+}
+
+fn begin_provider_transaction_at_with_targets(
+    root: &Path,
+    paths: &[PathBuf],
+    known_codex_transactions: Vec<String>,
+    target_ids: Option<Vec<String>>,
 ) -> Result<ProviderTransactionManifest, SafeCommandError> {
     fs::create_dir_all(root.parent().expect("transaction root has parent"))
         .map_err(|_| SafeCommandError::change_failed(false))?;
@@ -237,6 +267,7 @@ fn begin_provider_transaction_at(
             phase: ProviderTransactionPhase::Prepared,
             existed,
             known_codex_transactions,
+            target_ids,
         };
         persist_provider_manifest(&root, &manifest)?;
         Ok(manifest)
@@ -252,27 +283,188 @@ fn restore_provider_transaction_at(
     paths: &[PathBuf],
     manifest: &ProviderTransactionManifest,
 ) -> Result<(), SafeCommandError> {
-    if manifest.version != PROVIDER_TRANSACTION_VERSION || paths.len() != manifest.existed.len() {
-        return Err(SafeCommandError::change_failed(false));
-    }
+    validate_provider_transaction_manifest(manifest, paths)?;
     for (index, (path, existed)) in paths.iter().zip(&manifest.existed).enumerate() {
         if *existed {
             let backup = root.join(format!("{index}.backup"));
             replace_from_backup(&backup, path)?;
-        } else if path.exists() {
-            fs::remove_file(path).map_err(|_| SafeCommandError::change_failed(false))?;
-            sync_parent(path)?;
+        } else {
+            match fs::symlink_metadata(path) {
+                Ok(metadata)
+                    if metadata.file_type().is_file() || metadata.file_type().is_symlink() =>
+                {
+                    fs::remove_file(path).map_err(|_| SafeCommandError::change_failed(false))?;
+                    sync_parent(path)?;
+                }
+                Ok(_) => return Err(SafeCommandError::change_failed(false)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(SafeCommandError::change_failed(false)),
+            }
         }
     }
     fs::remove_dir_all(root).map_err(|_| SafeCommandError::change_failed(false))?;
     sync_parent(root)
 }
 
+fn provider_transaction_paths_for_targets(
+    target_ids: &[String],
+) -> Result<Vec<PathBuf>, SafeCommandError> {
+    let home = crate::targets::user_home_dir();
+    let mut paths = Vec::new();
+    for target_id in target_ids {
+        if target_id == "claude-desktop" {
+            paths.extend(
+                transaction_paths(target_id).map_err(|_| SafeCommandError::change_failed(false))?,
+            );
+        } else if target_id != "codex" {
+            return Err(SafeCommandError::invalid_request());
+        }
+    }
+    for target_id in target_ids {
+        paths.push(record_path(&home, target_id).map_err(|_| SafeCommandError::invalid_request())?);
+    }
+    Ok(paths)
+}
+
+fn validate_provider_transaction_shape(
+    manifest: &ProviderTransactionManifest,
+) -> Result<(), SafeCommandError> {
+    if manifest.version != PROVIDER_TRANSACTION_VERSION {
+        return Err(SafeCommandError::change_failed(false));
+    }
+
+    let Some(target_ids) = manifest.target_ids.as_deref() else {
+        // A v1 journal without target_ids is the pre-Issue #58 format. It can
+        // still carry Codex inner-transaction ids because that format used one
+        // Claude path list for both target flows.
+        return match manifest.phase {
+            ProviderTransactionPhase::Prepared
+            | ProviderTransactionPhase::ClaudeApplied
+            | ProviderTransactionPhase::CodexStarted
+            | ProviderTransactionPhase::Committed => Ok(()),
+            ProviderTransactionPhase::RecordsApplied => Err(SafeCommandError::change_failed(false)),
+        };
+    };
+    if target_ids.is_empty() {
+        return Err(SafeCommandError::change_failed(false));
+    }
+
+    let valid_target_order = match target_ids {
+        [target_id] => matches!(target_id.as_str(), "codex" | "claude-desktop"),
+        [first, second] => first == "codex" && second == "claude-desktop",
+        _ => false,
+    };
+    if !valid_target_order
+        || (!target_ids.iter().any(|id| id == "codex")
+            && !manifest.known_codex_transactions.is_empty())
+    {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    Ok(())
+}
+
+fn validate_provider_transaction_path_structure(
+    manifest: &ProviderTransactionManifest,
+    paths: &[PathBuf],
+) -> Result<(), SafeCommandError> {
+    if paths.iter().any(|path| {
+        path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    }) {
+        return Err(SafeCommandError::change_failed(false));
+    }
+
+    let Some(target_ids) = manifest.target_ids.as_deref() else {
+        // Old journals have no target ordering metadata. Their Claude-only path
+        // list remains compatible with the already-established recovery rule.
+        return Ok(());
+    };
+
+    let record_count = target_ids.len();
+    let record_start = paths
+        .len()
+        .checked_sub(record_count)
+        .ok_or_else(|| SafeCommandError::change_failed(false))?;
+    for (index, target_id) in target_ids.iter().enumerate() {
+        let expected = format!("{target_id}.json");
+        if paths[record_start + index]
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(expected.as_str())
+        {
+            return Err(SafeCommandError::change_failed(false));
+        }
+    }
+
+    if target_ids
+        .iter()
+        .any(|target_id| target_id == "claude-desktop")
+        && paths[0].file_name().and_then(|name| name.to_str()) != Some("settings.json")
+    {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    Ok(())
+}
+
+fn validate_provider_transaction_manifest(
+    manifest: &ProviderTransactionManifest,
+    paths: &[PathBuf],
+) -> Result<(), SafeCommandError> {
+    validate_provider_transaction_shape(manifest)?;
+    if paths.is_empty()
+        || paths.len() != manifest.existed.len()
+        || paths.iter().collect::<HashSet<_>>().len() != paths.len()
+    {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    validate_provider_transaction_path_structure(manifest, paths)?;
+
+    // v1 manifests written before Issue #58 have no target_ids. Their path list
+    // is supplied by the old Claude-only recovery rule, so only its non-empty
+    // shape can be checked here. New manifests have a target-derived path count.
+    if let Some(target_ids) = manifest.target_ids.as_deref() {
+        let expected_target_paths = if target_ids
+            .iter()
+            .any(|target_id| target_id == "claude-desktop")
+        {
+            transaction_paths("claude-desktop")
+                .map_err(|_| SafeCommandError::change_failed(false))?
+        } else {
+            Vec::new()
+        };
+        let expected = target_ids.len() + expected_target_paths.len();
+        if paths.len() != expected {
+            return Err(SafeCommandError::change_failed(false));
+        }
+        let target_path_count = paths.len() - target_ids.len();
+        if paths[..target_path_count]
+            .iter()
+            .zip(&expected_target_paths)
+            .any(|(actual, expected)| actual.file_name() != expected.file_name())
+        {
+            return Err(SafeCommandError::change_failed(false));
+        }
+    }
+    Ok(())
+}
+
+fn manifest_transaction_paths(
+    manifest: &ProviderTransactionManifest,
+) -> Result<Vec<PathBuf>, SafeCommandError> {
+    match manifest.target_ids.as_deref() {
+        None => {
+            transaction_paths("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))
+        }
+        Some(target_ids) => provider_transaction_paths_for_targets(target_ids),
+    }
+}
+
 fn restore_provider_transaction(
     manifest: &ProviderTransactionManifest,
 ) -> Result<(), SafeCommandError> {
-    let paths =
-        transaction_paths("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))?;
+    let paths = manifest_transaction_paths(manifest)?;
     restore_provider_transaction_at(&provider_transaction_root(), &paths, manifest)
 }
 
@@ -296,15 +488,11 @@ fn recover_provider_transaction_at(
     if !root.exists() {
         return Ok(());
     }
-    let bytes = match fs::read(root.join("manifest.json")) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return finish_provider_transaction_at(root);
-        }
-        Err(_) => return Err(SafeCommandError::change_failed(false)),
-    };
+    let bytes =
+        fs::read(root.join("manifest.json")).map_err(|_| SafeCommandError::change_failed(false))?;
     let manifest: ProviderTransactionManifest =
         serde_json::from_slice(&bytes).map_err(|_| SafeCommandError::change_failed(false))?;
+    validate_provider_transaction_manifest(&manifest, paths)?;
     match manifest.phase {
         ProviderTransactionPhase::Committed => finish_provider_transaction_at(root),
         ProviderTransactionPhase::CodexStarted => {
@@ -314,20 +502,27 @@ fn recover_provider_transaction_at(
                 restore_provider_transaction_at(root, paths, &manifest)
             }
         }
-        ProviderTransactionPhase::Prepared | ProviderTransactionPhase::ClaudeApplied => {
+        ProviderTransactionPhase::Prepared
+        | ProviderTransactionPhase::RecordsApplied
+        | ProviderTransactionPhase::ClaudeApplied => {
             restore_provider_transaction_at(root, paths, &manifest)
         }
     }
 }
 
 fn recover_provider_transaction() -> Result<(), SafeCommandError> {
-    let paths =
-        transaction_paths("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))?;
-    recover_provider_transaction_at(
-        &provider_transaction_root(),
-        &paths,
-        recover_codex_session_storage_since,
-    )
+    let root = provider_transaction_root();
+    if !root.exists() {
+        return Ok(());
+    }
+    let bytes =
+        fs::read(root.join("manifest.json")).map_err(|_| SafeCommandError::change_failed(false))?;
+    let manifest: ProviderTransactionManifest =
+        serde_json::from_slice(&bytes).map_err(|_| SafeCommandError::change_failed(false))?;
+    validate_provider_transaction_shape(&manifest)?;
+    let paths = manifest_transaction_paths(&manifest)?;
+    validate_provider_transaction_manifest(&manifest, &paths)?;
+    recover_provider_transaction_at(&root, &paths, recover_codex_session_storage_since)
 }
 
 pub(crate) fn lock_and_recover_provider_transaction(
@@ -337,6 +532,13 @@ pub(crate) fn lock_and_recover_provider_transaction(
         .map_err(|_| SafeCommandError::busy())?;
     recover_provider_transaction()?;
     Ok(guard)
+}
+
+pub(crate) fn lock_provider_transaction_readonly(
+) -> Result<MutexGuard<'static, ()>, SafeCommandError> {
+    PROVIDER_TRANSACTION_LOCK
+        .try_lock()
+        .map_err(|_| SafeCommandError::busy())
 }
 
 #[derive(Debug, Serialize)]
@@ -360,6 +562,62 @@ pub struct ApplyRequest {
     pub codex_mixed: bool,
 }
 
+fn records_for_plan(
+    target_ids: &[String],
+    plan: &ApplyPlan,
+) -> Result<Vec<crate::active_groups::ActiveGroupRecord>, SafeCommandError> {
+    let group = plan
+        .model_group
+        .as_deref()
+        .filter(|group| !group.is_empty())
+        .ok_or_else(SafeCommandError::invalid_request)?;
+    target_ids
+        .iter()
+        .map(|target_id| {
+            let digest = crate::targets::expected_config_digest(target_id, plan)
+                .map_err(|_| SafeCommandError::invalid_request())?;
+            record_for(target_id, group, digest).map_err(|_| SafeCommandError::change_failed(false))
+        })
+        .collect()
+}
+
+fn write_active_records(
+    records: &[crate::active_groups::ActiveGroupRecord],
+) -> Result<(), SafeCommandError> {
+    let home = crate::targets::user_home_dir();
+    for record in records {
+        write_record_at(&home, record).map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    Ok(())
+}
+
+fn clear_active_records(target_ids: &[String]) -> Result<(), SafeCommandError> {
+    let home = crate::targets::user_home_dir();
+    for target_id in target_ids {
+        clear_record_at(&home, target_id).map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    Ok(())
+}
+
+fn commit_provider_transaction(
+    manifest: &mut ProviderTransactionManifest,
+) -> Result<(), SafeCommandError> {
+    manifest.phase = ProviderTransactionPhase::Committed;
+    persist_provider_manifest(&provider_transaction_root(), manifest)?;
+    finish_provider_transaction()
+}
+
+fn rollback_provider_transaction(
+    manifest: &ProviderTransactionManifest,
+    error: SafeCommandError,
+) -> SafeCommandError {
+    if restore_provider_transaction(manifest).is_ok() {
+        error
+    } else {
+        SafeCommandError::change_failed(false)
+    }
+}
+
 #[tauri::command]
 pub async fn list_targets() -> Result<Vec<TargetInfo>, SafeCommandError> {
     let _guard = lock_and_recover_provider_transaction()?;
@@ -376,46 +634,129 @@ pub async fn list_targets() -> Result<Vec<TargetInfo>, SafeCommandError> {
 }
 
 #[tauri::command]
+pub async fn detect_active_groups(
+    available_groups: Option<Vec<String>>,
+) -> Result<Vec<ActiveGroupStatus>, SafeCommandError> {
+    let _guard = lock_provider_transaction_readonly()?;
+    let home = crate::targets::user_home_dir();
+    let root = provider_transaction_root();
+    if fs::symlink_metadata(&root).is_ok() {
+        return Ok(all_targets()
+            .iter()
+            .map(|target| ActiveGroupStatus {
+                version: crate::active_groups::ACTIVE_GROUP_STATUS_VERSION,
+                target_id: target.id().to_owned(),
+                status: crate::active_groups::ActiveGroupState::Unknown,
+                group: None,
+            })
+            .collect());
+    }
+    let available = available_groups.as_deref();
+    Ok(all_targets()
+        .iter()
+        .map(|target| detect_active_group_at(&home, target.id(), available))
+        .collect())
+}
+
+#[tauri::command]
 pub async fn apply_target(req: ApplyRequest) -> Result<Vec<String>, SafeCommandError> {
     let _guard = lock_and_recover_provider_transaction()?;
     let plan = ApplyPlan {
-        base_url: req.base_url,
-        api_key: req.api_key,
-        model_group: req.model_group,
-        model: req.model,
+        base_url: req.base_url.clone(),
+        api_key: req.api_key.clone(),
+        model_group: req.model_group.clone(),
+        model: req.model.clone(),
         codex_mixed: req.codex_mixed,
     };
-    if req.target_id == "codex" {
-        let result = normalize_codex_session_storage_with_input(
-            "custom".to_owned(),
-            Some(CodexMigrationInput {
-                base_url: Some(plan.base_url),
-                api_key: Some(plan.api_key),
-                model: plan.model,
-                mixed: plan.codex_mixed,
-            }),
-        )?;
-        return Ok(if result.status == "unchanged" {
-            Vec::new()
-        } else {
-            vec!["codex".to_owned()]
-        });
-    }
-
     let targets = all_targets();
     let target = targets
         .iter()
         .find(|t| t.id() == req.target_id)
         .ok_or_else(SafeCommandError::invalid_request)?;
+    let target_ids = vec![req.target_id.clone()];
+    let records = records_for_plan(&target_ids, &plan)?;
+    let codex_input = CodexMigrationInput {
+        base_url: Some(plan.base_url.clone()),
+        api_key: Some(plan.api_key.clone()),
+        model: plan.model.clone(),
+        mixed: plan.codex_mixed,
+    };
+    let known_codex_transactions = if req.target_id == "codex" {
+        preflight_codex_session_storage(codex_input.clone())?
+    } else {
+        preflight_target_apply(&req.target_id)
+            .map_err(|_| SafeCommandError::change_failed(false))?;
+        Vec::new()
+    };
+    let paths = provider_transaction_paths_for_targets(&target_ids)?;
+    let mut manifest = begin_provider_transaction_at_with_targets(
+        &provider_transaction_root(),
+        &paths,
+        known_codex_transactions,
+        Some(target_ids.clone()),
+    )?;
 
-    let summary = target
-        .apply(&plan)
-        .map_err(|_| SafeCommandError::change_failed(true))?;
+    if let Err(error) = write_active_records(&records) {
+        return Err(rollback_provider_transaction(&manifest, error));
+    }
+    manifest.phase = ProviderTransactionPhase::RecordsApplied;
+    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+        return Err(rollback_provider_transaction(&manifest, error));
+    }
+
+    let changed = if req.target_id == "codex" {
+        manifest.phase = ProviderTransactionPhase::CodexStarted;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
+        let outcome = match normalize_codex_session_storage_with_input(
+            "custom".to_owned(),
+            Some(codex_input),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
+                    Ok(Some(true)) => {
+                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
+                            status: "applied",
+                            message: "已完成检查，可以继续使用。",
+                        }
+                    }
+                    Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
+                    Err(recovery_error) => return Err(recovery_error),
+                }
+            }
+        };
+        if let Err(error) = commit_provider_transaction(&mut manifest) {
+            return Err(error);
+        }
+        if outcome.status == "unchanged" {
+            Vec::new()
+        } else {
+            vec!["codex".to_owned()]
+        }
+    } else {
+        let summary = match target.apply(&plan) {
+            Ok(summary) => summary,
+            Err(_) => {
+                return Err(rollback_provider_transaction(
+                    &manifest,
+                    SafeCommandError::change_failed(true),
+                ))
+            }
+        };
+        manifest.phase = ProviderTransactionPhase::ClaudeApplied;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
+        commit_provider_transaction(&mut manifest)?;
+        summary.changed_keys
+    };
     crate::logx::append(
         "apply_target",
-        &format!("{} changed={:?}", req.target_id, summary.changed_keys),
+        &format!("{} changed={:?}", req.target_id, changed),
     );
-    Ok(summary.changed_keys)
+    Ok(changed)
 }
 
 /// 对所有已安装目标同时应用 plan
@@ -446,96 +787,109 @@ pub async fn apply_all_targets(
         return Ok(Vec::new());
     }
 
+    let mut target_ids = Vec::new();
+    if codex.is_some() {
+        target_ids.push("codex".to_owned());
+    }
+    if claude.is_some() {
+        target_ids.push("claude-desktop".to_owned());
+    }
+    let records = records_for_plan(&target_ids, &plan)?;
     let codex_input = CodexMigrationInput {
         base_url: Some(plan.base_url.clone()),
         api_key: Some(plan.api_key.clone()),
         model: plan.model.clone(),
         mixed: plan.codex_mixed,
     };
-    if claude.is_none() {
-        let outcome =
-            normalize_codex_session_storage_with_input("custom".to_owned(), Some(codex_input))?;
-        return Ok(vec![serde_json::json!({
-            "id": "codex",
-            "ok": true,
-            "changed": if outcome.status == "unchanged" { Vec::<String>::new() } else { vec!["codex".to_owned()] }
-        })]);
-    }
-    if codex.is_none() {
-        let summary = claude
-            .expect("installed Claude target")
-            .apply(&plan)
-            .map_err(|_| SafeCommandError::change_failed(true))?;
-        return Ok(vec![serde_json::json!({
-            "id": summary.target_id,
-            "ok": true,
-            "changed": summary.changed_keys
-        })]);
+    let known_codex_transactions = if codex.is_some() {
+        preflight_codex_session_storage(codex_input.clone())?
+    } else {
+        Vec::new()
+    };
+    if claude.is_some() {
+        preflight_target_apply("claude-desktop")
+            .map_err(|_| SafeCommandError::change_failed(false))?;
     }
 
-    let known_codex_transactions = preflight_codex_session_storage(codex_input.clone())?;
-    preflight_target_apply("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))?;
-    let paths =
-        transaction_paths("claude-desktop").map_err(|_| SafeCommandError::change_failed(false))?;
-    let mut manifest = begin_provider_transaction_at(
+    let paths = provider_transaction_paths_for_targets(&target_ids)?;
+    let mut manifest = begin_provider_transaction_at_with_targets(
         &provider_transaction_root(),
         &paths,
         known_codex_transactions,
+        Some(target_ids),
     )?;
 
-    let claude_summary = match claude.expect("installed Claude target").apply(&plan) {
-        Ok(summary) => summary,
-        Err(_) => {
-            restore_provider_transaction(&manifest)?;
-            return Err(SafeCommandError::change_failed(true));
-        }
-    };
-    manifest.phase = ProviderTransactionPhase::ClaudeApplied;
-    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
-        restore_provider_transaction(&manifest)?;
-        return Err(error);
+    if let Err(error) = write_active_records(&records) {
+        return Err(rollback_provider_transaction(&manifest, error));
     }
-    manifest.phase = ProviderTransactionPhase::CodexStarted;
+    manifest.phase = ProviderTransactionPhase::RecordsApplied;
     if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
-        restore_provider_transaction(&manifest)?;
-        return Err(error);
+        return Err(rollback_provider_transaction(&manifest, error));
     }
 
-    let codex_outcome =
-        match normalize_codex_session_storage_with_input("custom".to_owned(), Some(codex_input)) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
-                    Ok(Some(true)) => {
-                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
-                            status: "applied",
-                            message: "已完成检查，可以继续使用。",
-                        }
-                    }
-                    Ok(_) => {
-                        restore_provider_transaction(&manifest)?;
-                        return Err(error);
-                    }
-                    Err(recovery_error) => return Err(recovery_error),
-                }
+    let claude_summary = if let Some(claude) = claude {
+        let summary = match claude.apply(&plan) {
+            Ok(summary) => summary,
+            Err(_) => {
+                return Err(rollback_provider_transaction(
+                    &manifest,
+                    SafeCommandError::change_failed(true),
+                ))
             }
         };
-    manifest.phase = ProviderTransactionPhase::Committed;
-    let _ = persist_provider_manifest(&provider_transaction_root(), &manifest);
-    let _ = finish_provider_transaction();
+        manifest.phase = ProviderTransactionPhase::ClaudeApplied;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
+        Some(summary)
+    } else {
+        None
+    };
 
-    Ok(vec![
-        serde_json::json!({
+    let codex_outcome = if codex.is_some() {
+        manifest.phase = ProviderTransactionPhase::CodexStarted;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
+        Some(
+            match normalize_codex_session_storage_with_input("custom".to_owned(), Some(codex_input))
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
+                        Ok(Some(true)) => {
+                            crate::commands::codex_sessions::CodexSessionMutationOutcome {
+                                status: "applied",
+                                message: "已完成检查，可以继续使用。",
+                            }
+                        }
+                        Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
+                        Err(recovery_error) => return Err(recovery_error),
+                    }
+                }
+            },
+        )
+    } else {
+        None
+    };
+    commit_provider_transaction(&mut manifest)?;
+
+    let mut result = Vec::new();
+    if let Some(outcome) = codex_outcome {
+        result.push(serde_json::json!({
             "id": "codex",
             "ok": true,
-            "changed": if codex_outcome.status == "unchanged" { Vec::<String>::new() } else { vec!["codex".to_owned()] }
-        }),
-        serde_json::json!({
-            "id": claude_summary.target_id,
+            "changed": if outcome.status == "unchanged" { Vec::<String>::new() } else { vec!["codex".to_owned()] }
+        }));
+    }
+    if let Some(summary) = claude_summary {
+        result.push(serde_json::json!({
+            "id": summary.target_id,
             "ok": true,
-            "changed": claude_summary.changed_keys
-        }),
-    ])
+            "changed": summary.changed_keys
+        }));
+    }
+    Ok(result)
 }
 
 use crate::targets::{check_drift, DriftReport};
@@ -595,7 +949,6 @@ pub async fn check_all_drift(
 pub struct ConnectivityResult {
     pub target_id: String,
     pub ok: bool,
-    pub endpoint: String,
     pub model: Option<String>,
     pub latency_ms: Option<u64>,
     pub detail: String,
@@ -647,7 +1000,7 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
             let detail = if ok {
                 format!("连通正常，{model} 可用（{:.1}s）", ms as f64 / 1000.0)
             } else {
-                let body = r.text().await.unwrap_or_default();
+                let _ = r.text().await;
                 let hint = match code {
                     401 | 403 => "Key 无效或该分组无权限",
                     404 => "地址或模型不存在，可尝试重新启用",
@@ -655,26 +1008,22 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
                     c if c >= 500 => "上游或服务端错误",
                     _ => "请求被拒绝",
                 };
-                format!(
-                    "HTTP {code}：{hint}。{}",
-                    body.chars().take(160).collect::<String>()
-                )
+                format!("HTTP {code}：{hint}")
             };
             crate::logx::append(
                 "test_connectivity",
-                &format!("{target_id} {} HTTP {code} {ms}ms", cfg.endpoint),
+                &format!("{target_id} HTTP {code} {ms}ms"),
             );
             Ok(ConnectivityResult {
                 target_id,
                 ok,
-                endpoint: cfg.endpoint,
                 model: Some(model),
                 latency_ms: Some(ms),
                 detail,
             })
         }
         Err(e) => {
-            crate::logx::append("test_connectivity", &format!("{target_id} error: {e}"));
+            crate::logx::append("test_connectivity", &format!("{target_id} request_failed"));
             let detail = if e.is_timeout() {
                 "请求超时，检查网络或代理设置".to_owned()
             } else if e.is_connect() {
@@ -685,7 +1034,6 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
             Ok(ConnectivityResult {
                 target_id,
                 ok: false,
-                endpoint: cfg.endpoint,
                 model: Some(model),
                 latency_ms: None,
                 detail,
@@ -700,16 +1048,80 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
 #[tauri::command]
 pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, SafeCommandError> {
     let _guard = lock_and_recover_provider_transaction()?;
+    let targets = all_targets();
+    let _target = targets
+        .iter()
+        .find(|target| target.id() == target_id)
+        .ok_or_else(SafeCommandError::invalid_request)?;
+    let target_ids = vec![target_id.clone()];
+    let known_codex_transactions = if target_id == "codex" {
+        preflight_codex_session_storage(CodexMigrationInput::default())?
+    } else {
+        preflight_target_apply(&target_id).map_err(|_| SafeCommandError::change_failed(false))?;
+        Vec::new()
+    };
+    let paths = provider_transaction_paths_for_targets(&target_ids)?;
+    let mut manifest = begin_provider_transaction_at_with_targets(
+        &provider_transaction_root(),
+        &paths,
+        known_codex_transactions,
+        Some(target_ids.clone()),
+    )?;
+    if let Err(error) = clear_active_records(&target_ids) {
+        return Err(rollback_provider_transaction(&manifest, error));
+    }
+    manifest.phase = ProviderTransactionPhase::RecordsApplied;
+    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+        return Err(rollback_provider_transaction(&manifest, error));
+    }
+
     if target_id == "codex" {
-        let result = normalize_codex_session_storage_inner("openai".to_owned())?;
-        return Ok(if result.status == "unchanged" {
+        manifest.phase = ProviderTransactionPhase::CodexStarted;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
+        let outcome = match normalize_codex_session_storage_inner("openai".to_owned()) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
+                    Ok(Some(true)) => {
+                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
+                            status: "applied",
+                            message: "已恢复到官方，可以继续使用。",
+                        }
+                    }
+                    Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
+                    Err(recovery_error) => return Err(recovery_error),
+                }
+            }
+        };
+        commit_provider_transaction(&mut manifest)?;
+        let changed = if outcome.status == "unchanged" {
             Vec::new()
         } else {
             vec!["codex".to_owned()]
-        });
+        };
+        crate::logx::append(
+            "restore_target_defaults",
+            &format!("{target_id} changed={changed:?}"),
+        );
+        return Ok(changed);
     }
-    let summary = crate::targets::restore_defaults(&target_id)
-        .map_err(|_| SafeCommandError::change_failed(true))?;
+
+    let summary = match crate::targets::restore_defaults(&target_id) {
+        Ok(summary) => summary,
+        Err(_) => {
+            return Err(rollback_provider_transaction(
+                &manifest,
+                SafeCommandError::change_failed(true),
+            ))
+        }
+    };
+    manifest.phase = ProviderTransactionPhase::ClaudeApplied;
+    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+        return Err(rollback_provider_transaction(&manifest, error));
+    }
+    commit_provider_transaction(&mut manifest)?;
     crate::logx::append(
         "restore_target_defaults",
         &format!("{target_id} changed={:?}", summary.changed_keys),
@@ -784,6 +1196,9 @@ mod tests {
         fs::write(&target, b"old").unwrap();
         fs::write(&snapshot, b"snapshot").unwrap();
         begin_provider_transaction_at(&root, std::slice::from_ref(&target), Vec::new()).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        assert!(!stored.as_object().unwrap().contains_key("target_ids"));
         fs::write(&target, b"interrupted").unwrap();
 
         recover_provider_transaction_at(&root, std::slice::from_ref(&target), |_| Ok(None))
@@ -791,6 +1206,30 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"old");
         replace_from_backup(&snapshot, &target).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"snapshot");
+    }
+
+    #[test]
+    fn records_applied_transaction_restores_record_and_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        let record = temp.path().join("codex.json");
+        let paths = vec![record.clone()];
+        fs::write(&record, b"record-old").unwrap();
+        let mut manifest = begin_provider_transaction_at_with_targets(
+            &root,
+            &paths,
+            Vec::new(),
+            Some(vec!["codex".to_owned()]),
+        )
+        .unwrap();
+
+        fs::write(&record, b"record-new").unwrap();
+        manifest.phase = ProviderTransactionPhase::RecordsApplied;
+        persist_provider_manifest(&root, &manifest).unwrap();
+
+        recover_provider_transaction_at(&root, &paths, |_| Ok(None)).unwrap();
+        assert_eq!(fs::read(&record).unwrap(), b"record-old");
+        assert!(!root.exists());
     }
 
     #[test]
@@ -907,6 +1346,316 @@ mod tests {
             assert_eq!(
                 fs::read(&target).unwrap(),
                 if committed { b"new" } else { b"old" },
+            );
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn invalid_terminal_journals_are_preserved_before_dispatch() {
+        let cases = [
+            (
+                "unknown-version",
+                serde_json::json!({
+                    "version": 99,
+                    "phase": "committed",
+                    "existed": [false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex"]
+                }),
+                vec!["codex.json"],
+            ),
+            (
+                "unknown-field",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex"],
+                    "unexpected": true
+                }),
+                vec!["codex.json"],
+            ),
+            (
+                "invalid-schema",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": "not-an-array",
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex"]
+                }),
+                vec!["codex.json"],
+            ),
+            (
+                "duplicate-target",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false, false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex", "codex"]
+                }),
+                vec!["codex.json", "codex-copy.json"],
+            ),
+            (
+                "wrong-target-order",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false, false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["claude-desktop", "codex"]
+                }),
+                vec!["settings.json", "codex.json"],
+            ),
+            (
+                "path-count",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false, false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex"]
+                }),
+                vec!["codex.json"],
+            ),
+            (
+                "path-traversal",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false],
+                    "known_codex_transactions": [],
+                    "target_ids": ["codex"]
+                }),
+                vec!["../outside.json"],
+            ),
+            (
+                "explicit-empty-targets",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false],
+                    "known_codex_transactions": [],
+                    "target_ids": []
+                }),
+                vec!["codex.json"],
+            ),
+            (
+                "null-targets",
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "committed",
+                    "existed": [false],
+                    "known_codex_transactions": [],
+                    "target_ids": null
+                }),
+                vec!["codex.json"],
+            ),
+        ];
+
+        for phase in [
+            "prepared",
+            "records_applied",
+            "claude_applied",
+            "committed",
+            "codex_started",
+        ] {
+            for (name, mut manifest, path_names) in cases.iter().cloned() {
+                manifest["phase"] = serde_json::Value::String(phase.to_owned());
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("transaction");
+                fs::create_dir(&root).unwrap();
+                let manifest_path = root.join("manifest.json");
+                fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                let paths = path_names
+                    .into_iter()
+                    .map(|name| temp.path().join(name))
+                    .collect::<Vec<_>>();
+                let mut recover_called = false;
+
+                let result = recover_provider_transaction_at(&root, &paths, |_| {
+                    recover_called = true;
+                    Ok(Some(true))
+                });
+                let error = match result {
+                    Err(error) => error,
+                    Ok(()) => panic!("{phase}/{name} unexpectedly accepted"),
+                };
+
+                assert_eq!(
+                    error,
+                    SafeCommandError::change_failed(false),
+                    "{phase}/{name}"
+                );
+                assert!(root.is_dir(), "{phase}/{name}");
+                assert!(manifest_path.is_file(), "{phase}/{name}");
+                assert!(!recover_called, "{phase}/{name}");
+                let error_json = serde_json::to_string(&error).unwrap();
+                assert!(!error_json.contains(&root.to_string_lossy().to_string()));
+                assert!(!error_json.contains("outside"));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_manifest_without_target_ids_is_compatible_in_recovery_and_commit() {
+        for phase in [
+            ProviderTransactionPhase::Prepared,
+            ProviderTransactionPhase::ClaudeApplied,
+            ProviderTransactionPhase::CodexStarted,
+            ProviderTransactionPhase::Committed,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("transaction");
+            let target = temp.path().join("settings.json");
+            fs::write(&target, b"old").unwrap();
+            let mut manifest =
+                begin_provider_transaction_at(&root, std::slice::from_ref(&target), Vec::new())
+                    .unwrap();
+            let stored: serde_json::Value =
+                serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+            assert!(!stored.as_object().unwrap().contains_key("target_ids"));
+
+            fs::write(&target, b"new").unwrap();
+            manifest.phase = phase;
+            persist_provider_manifest(&root, &manifest).unwrap();
+            recover_provider_transaction_at(&root, std::slice::from_ref(&target), |_| Ok(None))
+                .unwrap();
+
+            let expected = if matches!(phase, ProviderTransactionPhase::Committed) {
+                b"new"
+            } else {
+                b"old"
+            };
+            assert_eq!(fs::read(&target).unwrap(), expected);
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn legacy_records_applied_manifest_is_preserved_before_recovery_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        let target = temp.path().join("settings.json");
+        fs::write(&target, b"old").unwrap();
+        let mut manifest =
+            begin_provider_transaction_at(&root, std::slice::from_ref(&target), Vec::new())
+                .unwrap();
+        fs::write(&target, b"new").unwrap();
+        manifest.phase = ProviderTransactionPhase::RecordsApplied;
+        persist_provider_manifest(&root, &manifest).unwrap();
+
+        let mut recover_called = false;
+        let error = recover_provider_transaction_at(&root, std::slice::from_ref(&target), |_| {
+            recover_called = true;
+            Ok(Some(true))
+        })
+        .unwrap_err();
+
+        assert_eq!(error, SafeCommandError::change_failed(false));
+        assert!(!recover_called);
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(root.is_dir());
+        assert!(root.join("manifest.json").is_file());
+        let error_json = serde_json::to_string(&error).unwrap();
+        assert!(!error_json.contains(&root.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn legacy_unknown_phase_is_preserved_before_recovery_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        fs::create_dir(&root).unwrap();
+        let manifest_path = root.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "phase": "future_phase",
+                "existed": [false],
+                "known_codex_transactions": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let target = temp.path().join("settings.json");
+        let mut recover_called = false;
+
+        let error = recover_provider_transaction_at(&root, &[target], |_| {
+            recover_called = true;
+            Ok(Some(true))
+        })
+        .unwrap_err();
+
+        assert_eq!(error, SafeCommandError::change_failed(false));
+        assert!(!recover_called);
+        assert!(root.is_dir());
+        assert!(manifest_path.is_file());
+        let error_json = serde_json::to_string(&error).unwrap();
+        assert!(!error_json.contains(&root.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn missing_transaction_manifest_is_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        fs::create_dir(&root).unwrap();
+        let target = temp.path().join("codex.json");
+        let mut recover_called = false;
+
+        let error = recover_provider_transaction_at(&root, &[target], |_| {
+            recover_called = true;
+            Ok(Some(true))
+        })
+        .unwrap_err();
+
+        assert_eq!(error, SafeCommandError::change_failed(false));
+        assert!(root.is_dir());
+        assert!(!root.join("manifest.json").exists());
+        assert!(!recover_called);
+    }
+
+    #[test]
+    fn new_target_manifest_cleans_only_after_validating_terminal_paths() {
+        let claude_names = transaction_paths("claude-desktop")
+            .unwrap()
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        for phase in [
+            ProviderTransactionPhase::Committed,
+            ProviderTransactionPhase::CodexStarted,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("transaction");
+            fs::create_dir(&root).unwrap();
+            let mut paths = claude_names
+                .iter()
+                .map(|name| temp.path().join(name))
+                .collect::<Vec<_>>();
+            paths.push(temp.path().join("codex.json"));
+            paths.push(temp.path().join("claude-desktop.json"));
+            let manifest = ProviderTransactionManifest {
+                version: PROVIDER_TRANSACTION_VERSION,
+                phase,
+                existed: vec![false; paths.len()],
+                known_codex_transactions: vec!["fixture-transaction".to_owned()],
+                target_ids: Some(vec!["codex".to_owned(), "claude-desktop".to_owned()]),
+            };
+            persist_provider_manifest(&root, &manifest).unwrap();
+            let mut recover_called = false;
+            recover_provider_transaction_at(&root, &paths, |known| {
+                recover_called = true;
+                assert_eq!(known, ["fixture-transaction".to_owned()]);
+                Ok(Some(true))
+            })
+            .unwrap();
+            assert_eq!(
+                recover_called,
+                matches!(phase, ProviderTransactionPhase::CodexStarted)
             );
             assert!(!root.exists());
         }

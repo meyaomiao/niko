@@ -18,7 +18,20 @@ import {
   parseBalanceSnapshot,
   type BalanceSnapshot,
 } from "../lib/balance";
-import { safeFailure } from "../lib/codexSessions";
+import {
+  acceptsResponse,
+  beginRequest,
+  initialRequestGuard,
+  mountRequests,
+  safeFailure,
+  unmountRequests,
+} from "../lib/codexSessions";
+import {
+  commonActiveGroup,
+  normalizeActiveGroupStatuses,
+  summarizeActiveGroups,
+  type ActiveGroupStatus,
+} from "../lib/activeGroup";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -84,16 +97,28 @@ export default function Home() {
     error: "",
   });
   const balanceRequestRef = useRef<Promise<BootstrapData | null> | null>(null);
-  const [group, setGroup] = useState(auth?.group ?? "");
+  const [group, setGroup] = useState(auth?.defaultGroup ?? "");
   const [model, setModel] = useState("");
   const [modelFilter, setModelFilter] = useState("");
-  const [apiKey, setApiKey] = useState(auth?.apiKey ?? "");
   const [provisioning, setProvisioning] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [targets, setTargets] = useState<TargetInfo[]>([]);
   const [targetId, setTargetId] = useState("");
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
+  const [activeStatuses, setActiveStatuses] = useState<Record<string, ActiveGroupStatus>>({});
+  const [detecting, setDetecting] = useState(false);
+  const [detectedGroupApplied, setDetectedGroupApplied] = useState(false);
+  const [detectNonce, setDetectNonce] = useState(0);
+  const groupTouchedRef = useRef(false);
+  const requestGuardRef = useRef(initialRequestGuard());
+
+  useEffect(() => {
+    requestGuardRef.current = mountRequests(requestGuardRef.current);
+    return () => {
+      requestGuardRef.current = unmountRequests(requestGuardRef.current);
+    };
+  }, []);
   // 用户一旦手动挑过分组，就不再按所选应用自动推荐
   const [groupTouched, setGroupTouched] = useState(false);
   // Codex 专属：有 ChatGPT 订阅的用户走混用模式，保留官方登录态
@@ -117,7 +142,7 @@ export default function Home() {
       quota: snapshot.quota,
       quotaPerUnit: snapshot.quotaPerUnit,
       balanceUpdatedAt: snapshot.updatedAt,
-      group: groupName,
+      defaultGroup: groupName,
     });
   }, []);
 
@@ -164,11 +189,10 @@ export default function Home() {
         if (!data) return;
         // 分组不在这里定：等选好应用后按应用推荐（见下方 effect）
         const groups = data.groups ?? [];
-        const remembered = groups.find((g) => g.name === auth.group);
-        if (remembered) {
+        const remembered = groups.find((g) => g.name === auth.defaultGroup);
+        if (remembered && !groupTouchedRef.current) {
           setGroup(remembered.name);
           setModel(remembered.models[0] ?? "");
-          setGroupTouched(true);
         }
       })
       .finally(() => setLoading(false));
@@ -200,9 +224,9 @@ export default function Home() {
     };
   }, [refreshBalance]);
 
-  const groups: GroupOption[] = bootstrap?.groups ?? [];
+  const groups: GroupOption[] = useMemo(() => bootstrap?.groups ?? [], [bootstrap]);
   const deviceLimit = bootstrap?.device_limit ?? 0;
-  const installedTargets = targets.filter((t) => t.installed);
+  const installedTargets = useMemo(() => targets.filter((t) => t.installed), [targets]);
   // 选「全部」时按第一个已装应用推荐，语义上等价于用户最常用的那个
   const recommendVendor: Vendor | null = useMemo(() => {
     const id = targetId === ALL_TARGETS ? installedTargets[0]?.id : targetId;
@@ -220,15 +244,64 @@ export default function Home() {
     const tabs = Object.entries(buckets).filter(([, list]) => list.length > 0) as [Vendor, GroupOption[]][];
     return tabs.sort(([a], [b]) => Number(b === recommendVendor) - Number(a === recommendVendor));
   }, [groups, recommendVendor]);
+
+  const detectionTargetIds = useMemo(() => {
+    if (targetId === ALL_TARGETS) return installedTargets.map((target) => target.id);
+    return installedTargets.some((target) => target.id === targetId) ? [targetId] : [];
+  }, [targetId, installedTargets]);
+
+  useEffect(() => {
+    if (!auth?.accessToken || detectionTargetIds.length === 0) {
+      setDetecting(false);
+      return;
+    }
+    const request = beginRequest(requestGuardRef.current, "detect");
+    requestGuardRef.current = request.state;
+    setDetecting(true);
+
+    void invoke<unknown>("detect_active_groups", {
+      availableGroups: groups.length > 0 ? groups.map((item) => item.name) : null,
+    })
+      .then((rawStatuses) => {
+        if (!acceptsResponse(requestGuardRef.current, "detect", request.generation)) return;
+        const map = normalizeActiveGroupStatuses(rawStatuses);
+        setActiveStatuses(map);
+        const detected = commonActiveGroup(map, detectionTargetIds);
+        if (detected && !groupTouchedRef.current) {
+          setGroup(detected);
+          setModel(groups.find((item) => item.name === detected)?.models[0] ?? "");
+          setDetectedGroupApplied(true);
+        } else if (!groupTouchedRef.current) {
+          setDetectedGroupApplied(false);
+        }
+      })
+      .catch(() => {
+        if (!acceptsResponse(requestGuardRef.current, "detect", request.generation)) return;
+        setActiveStatuses({});
+      })
+      .finally(() => {
+        if (acceptsResponse(requestGuardRef.current, "detect", request.generation)) {
+          setDetecting(false);
+        }
+      });
+
+    return () => {
+      const invalidated = beginRequest(requestGuardRef.current, "detect");
+      requestGuardRef.current = invalidated.state;
+    };
+  }, [auth?.accessToken, detectionTargetIds, groups, detectNonce]);
+
+  const activeGroupView = summarizeActiveGroups(activeStatuses, detectionTargetIds, detecting);
+
   // 应用选定后自动落到推荐厂商的第一个分组；用户手动挑过分组后不再干预
   useEffect(() => {
-    if (groupTouched || groups.length === 0) return;
-    const preferred = vendorTabs[0]?.[1][0];
+    if (groupTouched || detectedGroupApplied || groups.length === 0) return;
+    const preferred = groups.find((item) => item.name === auth?.defaultGroup) ?? vendorTabs[0]?.[1][0];
     if (preferred) {
       setGroup(preferred.name);
       setModel(preferred.models[0] ?? "");
     }
-  }, [groupTouched, groups, vendorTabs]);
+  }, [auth?.defaultGroup, detectedGroupApplied, groupTouched, groups, vendorTabs]);
 
   const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
   const targetLabel =
@@ -263,6 +336,7 @@ export default function Home() {
   const selectedPrice = priceOf(pricingIndex.get(model), groupRatio);
 
   const pickGroup = (name: string) => {
+    groupTouchedRef.current = true;
     setGroup(name);
     setGroupTouched(true);
     setNotice(null);
@@ -271,9 +345,16 @@ export default function Home() {
   };
 
   const pickTarget = (id: string) => {
+    groupTouchedRef.current = false;
     setTargetId(id);
     setResults({});
     setNotice(null);
+    setActiveStatuses({});
+    setDetectedGroupApplied(false);
+    const recommended = groups.find((item) => item.name === auth?.defaultGroup);
+    setGroup(recommended?.name ?? "");
+    setModel(recommended?.models[0] ?? "");
+    setGroupTouched(false);
   };
 
   const pickCodexMixed = (mixed: boolean) => {
@@ -291,8 +372,7 @@ export default function Home() {
     setResults({});
     try {
       const res = await api.provision(auth.accessToken, group);
-      setApiKey(res.api_key);
-      saveAuth({ ...auth, apiKey: res.api_key, group });
+      saveAuth({ ...auth, apiKey: res.api_key });
 
       if (targetId === ALL_TARGETS) {
         const applied = await invoke<Array<{ id: string; ok: boolean; changed?: string[]; error?: string }>>(
@@ -339,6 +419,7 @@ export default function Home() {
         setNotice({ ok: true, text: `已为 ${targetLabel} 启用 ${model || group}` });
       }
       localStorage.setItem(TARGET_STORAGE_KEY, targetId);
+      setDetectNonce((value) => value + 1);
     } catch (e) {
       setNotice({ ok: false, text: safeFailure(e).message });
     } finally {
@@ -419,6 +500,7 @@ export default function Home() {
         total += changed.length;
       }
       setResults({});
+      setDetectNonce((value) => value + 1);
       setNotice({
         ok: true,
         text: total === 0 ? "本就是官方默认配置，无需改动" : `已恢复官方默认，重启应用后用官方账号登录`,
@@ -739,12 +821,6 @@ export default function Home() {
               )}
             </section>
 
-            {apiKey && (
-              <p className={SUBTLE}>
-                当前密钥 {apiKey.slice(0, 10)}
-                {"•".repeat(6)} · 分组 {group}
-              </p>
-            )}
           </div>
 
           {/* 右列不设滚动：滚动只交给内部的模型列表，避免出现嵌套双层滚动条 */}
@@ -780,6 +856,21 @@ export default function Home() {
                   </span>
                 )}
               </div>
+              {targetId && (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className={`mb-2 shrink-0 text-xs ${
+                    activeGroupView.kind === "active"
+                      ? "text-green-600 dark:text-green-400"
+                      : activeGroupView.kind === "changed"
+                        ? "text-orange-600 dark:text-orange-400"
+                        : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {activeGroupView.text}
+                </p>
+              )}
 
               {groups.length === 0 ? (
                 <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>

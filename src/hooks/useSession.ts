@@ -20,7 +20,7 @@ export function useSession() {
     if (!auth?.accessToken) { handleSessionExpired(); return; }
     try {
       const data = await api.bootstrap(auth.accessToken);
-      refreshAuthMeta({ quota: data.user.quota, group: data.user.group });
+      refreshAuthMeta({ quota: data.user.quota, defaultGroup: data.user.group });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       // 401 / token 失效时踢出

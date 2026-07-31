@@ -712,7 +712,7 @@ export default function Login() {
         quota: bootstrap.user.quota,
         quotaPerUnit: balance?.quotaPerUnit,
         balanceUpdatedAt: balance?.updatedAt,
-        group: bootstrap.user.group,
+        defaultGroup: bootstrap.user.group,
         apiKey: provision.api_key,
         remember: rememberSession,
       });
@@ -724,7 +724,7 @@ export default function Login() {
         username: uname,
         userId: 0,
         quota: 0,
-        group: "",
+        defaultGroup: "",
         apiKey: "",
         remember: rememberSession,
       });

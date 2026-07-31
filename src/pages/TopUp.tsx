@@ -72,7 +72,7 @@ export default function TopUp() {
         quota: snapshot.quota,
         quotaPerUnit: snapshot.quotaPerUnit,
         balanceUpdatedAt: snapshot.updatedAt,
-        group: groupName,
+        defaultGroup: groupName,
       });
     }
   };

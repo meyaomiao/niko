@@ -6,8 +6,8 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::fsx;
 use crate::commands::snapshots::save_backup;
+use crate::fsx;
 
 // ─── 公共结构 ───────────────────────────────────────────────────────────────
 
@@ -28,6 +28,14 @@ pub struct ApplyPlan {
 pub struct ApplySummary {
     pub target_id: String,
     pub changed_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TargetConfigObservation {
+    Matchable(String),
+    Other,
+    Ambiguous,
+    Unreadable,
 }
 
 pub trait Target: Send + Sync {
@@ -65,6 +73,56 @@ const CODEX_CONFLICTING_ROOT_KEYS: &[&str] = &[
     "service_tier",
     "model_catalog_json",
 ];
+
+fn codex_conflicting_root_keys(doc: &toml::Table) -> Vec<&'static str> {
+    CODEX_CONFLICTING_ROOT_KEYS
+        .iter()
+        .copied()
+        .filter(|key| doc.get(*key).is_some())
+        .collect()
+}
+
+fn codex_provider_is_consistent(provider: &toml::Table) -> bool {
+    provider.get("name").and_then(toml::Value::as_str) == Some(CODEX_PROVIDER)
+        && provider.get("env_key").is_none()
+        && provider.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
+        && provider
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool)
+            == Some(true)
+}
+
+fn codex_reasoning_effort_is_consistent(doc: &toml::Table, mixed: bool) -> bool {
+    mixed
+        || doc
+            .get("model_reasoning_effort")
+            .and_then(|value| value.as_str())
+            == Some(CODEX_MAX_REASONING_EFFORT)
+}
+
+fn codex_mixed_auth_is_consistent(auth: &Value) -> bool {
+    auth.is_object()
+        && auth.get("OPENAI_API_KEY").is_none()
+        && codex_mixed_auth_mode_is_consistent(auth)
+}
+
+fn codex_mixed_auth_mode_is_consistent(auth: &Value) -> bool {
+    match auth.get("auth_mode") {
+        None => true,
+        Some(Value::String(mode)) => mode != "apikey",
+        Some(_) => false,
+    }
+}
+
+fn codex_pure_auth_is_consistent(auth: &Value) -> bool {
+    matches!(
+        (
+            auth.get("OPENAI_API_KEY"),
+            auth.get("auth_mode").and_then(Value::as_str),
+        ),
+        (Some(Value::String(_)), Some("apikey"))
+    )
+}
 
 fn merge_toml_codex_provider(
     path: &Path,
@@ -143,8 +201,8 @@ fn merge_toml_codex_provider(
     }
 
     // 其他切换工具（CC Switch / CodexPlusPlus）留下的顶层键会盖掉本次配置，必须清掉
-    for key in CODEX_CONFLICTING_ROOT_KEYS {
-        if doc.remove(*key).is_some() {
+    for key in codex_conflicting_root_keys(&doc) {
+        if doc.remove(key).is_some() {
             changed.push(format!("-{key}"));
         }
     }
@@ -602,11 +660,11 @@ const CLAUDE_3P_ENTRY_ID: &str = "6e696b6f-0000-4000-8000-000000000001";
 const CLAUDE_3P_ENTRY_NAME: &str = "Niko";
 
 /// Claude 桌面端 3p 托管配置目录。未安装 / 不支持的平台返回 None。
-fn claude_3p_config_dir() -> Option<PathBuf> {
+fn claude_3p_config_dir_for(home: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         Some(
-            home_dir()
+            home
                 .join("Library")
                 .join("Application Support")
                 .join("Claude-3p")
@@ -615,14 +673,24 @@ fn claude_3p_config_dir() -> Option<PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA")
-            .ok()
-            .map(|appdata| PathBuf::from(appdata).join("Claude-3p").join("configLibrary"))
+        let appdata = if home == &dirs_home() {
+            std::env::var("APPDATA")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+        } else {
+            home.join("AppData").join("Roaming")
+        };
+        Some(appdata.join("Claude-3p").join("configLibrary"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         None
     }
+}
+
+fn claude_3p_config_dir() -> Option<PathBuf> {
+    claude_3p_config_dir_for(&home_dir())
 }
 
 /// 写入 Niko 的托管网关条目并设为生效项。其他工具（CC Switch 等）的条目保留不动。
@@ -975,6 +1043,315 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
     }
 }
 
+fn read_regular_text(path: &Path) -> Result<Option<String>, ()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            fs::read_to_string(path).map(Some).map_err(|_| ())
+        }
+        Ok(_) => Err(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+enum CodexAuthObservation {
+    Missing,
+    Valid(Value),
+    Invalid,
+}
+
+fn read_codex_auth(home: &Path) -> CodexAuthObservation {
+    let path = home.join(".codex").join("auth.json");
+    let raw = match read_regular_text(&path) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return CodexAuthObservation::Missing,
+        Err(()) => return CodexAuthObservation::Invalid,
+    };
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(auth)) => CodexAuthObservation::Valid(Value::Object(auth)),
+        Ok(_) | Err(_) => CodexAuthObservation::Invalid,
+    }
+}
+
+fn json_model(value: &Value) -> Result<Option<String>, ()> {
+    match value.get("model") {
+        None => Ok(None),
+        Some(Value::String(model)) => Ok(Some(model.to_owned())),
+        Some(_) => Err(()),
+    }
+}
+
+fn observe_codex_config(home: &Path) -> TargetConfigObservation {
+    let config_path = home.join(".codex").join("config.toml");
+    let raw = match read_regular_text(&config_path) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return TargetConfigObservation::Other,
+        Err(()) => return TargetConfigObservation::Unreadable,
+    };
+    let doc = match raw.parse::<toml::Table>() {
+        Ok(doc) => doc,
+        Err(_) => return TargetConfigObservation::Unreadable,
+    };
+    if doc.get("model_provider").and_then(|value| value.as_str()) != Some(CODEX_PROVIDER) {
+        return TargetConfigObservation::Other;
+    }
+    let Some(provider) = doc
+        .get("model_providers")
+        .and_then(|value| value.as_table())
+        .and_then(|providers| providers.get(CODEX_PROVIDER))
+        .and_then(|value| value.as_table())
+    else {
+        return TargetConfigObservation::Ambiguous;
+    };
+    if !codex_provider_is_consistent(provider) {
+        return TargetConfigObservation::Ambiguous;
+    }
+    let Some(base_url) = provider.get("base_url").and_then(|value| value.as_str()) else {
+        return TargetConfigObservation::Ambiguous;
+    };
+    let (api_key, auth_source) = match provider.get("experimental_bearer_token") {
+        Some(toml::Value::String(key)) => {
+            match read_codex_auth(home) {
+                CodexAuthObservation::Valid(auth) => {
+                    if !codex_mixed_auth_is_consistent(&auth) {
+                        return TargetConfigObservation::Ambiguous;
+                    }
+                }
+                CodexAuthObservation::Missing => {}
+                CodexAuthObservation::Invalid => return TargetConfigObservation::Unreadable,
+            }
+            (key.to_owned(), "provider_bearer")
+        }
+        Some(_) => return TargetConfigObservation::Ambiguous,
+        None => {
+            let auth = match read_codex_auth(home) {
+                CodexAuthObservation::Valid(auth) => auth,
+                CodexAuthObservation::Missing => return TargetConfigObservation::Ambiguous,
+                CodexAuthObservation::Invalid => return TargetConfigObservation::Unreadable,
+            };
+            if !codex_pure_auth_is_consistent(&auth) {
+                return TargetConfigObservation::Ambiguous;
+            }
+            let Some(Value::String(key)) = auth.get("OPENAI_API_KEY") else {
+                return TargetConfigObservation::Ambiguous;
+            };
+            (key.to_owned(), "auth_json")
+        }
+    };
+    let mixed = auth_source == "provider_bearer";
+    if !codex_reasoning_effort_is_consistent(&doc, mixed)
+        || !codex_conflicting_root_keys(&doc).is_empty()
+    {
+        return TargetConfigObservation::Ambiguous;
+    }
+    let model = match doc.get("model") {
+        None => None,
+        Some(toml::Value::String(model)) => Some(model.as_str()),
+        Some(_) => return TargetConfigObservation::Ambiguous,
+    };
+    let endpoint = format!("{}/responses", base_url.trim_end_matches('/'));
+    TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+        "codex",
+        &endpoint,
+        &format!("openai:responses:{auth_source}"),
+        model,
+        &api_key,
+    ))
+}
+
+fn observe_claude_settings(home: &Path) -> TargetConfigObservation {
+    let settings_path = home.join(".claude").join("settings.json");
+    let raw = match read_regular_text(&settings_path) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return TargetConfigObservation::Other,
+        Err(()) => return TargetConfigObservation::Unreadable,
+    };
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(_) => return TargetConfigObservation::Unreadable,
+    };
+    let Some(object) = value.as_object() else {
+        return TargetConfigObservation::Unreadable;
+    };
+    let Some(env) = object.get("env") else {
+        return TargetConfigObservation::Other;
+    };
+    let Some(env) = env.as_object() else {
+        return TargetConfigObservation::Ambiguous;
+    };
+    let base = env.get("ANTHROPIC_BASE_URL");
+    let key = env.get("ANTHROPIC_AUTH_TOKEN");
+    if base.is_none() && key.is_none() {
+        return TargetConfigObservation::Other;
+    }
+    let (Some(Value::String(base)), Some(Value::String(key))) = (base, key) else {
+        return TargetConfigObservation::Ambiguous;
+    };
+    if CLAUDE_MODEL_ENV_CONFLICTS
+        .iter()
+        .any(|name| env.get(*name).is_some())
+    {
+        return TargetConfigObservation::Ambiguous;
+    }
+    let model = match json_model(&value) {
+        Ok(model) => model,
+        Err(()) => return TargetConfigObservation::Ambiguous,
+    };
+    let endpoint = format!(
+        "{}/v1/messages",
+        claude_base_url(base).trim_end_matches('/')
+    );
+    TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+        "claude-desktop",
+        &endpoint,
+        "anthropic",
+        model.as_deref(),
+        key,
+    ))
+}
+
+fn observe_claude_config(home: &Path) -> TargetConfigObservation {
+    if let Some(dir) = claude_3p_config_dir_for(home) {
+        let meta_path = dir.join("_meta.json");
+        match read_regular_text(&meta_path) {
+            Ok(Some(raw)) => {
+                let meta = match serde_json::from_str::<Value>(&raw) {
+                    Ok(Value::Object(meta)) => Value::Object(meta),
+                    Ok(_) | Err(_) => return TargetConfigObservation::Unreadable,
+                };
+                let applied = match meta.get("appliedId") {
+                    None => return TargetConfigObservation::Other,
+                    Some(Value::String(applied)) => applied,
+                    Some(_) => return TargetConfigObservation::Ambiguous,
+                };
+                if applied != CLAUDE_3P_ENTRY_ID {
+                    return TargetConfigObservation::Other;
+                }
+                let entry_path = dir.join(format!("{}.json", applied));
+                let entry_raw = match read_regular_text(&entry_path) {
+                    Ok(Some(raw)) => raw,
+                    Ok(None) => return TargetConfigObservation::Ambiguous,
+                    Err(()) => return TargetConfigObservation::Unreadable,
+                };
+                let entry = match serde_json::from_str::<Value>(&entry_raw) {
+                    Ok(Value::Object(entry)) => Value::Object(entry),
+                    Ok(_) | Err(_) => return TargetConfigObservation::Unreadable,
+                };
+                if entry.get("inferenceProvider").and_then(Value::as_str) != Some("gateway")
+                    || entry
+                        .get("inferenceGatewayAuthScheme")
+                        .and_then(Value::as_str)
+                        != Some("bearer")
+                {
+                    return TargetConfigObservation::Ambiguous;
+                }
+                let (Some(base), Some(key)) = (
+                    entry
+                        .get("inferenceGatewayBaseUrl")
+                        .and_then(Value::as_str),
+                    entry.get("inferenceGatewayApiKey").and_then(Value::as_str),
+                ) else {
+                    return TargetConfigObservation::Ambiguous;
+                };
+                let model = match read_regular_text(&home.join(".claude").join("settings.json")) {
+                    Ok(Some(raw)) => match serde_json::from_str::<Value>(&raw) {
+                        Ok(value) => {
+                            if value
+                                .get("env")
+                                .and_then(Value::as_object)
+                                .is_some_and(|env| {
+                                    CLAUDE_MODEL_ENV_CONFLICTS
+                                        .iter()
+                                        .any(|name| env.get(*name).is_some())
+                                })
+                            {
+                                return TargetConfigObservation::Ambiguous;
+                            }
+                            match json_model(&value) {
+                                Ok(model) => model,
+                                Err(()) => return TargetConfigObservation::Ambiguous,
+                            }
+                        }
+                        Err(_) => return TargetConfigObservation::Unreadable,
+                    },
+                    Ok(None) => None,
+                    Err(()) => return TargetConfigObservation::Unreadable,
+                };
+                let endpoint = format!("{}/v1/messages", base.trim_end_matches('/'));
+                return TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+                    "claude-desktop",
+                    &endpoint,
+                    "anthropic:managed",
+                    model.as_deref(),
+                    key,
+                ));
+            }
+            Ok(None) => {}
+            Err(()) => return TargetConfigObservation::Unreadable,
+        }
+    }
+    observe_claude_settings(home)
+}
+
+pub(crate) fn observe_active_config_at(
+    target_id: &str,
+    home: &Path,
+) -> TargetConfigObservation {
+    match target_id {
+        "codex" => observe_codex_config(home),
+        "claude-desktop" => observe_claude_config(home),
+        _ => TargetConfigObservation::Unreadable,
+    }
+}
+
+pub(crate) fn expected_config_digest(target_id: &str, plan: &ApplyPlan) -> Result<String, String> {
+    let home = user_home_dir();
+    let source_is_managed = target_id == "claude-desktop"
+        && claude_3p_config_dir_for(&home).is_some();
+    expected_config_digest_at(target_id, plan, source_is_managed)
+}
+
+pub(crate) fn expected_config_digest_at(
+    target_id: &str,
+    plan: &ApplyPlan,
+    source_is_managed: bool,
+) -> Result<String, String> {
+    match target_id {
+        "codex" => {
+            let endpoint = format!("{}/responses", plan.base_url.trim_end_matches('/'));
+            Ok(crate::active_groups::config_digest(
+                target_id,
+                &endpoint,
+                if plan.codex_mixed {
+                    "openai:responses:provider_bearer"
+                } else {
+                    "openai:responses:auth_json"
+                },
+                plan.model.as_deref(),
+                &plan.api_key,
+            ))
+        }
+        "claude-desktop" => {
+            let endpoint = format!(
+                "{}/v1/messages",
+                claude_base_url(&plan.base_url).trim_end_matches('/')
+            );
+            Ok(crate::active_groups::config_digest(
+                target_id,
+                &endpoint,
+                if source_is_managed {
+                    "anthropic:managed"
+                } else {
+                    "anthropic"
+                },
+                plan.model.as_deref(),
+                &plan.api_key,
+            ))
+        }
+        _ => Err("unknown target".to_owned()),
+    }
+}
+
 // ─── 恢复官方默认配置 ───────────────────────────────────────────────────────
 //
 // 只移除 Niko 自己写入的键，让应用回到「未接第三方中转」的状态。
@@ -1090,36 +1467,44 @@ pub struct DriftReport {
 
 /// 检测某个 target 当前配置是否与期望 plan 一致
 pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, String> {
-    let h = home_dir();
+    check_drift_at(&home_dir(), target_id, plan)
+}
+
+pub(crate) fn check_drift_at(
+    h: &Path,
+    target_id: &str,
+    plan: &ApplyPlan,
+) -> Result<DriftReport, String> {
     let mut mismatched = Vec::new();
 
     match target_id {
         "codex" => {
-            let auth_path = h.join(".codex").join("auth.json");
-            let auth: Value = if auth_path.exists() {
-                let raw = fs::read_to_string(&auth_path).unwrap_or_default();
-                serde_json::from_str(&raw).unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
-            let auth_key = auth.get("OPENAI_API_KEY").and_then(Value::as_str);
-            if plan.codex_mixed {
-                // 混用模式下 auth.json 不该残留 api key，否则会盖掉 ChatGPT 登录态
-                if auth_key.is_some() {
-                    mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
+            match read_codex_auth(h) {
+                CodexAuthObservation::Missing if plan.codex_mixed => {}
+                CodexAuthObservation::Missing => mismatched.push("auth.json:missing".to_owned()),
+                CodexAuthObservation::Invalid => mismatched.push("auth.json:unreadable".to_owned()),
+                CodexAuthObservation::Valid(auth) => {
+                    if plan.codex_mixed {
+                        if !codex_mixed_auth_is_consistent(&auth) {
+                            if auth.get("OPENAI_API_KEY").is_some() {
+                                mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
+                            }
+                            if !codex_mixed_auth_mode_is_consistent(&auth) {
+                                mismatched.push("auth.json:auth_mode".to_owned());
+                            }
+                        }
+                    } else {
+                        if !codex_pure_auth_is_consistent(&auth)
+                            || auth.get("OPENAI_API_KEY").and_then(Value::as_str)
+                                != Some(&plan.api_key)
+                        {
+                            mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
+                        }
+                        if auth.get("auth_mode").and_then(Value::as_str) != Some("apikey") {
+                            mismatched.push("auth.json:auth_mode".to_owned());
+                        }
+                    }
                 }
-            } else if !auth_path.exists() {
-                mismatched.push("auth.json:missing".to_owned());
-            } else if auth_key != Some(&plan.api_key) {
-                mismatched.push("auth.json:OPENAI_API_KEY".to_owned());
-            }
-            let auth_mode = auth.get("auth_mode").and_then(Value::as_str);
-            if plan.codex_mixed {
-                if auth_mode == Some("apikey") {
-                    mismatched.push("auth.json:auth_mode".to_owned());
-                }
-            } else if auth_mode != Some("apikey") {
-                mismatched.push("auth.json:auth_mode".to_owned());
             }
             let config_path = h.join(".codex").join("config.toml");
             if config_path.exists() {
@@ -1136,6 +1521,11 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                     .and_then(|v| v.as_table())
                     .and_then(|t| t.get(CODEX_PROVIDER))
                     .and_then(|v| v.as_table());
+                if !provider.is_some_and(codex_provider_is_consistent) {
+                    mismatched.push(format!(
+                        "config.toml:model_providers.{CODEX_PROVIDER}"
+                    ));
+                }
                 if provider.and_then(|t| t.get("base_url")).and_then(|v| v.as_str())
                     != Some(&plan.base_url)
                 {
@@ -1163,17 +1553,12 @@ pub fn check_drift(target_id: &str, plan: &ApplyPlan) -> Result<DriftReport, Str
                         mismatched.push("config.toml:model".to_owned());
                     }
                 }
-                if !plan.codex_mixed
-                    && doc.get("model_reasoning_effort").and_then(|v| v.as_str())
-                        != Some(CODEX_MAX_REASONING_EFFORT)
-                {
+                if !codex_reasoning_effort_is_consistent(&doc, plan.codex_mixed) {
                     mismatched.push("config.toml:model_reasoning_effort".to_owned());
                 }
                 // 别家工具留下的顶层键仍在，说明配置被它们的设置压制
-                for key in CODEX_CONFLICTING_ROOT_KEYS {
-                    if doc.get(*key).is_some() {
-                        mismatched.push(format!("config.toml:{key}"));
-                    }
+                for key in codex_conflicting_root_keys(&doc) {
+                    mismatched.push(format!("config.toml:{key}"));
                 }
             } else {
                 mismatched.push("config.toml:missing".to_owned());
@@ -1630,5 +2015,620 @@ mod tests {
 
         let effective = claude_managed_effective(&dir).unwrap();
         assert_eq!(effective, ("https://deepkey.top".to_owned(), "sk-other".to_owned()));
+    }
+
+    fn detection_home(name: &str) -> PathBuf {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.keep().join(name);
+        fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    fn codex_detection_config(home: &Path, base_url: &str, model: &str, key: &str) {
+        let dir = home.join(".codex");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            format!(
+                "model_provider = \"custom\"\nmodel = \"{model}\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nexperimental_bearer_token = \"{key}\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn codex_pure_detection_config(
+        home: &Path,
+        base_url: &str,
+        model: &str,
+        key: &str,
+        reasoning_effort: &str,
+    ) {
+        let dir = home.join(".codex");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            format!(
+                "model_provider = \"custom\"\nmodel = \"{model}\"\nmodel_reasoning_effort = \"{reasoning_effort}\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("auth.json"),
+            serde_json::json!({
+                "OPENAI_API_KEY": key,
+                "auth_mode": "apikey"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn write_codex_detection_record(home: &Path, plan: &ApplyPlan) {
+        crate::active_groups::write_record_at(
+            home,
+            &crate::active_groups::record_for(
+                "codex",
+                "Group A",
+                expected_config_digest("codex", plan).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn claude_detection_config(home: &Path, base_url: &str, model: &str, key: &str) {
+        let dir = home.join(".claude");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            serde_json::json!({
+                "model": model,
+                "env": {
+                    "ANTHROPIC_BASE_URL": base_url,
+                    "ANTHROPIC_AUTH_TOKEN": key
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn active_group_detection_is_strict_and_independent_per_target() {
+        let home = detection_home("active_group_detection");
+        let codex_key = "fixture-codex-secret";
+        let claude_key = "fixture-claude-secret";
+        let codex_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: codex_key.to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        let claude_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: claude_key.to_owned(),
+            model_group: Some("Group B".to_owned()),
+            model: Some("model-b".to_owned()),
+            codex_mixed: false,
+        };
+        codex_detection_config(&home, "https://gateway.example/v1", "model-a", codex_key);
+        claude_detection_config(&home, "https://gateway.example", "model-b", claude_key);
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "codex",
+                "Group A",
+                expected_config_digest("codex", &codex_plan).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "claude-desktop",
+                "Group B",
+                expected_config_digest_at("claude-desktop", &claude_plan, false).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let groups = vec!["Group A".to_owned(), "Group B".to_owned()];
+        let codex = crate::active_groups::detect_active_group_at(
+            &home,
+            "codex",
+            Some(groups.as_slice()),
+        );
+        let claude = crate::active_groups::detect_active_group_at(
+            &home,
+            "claude-desktop",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(codex.status, crate::active_groups::ActiveGroupState::Active);
+        assert_eq!(codex.group.as_deref(), Some("Group A"));
+        assert_eq!(
+            claude.status,
+            crate::active_groups::ActiveGroupState::Active
+        );
+        assert_eq!(claude.group.as_deref(), Some("Group B"));
+        let serialized = serde_json::to_string(&codex).unwrap();
+        assert!(!serialized.contains(codex_key));
+        assert!(!serialized.contains("https://gateway"));
+
+        let record_path = crate::active_groups::record_path(&home, "codex").unwrap();
+        let mut tampered: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+        tampered["group"] = Value::String("Group B".to_owned());
+        fs::write(&record_path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        let tampered_status = crate::active_groups::detect_active_group_at(
+            &home,
+            "codex",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(
+            tampered_status.status,
+            crate::active_groups::ActiveGroupState::Changed
+        );
+    }
+
+    #[test]
+    fn codex_active_observer_covers_auth_reasoning_and_conflict_fields() {
+        let groups = vec!["Group A".to_owned()];
+        let mixed_key = "fixture-mixed-secret";
+        let mixed_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: mixed_key.to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        let mixed_home = detection_home("active_group_codex_mixed_auth_mode");
+        codex_detection_config(
+            &mixed_home,
+            "https://gateway.example/v1",
+            "model-a",
+            mixed_key,
+        );
+        write_codex_detection_record(&mixed_home, &mixed_plan);
+        let active = crate::active_groups::detect_active_group_at(
+            &mixed_home,
+            "codex",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(
+            active.status,
+            crate::active_groups::ActiveGroupState::Active
+        );
+        fs::write(
+            mixed_home.join(".codex/auth.json"),
+            serde_json::json!({ "auth_mode": "apikey" }).to_string(),
+        )
+        .unwrap();
+        let changed = crate::active_groups::detect_active_group_at(
+            &mixed_home,
+            "codex",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(
+            changed.status,
+            crate::active_groups::ActiveGroupState::Changed
+        );
+        let drift = check_drift_at(&mixed_home, "codex", &mixed_plan).unwrap();
+        assert!(drift.drifted);
+        assert_eq!(drift.mismatched_keys, vec!["auth.json:auth_mode"]);
+
+        let pure_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-pure-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: false,
+        };
+        for effort in ["low", "high"] {
+            let home = detection_home(&format!("active_group_codex_reasoning_{effort}"));
+            codex_pure_detection_config(
+                &home,
+                "https://gateway.example/v1",
+                "model-a",
+                &pure_plan.api_key,
+                CODEX_MAX_REASONING_EFFORT,
+            );
+            write_codex_detection_record(&home, &pure_plan);
+            let active = crate::active_groups::detect_active_group_at(
+                &home,
+                "codex",
+                Some(groups.as_slice()),
+            );
+            assert_eq!(
+                active.status,
+                crate::active_groups::ActiveGroupState::Active
+            );
+
+            let config_path = home.join(".codex/config.toml");
+            let mut doc: toml::Table = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+            doc.insert(
+                "model_reasoning_effort".to_owned(),
+                toml::Value::String(effort.to_owned()),
+            );
+            fs::write(&config_path, toml::to_string_pretty(&doc).unwrap()).unwrap();
+            let changed = crate::active_groups::detect_active_group_at(
+                &home,
+                "codex",
+                Some(groups.as_slice()),
+            );
+            assert_eq!(
+                changed.status,
+                crate::active_groups::ActiveGroupState::Changed
+            );
+        }
+
+        for key in CODEX_CONFLICTING_ROOT_KEYS {
+            let home = detection_home(&format!("active_group_codex_conflict_{key}"));
+            codex_pure_detection_config(
+                &home,
+                "https://gateway.example/v1",
+                "model-a",
+                &pure_plan.api_key,
+                CODEX_MAX_REASONING_EFFORT,
+            );
+            write_codex_detection_record(&home, &pure_plan);
+            let active = crate::active_groups::detect_active_group_at(
+                &home,
+                "codex",
+                Some(groups.as_slice()),
+            );
+            assert_eq!(
+                active.status,
+                crate::active_groups::ActiveGroupState::Active,
+                "{key}"
+            );
+
+            let config_path = home.join(".codex/config.toml");
+            let mut doc: toml::Table = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+            let value = match *key {
+                "model_context_window" | "model_auto_compact_token_limit" => {
+                    toml::Value::Integer(128000)
+                }
+                "service_tier" | "model_catalog_json" => {
+                    toml::Value::String("fixture-value".to_owned())
+                }
+                _ => unreachable!(),
+            };
+            doc.insert((*key).to_owned(), value);
+            fs::write(&config_path, toml::to_string_pretty(&doc).unwrap()).unwrap();
+            let changed = crate::active_groups::detect_active_group_at(
+                &home,
+                "codex",
+                Some(groups.as_slice()),
+            );
+            assert_eq!(
+                changed.status,
+                crate::active_groups::ActiveGroupState::Changed,
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_auth_missing_is_allowed_and_invalid_files_match_observer_drift() {
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-mixed-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+
+        let missing_home = detection_home("codex_mixed_auth_missing");
+        codex_detection_config(
+            &missing_home,
+            "https://gateway.example/v1",
+            "model-a",
+            &plan.api_key,
+        );
+        write_codex_detection_record(&missing_home, &plan);
+        assert!(matches!(
+            observe_active_config_at("codex", &missing_home),
+            TargetConfigObservation::Matchable(_)
+        ));
+        let missing_drift = check_drift_at(&missing_home, "codex", &plan).unwrap();
+        assert!(!missing_drift.drifted);
+
+        for (name, contents) in [("malformed", "not json"), ("non_object", "null")] {
+            let home = detection_home(&format!("codex_mixed_auth_{name}"));
+            codex_detection_config(
+                &home,
+                "https://gateway.example/v1",
+                "model-a",
+                &plan.api_key,
+            );
+            write_codex_detection_record(&home, &plan);
+            fs::write(home.join(".codex/auth.json"), contents).unwrap();
+            assert_eq!(
+                observe_active_config_at("codex", &home),
+                TargetConfigObservation::Unreadable,
+                "{name}"
+            );
+            let drift = check_drift_at(&home, "codex", &plan).unwrap();
+            assert!(drift.drifted, "{name}");
+            assert_eq!(
+                drift.mismatched_keys,
+                vec!["auth.json:unreadable"],
+                "{name}"
+            );
+        }
+
+        let directory_home = detection_home("codex_mixed_auth_directory");
+        codex_detection_config(
+            &directory_home,
+            "https://gateway.example/v1",
+            "model-a",
+            &plan.api_key,
+        );
+        write_codex_detection_record(&directory_home, &plan);
+        fs::create_dir(directory_home.join(".codex/auth.json")).unwrap();
+        assert_eq!(
+            observe_active_config_at("codex", &directory_home),
+            TargetConfigObservation::Unreadable
+        );
+        let directory_drift = check_drift_at(&directory_home, "codex", &plan).unwrap();
+        assert!(directory_drift.drifted);
+        assert_eq!(
+            directory_drift.mismatched_keys,
+            vec!["auth.json:unreadable"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mixed_auth_permission_and_symlink_failures_match_observer_drift() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-mixed-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        let permission_home = detection_home("codex_mixed_auth_permission");
+        codex_detection_config(
+            &permission_home,
+            "https://gateway.example/v1",
+            "model-a",
+            &plan.api_key,
+        );
+        write_codex_detection_record(&permission_home, &plan);
+        let auth_path = permission_home.join(".codex/auth.json");
+        fs::write(&auth_path, "{}").unwrap();
+        fs::set_permissions(&auth_path, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            observe_active_config_at("codex", &permission_home),
+            TargetConfigObservation::Unreadable
+        );
+        let permission_drift = check_drift_at(&permission_home, "codex", &plan).unwrap();
+        assert!(permission_drift.drifted);
+        assert_eq!(
+            permission_drift.mismatched_keys,
+            vec!["auth.json:unreadable"]
+        );
+        fs::set_permissions(&auth_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let symlink_home = detection_home("codex_mixed_auth_symlink");
+        codex_detection_config(
+            &symlink_home,
+            "https://gateway.example/v1",
+            "model-a",
+            &plan.api_key,
+        );
+        write_codex_detection_record(&symlink_home, &plan);
+        let target = symlink_home.join("auth-target.json");
+        fs::write(&target, "{}").unwrap();
+        symlink(&target, symlink_home.join(".codex/auth.json")).unwrap();
+        assert_eq!(
+            observe_active_config_at("codex", &symlink_home),
+            TargetConfigObservation::Unreadable
+        );
+        let symlink_drift = check_drift_at(&symlink_home, "codex", &plan).unwrap();
+        assert!(symlink_drift.drifted);
+        assert_eq!(symlink_drift.mismatched_keys, vec!["auth.json:unreadable"]);
+    }
+
+    #[test]
+    fn managed_claude_source_must_match_the_record_digest() {
+        let home = detection_home("managed_claude_detection");
+        let Some(dir) = claude_3p_config_dir_for(&home) else {
+            return;
+        };
+        let key = "fixture-managed-secret";
+        claude_detection_config(&home, "https://gateway.example", "model-a", key);
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: key.to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: false,
+        };
+        claude_managed_apply(&dir, "https://gateway.example", key).unwrap();
+        let record = crate::active_groups::record_for(
+            "claude-desktop",
+            "Group A",
+            expected_config_digest_at("claude-desktop", &plan, true).unwrap(),
+        )
+        .unwrap();
+        crate::active_groups::write_record_at(&home, &record).unwrap();
+        let groups = vec!["Group A".to_owned()];
+        let active = crate::active_groups::detect_active_group_at(
+            &home,
+            "claude-desktop",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(active.status, crate::active_groups::ActiveGroupState::Active);
+
+        fs::remove_file(dir.join("_meta.json")).unwrap();
+        fs::remove_file(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"))).unwrap();
+        let changed = crate::active_groups::detect_active_group_at(
+            &home,
+            "claude-desktop",
+            Some(groups.as_slice()),
+        );
+        assert_eq!(changed.status, crate::active_groups::ActiveGroupState::Changed);
+    }
+
+    #[test]
+    fn detection_reports_missing_record_changed_official_and_unreadable_states() {
+        let home = detection_home("active_group_states");
+        codex_detection_config(&home, "https://gateway.example/v1", "model-a", "fixture-secret");
+        let groups = vec!["Group A".to_owned()];
+        let no_record =
+            crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
+        assert_eq!(no_record.status, crate::active_groups::ActiveGroupState::Unknown);
+
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        let record = crate::active_groups::record_for(
+            "codex",
+            "Group A",
+            expected_config_digest("codex", &plan).unwrap(),
+        )
+        .unwrap();
+        crate::active_groups::write_record_at(&home, &record).unwrap();
+
+        fs::write(
+            home.join(".codex/config.toml"),
+            "model_provider = \"openai\"\n",
+        )
+        .unwrap();
+        let changed =
+            crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
+        assert_eq!(changed.status, crate::active_groups::ActiveGroupState::Changed);
+
+        crate::active_groups::clear_record_at(&home, "codex").unwrap();
+        let official =
+            crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
+        assert_eq!(
+            official.status,
+            crate::active_groups::ActiveGroupState::NotNiko
+        );
+
+        codex_detection_config(&home, "https://gateway.example/v1", "model-a", "fixture-secret");
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "codex",
+                "Group A",
+                expected_config_digest("codex", &plan).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(home.join(".codex/config.toml")).unwrap();
+        fs::create_dir(home.join(".codex/config.toml")).unwrap();
+        let unreadable =
+            crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
+        assert_eq!(
+            unreadable.status,
+            crate::active_groups::ActiveGroupState::Unreadable
+        );
+    }
+
+    #[test]
+    fn unavailable_group_downgrades_active_to_unknown() {
+        let home = detection_home("active_group_unavailable");
+        codex_detection_config(&home, "https://gateway.example/v1", "model-a", "fixture-secret");
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        let record = crate::active_groups::record_for(
+            "codex",
+            "Group A",
+            expected_config_digest("codex", &plan).unwrap(),
+        )
+        .unwrap();
+        crate::active_groups::write_record_at(&home, &record).unwrap();
+        let groups = vec!["Group B".to_owned()];
+        let status =
+            crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
+        assert_eq!(status.status, crate::active_groups::ActiveGroupState::Unknown);
+    }
+
+    #[test]
+    fn ambiguous_auth_and_model_overrides_do_not_report_active() {
+        let home = detection_home("active_group_ambiguous_overrides");
+        let codex_key = "fixture-codex-secret";
+        codex_detection_config(&home, "https://gateway.example/v1", "model-a", codex_key);
+        let codex_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: codex_key.to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "codex",
+                "Group A",
+                expected_config_digest("codex", &codex_plan).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(home.join(".codex/auth.json"), b"not json").unwrap();
+        let unreadable = crate::active_groups::detect_active_group_at(
+            &home,
+            "codex",
+            Some(&["Group A".to_owned()]),
+        );
+        assert_eq!(
+            unreadable.status,
+            crate::active_groups::ActiveGroupState::Unreadable
+        );
+
+        let claude_key = "fixture-claude-secret";
+        claude_detection_config(&home, "https://gateway.example", "model-a", claude_key);
+        let claude_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: claude_key.to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: false,
+        };
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "claude-desktop",
+                "Group A",
+                expected_config_digest_at("claude-desktop", &claude_plan, false).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut settings: Value = serde_json::from_str(
+            &fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
+        )
+        .unwrap();
+        settings["env"]["ANTHROPIC_MODEL"] = Value::String("model-b".to_owned());
+        fs::write(
+            home.join(".claude/settings.json"),
+            serde_json::to_string(&settings).unwrap(),
+        )
+        .unwrap();
+        let changed = crate::active_groups::detect_active_group_at(
+            &home,
+            "claude-desktop",
+            Some(&["Group A".to_owned()]),
+        );
+        assert_eq!(changed.status, crate::active_groups::ActiveGroupState::Changed);
     }
 }

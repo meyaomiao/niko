@@ -44,7 +44,7 @@ interface DiagPingResult {
 
 const ERROR_KIND_LABELS: Record<string, string> = {
   network: "网络不通",
-  auth: "API Key 无效",
+  auth: "凭证无效",
   server: "服务端错误",
   unknown: "未知错误",
 };
@@ -299,7 +299,7 @@ export default function Settings() {
             <h2 className={`mb-3 ${OVERLINE}`}>当前账户</h2>
             <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
               <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
-              <p>分组：<span className="text-gray-900 dark:text-white">{auth?.group ?? "—"}</span></p>
+              <p>默认推荐：<span className="text-gray-900 dark:text-white">{auth?.defaultGroup ?? "—"}</span></p>
             </div>
             <button
               onClick={logout}
@@ -503,7 +503,7 @@ export default function Settings() {
 
             <div className="mt-4 border-t pt-4 [border-color:var(--nk-line)]">
               <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                导出的日志已对 API Key 做脱敏处理，不含完整密钥。
+                导出的日志已对敏感凭证做脱敏处理，不含完整内容。
               </p>
               <button
                 onClick={exportLog}

@@ -1,4 +1,5 @@
 pub mod codex_sessions;
+mod active_groups;
 mod commands;
 mod credentials;
 mod fsx;
@@ -33,6 +34,7 @@ pub fn run() {
             commands::registration::register_niko_account,
             commands::bootstrap::get_bootstrap,
             commands::targets::list_targets,
+            commands::targets::detect_active_groups,
             commands::targets::apply_target,
             commands::targets::apply_all_targets,
             commands::targets::check_drift_cmd,

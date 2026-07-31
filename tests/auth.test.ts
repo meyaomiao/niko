@@ -3,6 +3,7 @@ import test, { beforeEach } from "node:test";
 import {
   clearAuth,
   loadAuth,
+  refreshAuthMeta,
   saveAuth,
   shouldPersistAuthSession,
   type AuthState,
@@ -29,7 +30,7 @@ const auth: AuthState = {
   username: "niko",
   userId: 1,
   quota: 0,
-  group: "default",
+  defaultGroup: "default",
   apiKey: "key",
   remember: true,
 };
@@ -65,6 +66,29 @@ test("does not auto-login legacy authentication without an explicit remember cho
   localStorage.setItem("niko_auth", JSON.stringify({ ...auth, remember: undefined }));
 
   assert.equal(loadAuth(), null);
+});
+
+test("migrates the old group field into an account-only default recommendation", () => {
+  localStorage.setItem(
+    "niko_auth",
+    JSON.stringify({ ...auth, defaultGroup: undefined, group: "legacy-default" }),
+  );
+
+  const loaded = loadAuth()!;
+  assert.equal(loaded.defaultGroup, "legacy-default");
+  assert.equal("group" in loaded, false);
+});
+
+test("metadata refresh cannot create a target-active field", () => {
+  saveAuth(auth);
+  refreshAuthMeta({ quota: 42, defaultGroup: "server-recommendation" });
+
+  assert.deepEqual(loadAuth(), {
+    ...auth,
+    quota: 42,
+    defaultGroup: "server-recommendation",
+  });
+  assert.equal("activeGroup" in (loadAuth() as object), false);
 });
 
 test("clears persistent and session authentication", () => {

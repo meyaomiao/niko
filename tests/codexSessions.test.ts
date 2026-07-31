@@ -38,6 +38,21 @@ test("late scan, unmount, and repeated action responses are rejected", () => {
   assert.equal(acceptsResponse(guard, "action", remountedAction.generation), true);
 });
 
+test("late detection responses are rejected after target changes", () => {
+  let guard = initialRequestGuard();
+  const first = beginRequest(guard, "detect");
+  guard = first.state;
+  const second = beginRequest(guard, "detect");
+  guard = second.state;
+
+  assert.equal(acceptsResponse(guard, "detect", first.generation), false);
+  assert.equal(acceptsResponse(guard, "detect", second.generation), true);
+  guard = unmountRequests(guard);
+  assert.equal(acceptsResponse(guard, "detect", second.generation), false);
+  guard = mountRequests(guard);
+  assert.equal(acceptsResponse(guard, "detect", second.generation), false);
+});
+
 test("search input is bounded before crossing the command boundary", () => {
   assert.equal(boundSessionQuery(`  ${"a".repeat(200)}  `).length, 80);
 });

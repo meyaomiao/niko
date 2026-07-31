@@ -5,7 +5,8 @@ export interface AuthState {
   quota: number;
   quotaPerUnit?: number;
   balanceUpdatedAt?: number;
-  group: string;
+  /** 账户默认推荐分组；不代表任一目标应用当前生效的分组。 */
+  defaultGroup: string;
   apiKey: string;
   remember: boolean;
 }
@@ -16,7 +17,15 @@ function loadStoredAuth(storage: Storage): AuthState | null {
   try {
     const raw = storage.getItem(KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as AuthState;
+    const parsed = JSON.parse(raw) as Partial<AuthState> & { group?: unknown };
+    const defaultGroup =
+      typeof parsed.defaultGroup === "string"
+        ? parsed.defaultGroup
+        : typeof parsed.group === "string"
+          ? parsed.group
+          : "";
+    const { group: _legacyGroup, ...rest } = parsed;
+    return { ...rest, defaultGroup } as AuthState;
   } catch {
     return null;
   }
@@ -53,9 +62,9 @@ export function clearAuth() {
   sessionStorage.removeItem(KEY);
 }
 
-/** 以服务端数据刷新存储的余额/分组，不改变 token 和 apiKey */
+/** 以服务端数据刷新存储的余额/默认推荐分组，不改变目标应用状态 */
 export function refreshAuthMeta(
-  patch: Partial<Pick<AuthState, "quota" | "quotaPerUnit" | "balanceUpdatedAt" | "group">>,
+  patch: Partial<Pick<AuthState, "quota" | "quotaPerUnit" | "balanceUpdatedAt" | "defaultGroup">>,
 ) {
   const cur = loadAuth();
   if (!cur) return;

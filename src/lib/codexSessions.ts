@@ -79,15 +79,16 @@ export function boundSessionQuery(value: string): string {
   return Array.from(value.trim()).slice(0, SESSION_QUERY_LIMIT).join("");
 }
 
-export type RequestKind = "scan" | "action";
+export type RequestKind = "scan" | "action" | "detect";
 export interface RequestGuard {
   mounted: boolean;
   scan: number;
   action: number;
+  detect: number;
 }
 
 export function initialRequestGuard(): RequestGuard {
-  return { mounted: true, scan: 0, action: 0 };
+  return { mounted: true, scan: 0, action: 0, detect: 0 };
 }
 
 export function beginRequest(state: RequestGuard, kind: RequestKind) {
@@ -100,6 +101,7 @@ export function unmountRequests(state: RequestGuard): RequestGuard {
     mounted: false,
     scan: state.scan + 1,
     action: state.action + 1,
+    detect: state.detect + 1,
   };
 }
 

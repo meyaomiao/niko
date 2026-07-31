@@ -48,8 +48,8 @@ function VersionGate({ children }: { children: React.ReactNode }) {
     if (!auth?.accessToken) { setChecked(true); return; }
     api.bootstrap(auth.accessToken)
       .then((data) => {
-        // persist latest quota/group
-        saveAuth({ ...auth, quota: data.user.quota, group: data.user.group });
+        // persist latest quota/default recommendation without touching target state
+        saveAuth({ ...auth, quota: data.user.quota, defaultGroup: data.user.group });
         const minVer = data.min_supported_version ?? "0.0.0";
         if (semverLt(APP_VERSION, minVer)) {
           setUpgradeInfo({
