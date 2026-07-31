@@ -41,6 +41,17 @@ static MIGRATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct MigrationRequest {
     pub scan: ScanRequest,
     pub options: MigrationOptions,
+    /// Optional in-memory inputs for the Codex config/auth part of the same
+    /// durable migration. Secrets are never copied into the journal.
+    pub codex: Option<CodexMigrationInput>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CodexMigrationInput {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub mixed: bool,
 }
 
 impl MigrationRequest {
@@ -48,6 +59,7 @@ impl MigrationRequest {
         Self {
             scan,
             options: MigrationOptions::default(),
+            codex: None,
         }
     }
 }
@@ -240,6 +252,7 @@ enum RootSlot {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ArtifactKind {
+    Auth,
     Config,
     Rollout,
     SessionIndex,
@@ -450,6 +463,48 @@ pub fn migrate_codex_sessions_transactional_with_faults(
     execute_plan(request, plan, changed_artifacts, faults)
 }
 
+pub fn preflight_codex_session_migration(
+    request: &MigrationRequest,
+    target: MigrationProviderTarget,
+) -> Result<(), MigrationError> {
+    let plan = build_migration_plan(request, target)?;
+    if !plan.entries.iter().any(|entry| entry.journal.mutable) {
+        return Ok(());
+    }
+    let journals = read_journals(&plan.roots)?;
+    clear_verified_stale_lock(&plan.roots, &journals)?;
+    preflight(request, &plan, &NoMigrationFaults)
+}
+
+pub fn codex_migration_ids(request: &MigrationRequest) -> Result<Vec<String>, MigrationError> {
+    let roots = approve_roots(&request.scan)?;
+    let mut ids = read_journals(&roots)?
+        .into_iter()
+        .map(|journal| journal.migration_id)
+        .collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
+}
+
+pub fn recover_codex_migration_since(
+    request: &MigrationRequest,
+    known_ids: &[String],
+) -> Result<Option<MigrationOutcome>, MigrationError> {
+    recover_codex_session_migrations(request)?;
+    let roots = approve_roots(&request.scan)?;
+    let known = known_ids.iter().collect::<BTreeSet<_>>();
+    let mut journals = read_journals(&roots)?
+        .into_iter()
+        .filter(|journal| !known.contains(&journal.migration_id))
+        .collect::<Vec<_>>();
+    journals.sort_by_key(|journal| (journal.created_at_millis, journal.migration_id.clone()));
+    Ok(journals.last().and_then(|journal| match journal.state {
+        MigrationState::Committed => Some(MigrationOutcome::Committed),
+        MigrationState::RolledBack => Some(MigrationOutcome::RolledBack),
+        _ => None,
+    }))
+}
+
 fn build_migration_plan(
     request: &MigrationRequest,
     target: MigrationProviderTarget,
@@ -466,10 +521,21 @@ fn build_migration_plan(
     reject_blocked_scan(&report)?;
 
     let target_provider = target_provider(target).to_owned();
+    let auth_path = report.codex_home.join("auth.json");
+    let auth_payload = stage_auth(&auth_path, target, request.codex.as_ref())?;
     let before_proofs = build_fixture_thread_proofs(&report).map_err(redact_fixture_error)?;
     let mut expected_proofs = before_proofs.clone();
     let mut rollout_deltas = BTreeMap::<String, i64>::new();
     let mut entries = Vec::new();
+    entries.push(planned_entry(
+        &roots,
+        &auth_path,
+        ArtifactKind::Auth,
+        auth_payload.is_some(),
+        auth_payload
+            .map(StagePayload::Bytes)
+            .unwrap_or(StagePayload::None),
+    )?);
 
     for rollout in &report.rollouts {
         let mutable = rollout.provider != target_provider;
@@ -560,12 +626,28 @@ fn build_migration_plan(
         )?);
     }
 
-    let config_mutable = report.config.active_provider.as_deref() != Some(&target_provider);
-    let config_payload = if config_mutable {
-        StagePayload::Bytes(
+    let staged_config = if let Some(input) = request.codex.as_ref() {
+        Some(stage_codex_config(&report.config.path, target, input)?)
+    } else if target == MigrationProviderTarget::OpenAi {
+        Some(stage_codex_config(
+            &report.config.path,
+            target,
+            &CodexMigrationInput::default(),
+        )?)
+    } else if report.config.active_provider.as_deref() != Some(&target_provider) {
+        Some(
             rewrite_config_provider(&report, target.fixture_target())
                 .map_err(redact_fixture_error)?,
         )
+    } else {
+        None
+    };
+    let config_mutable = match staged_config.as_ref() {
+        Some(staged) => fs::read(&report.config.path).map_or(true, |current| current != *staged),
+        None => false,
+    };
+    let config_payload = if config_mutable {
+        StagePayload::Bytes(staged_config.expect("mutable config has staged bytes"))
     } else {
         StagePayload::None
     };
@@ -591,6 +673,266 @@ fn build_migration_plan(
         source_provider: report.config.active_provider.clone(),
         target_provider,
     })
+}
+
+fn stage_auth(
+    path: &Path,
+    target: MigrationProviderTarget,
+    input: Option<&CodexMigrationInput>,
+) -> Result<Option<Vec<u8>>, MigrationError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if target == MigrationProviderTarget::Custom
+                && input.and_then(|value| value.api_key.as_ref()).is_some()
+                && !input.is_some_and(|value| value.mixed)
+            {
+                Vec::new()
+            } else {
+                return Ok(None);
+            }
+        }
+        Err(error) => {
+            return Err(classify_io(
+                error,
+                "migration_auth_unreadable",
+                "authentication settings could not be read",
+                None,
+            ))
+        }
+    };
+    let mut value = if bytes.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| {
+            migration_error(
+                MigrationErrorKind::CorruptStorage,
+                "migration_auth_invalid",
+                "authentication settings are malformed",
+                None,
+            )
+        })?
+    };
+    let object = value.as_object_mut().ok_or_else(|| {
+        migration_error(
+            MigrationErrorKind::CorruptStorage,
+            "migration_auth_unknown",
+            "authentication settings have an unsupported shape",
+            None,
+        )
+    })?;
+    if object
+        .get("auth_mode")
+        .is_some_and(|auth_mode| !auth_mode.is_string())
+    {
+        return Err(migration_error(
+            MigrationErrorKind::CorruptStorage,
+            "migration_auth_mode_unknown",
+            "authentication mode has an unsupported shape",
+            None,
+        ));
+    }
+    if object
+        .get("OPENAI_API_KEY")
+        .is_some_and(|value| !value.is_string())
+    {
+        return Err(migration_error(
+            MigrationErrorKind::CorruptStorage,
+            "migration_auth_key_unknown",
+            "authentication settings have an unsupported shape",
+            None,
+        ));
+    }
+    let mut changed = false;
+    match target {
+        MigrationProviderTarget::Custom => {
+            let Some(input) = input else {
+                return Ok(None);
+            };
+            if input.mixed {
+                if object.remove("OPENAI_API_KEY").is_some() {
+                    changed = true;
+                }
+                if object.get("auth_mode").and_then(|item| item.as_str()) == Some("apikey") {
+                    object.remove("auth_mode");
+                    changed = true;
+                }
+                if !changed {
+                    return Ok(None);
+                }
+            } else {
+                let Some(api_key) = input.api_key.as_deref() else {
+                    return Ok(None);
+                };
+                let key = serde_json::Value::String(api_key.to_owned());
+                if object.get("OPENAI_API_KEY") != Some(&key) {
+                    object.insert("OPENAI_API_KEY".to_owned(), key);
+                    changed = true;
+                }
+                let mode = serde_json::Value::String("apikey".to_owned());
+                if object.get("auth_mode") != Some(&mode) {
+                    object.insert("auth_mode".to_owned(), mode);
+                    changed = true;
+                }
+            }
+        }
+        MigrationProviderTarget::OpenAi => {
+            if object.remove("OPENAI_API_KEY").is_some() {
+                changed = true;
+            }
+            if object.get("auth_mode").and_then(|item| item.as_str()) == Some("apikey") {
+                object.remove("auth_mode");
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    let mut staged = serde_json::to_vec_pretty(&value).map_err(|_| {
+        migration_error(
+            MigrationErrorKind::CorruptStorage,
+            "migration_auth_serialize_failed",
+            "authentication settings could not be staged",
+            None,
+        )
+    })?;
+    staged.push(b'\n');
+    Ok(Some(staged))
+}
+
+fn stage_codex_config(
+    path: &Path,
+    target: MigrationProviderTarget,
+    input: &CodexMigrationInput,
+) -> Result<Vec<u8>, MigrationError> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(classify_io(
+                error,
+                "migration_config_unreadable",
+                "configuration settings could not be read",
+                None,
+            ))
+        }
+    };
+    let mut config = if raw.trim().is_empty() {
+        toml::Table::new()
+    } else {
+        raw.parse::<toml::Table>().map_err(|_| {
+            migration_error(
+                MigrationErrorKind::CorruptStorage,
+                "migration_config_invalid",
+                "configuration settings are malformed",
+                None,
+            )
+        })?
+    };
+    match target {
+        MigrationProviderTarget::Custom => {
+            let providers = config
+                .entry("model_providers")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut()
+                .ok_or_else(|| {
+                    migration_error(
+                        MigrationErrorKind::CorruptStorage,
+                        "migration_config_provider_unknown",
+                        "configuration settings have an unsupported shape",
+                        None,
+                    )
+                })?;
+            let provider = providers
+                .entry("custom")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut()
+                .ok_or_else(|| {
+                    migration_error(
+                        MigrationErrorKind::CorruptStorage,
+                        "migration_config_provider_unknown",
+                        "configuration settings have an unsupported shape",
+                        None,
+                    )
+                })?;
+            provider.insert("name".into(), toml::Value::String("custom".into()));
+            if let Some(base_url) = &input.base_url {
+                provider.insert("base_url".into(), toml::Value::String(base_url.clone()));
+            }
+            provider.insert("wire_api".into(), toml::Value::String("responses".into()));
+            provider.insert("requires_openai_auth".into(), toml::Value::Boolean(true));
+            if input.mixed {
+                if let Some(api_key) = &input.api_key {
+                    provider.insert(
+                        "experimental_bearer_token".into(),
+                        toml::Value::String(api_key.clone()),
+                    );
+                }
+            } else {
+                provider.remove("experimental_bearer_token");
+            }
+            config.insert(
+                "model_provider".into(),
+                toml::Value::String("custom".into()),
+            );
+            if let Some(model) = &input.model {
+                config.insert("model".into(), toml::Value::String(model.clone()));
+            }
+            if !input.mixed {
+                config.insert(
+                    "model_reasoning_effort".into(),
+                    toml::Value::String("ultra".into()),
+                );
+            }
+            for key in [
+                "model_context_window",
+                "model_auto_compact_token_limit",
+                "service_tier",
+                "model_catalog_json",
+            ] {
+                config.remove(key);
+            }
+        }
+        MigrationProviderTarget::OpenAi => {
+            let owns = matches!(
+                config.get("model_provider").and_then(toml::Value::as_str),
+                Some("custom" | "momotoken")
+            );
+            if let Some(providers) = config
+                .get_mut("model_providers")
+                .and_then(toml::Value::as_table_mut)
+            {
+                providers.remove("custom");
+                providers.remove("momotoken");
+            }
+            if owns {
+                config.remove("model_provider");
+                config.remove("model");
+                if config
+                    .get("model_reasoning_effort")
+                    .and_then(toml::Value::as_str)
+                    == Some("ultra")
+                {
+                    config.remove("model_reasoning_effort");
+                }
+            }
+        }
+    }
+    let mut staged = toml::to_string_pretty(&config)
+        .map_err(|_| {
+            migration_error(
+                MigrationErrorKind::ValidationFailed,
+                "migration_config_serialize_failed",
+                "configuration settings could not be staged",
+                None,
+            )
+        })?
+        .into_bytes();
+    if !staged.ends_with(b"\n") {
+        staged.push(b'\n');
+    }
+    Ok(staged)
 }
 
 fn approve_roots(request: &ScanRequest) -> Result<ApprovedRoots, MigrationError> {
@@ -987,7 +1329,8 @@ fn commit_rank(kind: ArtifactKind) -> u8 {
         ArtifactKind::Rollout => 0,
         ArtifactKind::Sqlite => 1,
         ArtifactKind::SessionIndex => 2,
-        ArtifactKind::Config => 3,
+        ArtifactKind::Auth => 3,
+        ArtifactKind::Config => 4,
     }
 }
 
@@ -2297,7 +2640,9 @@ fn all_non_config_targets_are_new(
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.mutable && entry.kind != ArtifactKind::Config)
+        .filter(|(_, entry)| {
+            entry.mutable && entry.kind != ArtifactKind::Config && entry.kind != ArtifactKind::Auth
+        })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return Ok(true);

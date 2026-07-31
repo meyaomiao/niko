@@ -1,5 +1,6 @@
 //! E8-2: 目标应用运行状态探测
 
+use crate::commands::safe_error::SafeCommandError;
 use serde::Serialize;
 use sysinfo::System;
 
@@ -20,6 +21,51 @@ pub struct ProcessStatus {
     pub pid: Option<u32>,
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct RestartOutcome {
+    pub status: &'static str,
+    pub message: &'static str,
+}
+
+fn restart_after_close<P, L>(
+    prepare: P,
+    launch: L,
+    was_running: bool,
+) -> Result<RestartOutcome, SafeCommandError>
+where
+    P: FnOnce() -> Result<(), SafeCommandError>,
+    L: FnOnce() -> Result<(), ()>,
+{
+    prepare()?;
+    if launch().is_err() {
+        return Ok(RestartOutcome {
+            status: "applied_needs_manual_open",
+            message: "设置已保存，请手动打开应用。",
+        });
+    }
+    Ok(RestartOutcome {
+        status: "applied",
+        message: if was_running {
+            "已重启。"
+        } else {
+            "已启动。"
+        },
+    })
+}
+
+fn wait_for_app_exit<F>(mut is_running: F, attempts: usize, delay: std::time::Duration) -> bool
+where
+    F: FnMut() -> bool,
+{
+    for _ in 0..attempts {
+        std::thread::sleep(delay);
+        if !is_running() {
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 pub async fn check_process(target_id: String) -> ProcessStatus {
     let mut sys = System::new();
@@ -36,7 +82,11 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
             };
         }
     }
-    ProcessStatus { target_id, running: false, pid: None }
+    ProcessStatus {
+        target_id,
+        running: false,
+        pid: None,
+    }
 }
 
 /// 关闭并重新启动目标应用。配置只在应用启动时读取一次，所以改完配置必须重启才生效。
@@ -44,31 +94,33 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
 /// 先请求应用正常退出（保留它自己的会话/草稿处理），轮询确认进程消失后再启动；
 /// 超时仍在运行则直接放弃启动并报错，避免出现两个实例。
 #[tauri::command]
-pub async fn restart_target(target_id: String) -> Result<String, String> {
-    if target_id == "codex" {
-        crate::commands::codex_sessions::prepare_codex_session_restart()?;
-    }
+pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCommandError> {
     let path = crate::targets::app_launch_path(&target_id)
-        .ok_or_else(|| "未找到已安装的应用，请先安装后再试".to_owned())?;
+        .ok_or_else(SafeCommandError::invalid_request)?;
 
     let was_running = app_process_running(&path);
     if was_running {
-        quit_app(&target_id, &path)?;
-        let mut quit = false;
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if !app_process_running(&path) {
-                quit = true;
-                break;
-            }
-        }
-        if !quit {
-            return Err("应用未能退出，请手动关闭后再点启动".to_owned());
+        quit_app(&target_id, &path).map_err(|_| SafeCommandError::busy())?;
+        if !wait_for_app_exit(
+            || app_process_running(&path),
+            20,
+            std::time::Duration::from_millis(250),
+        ) {
+            return Err(SafeCommandError::busy());
         }
     }
 
-    launch_app(&path)?;
-    Ok(if was_running { "已重启".to_owned() } else { "已启动".to_owned() })
+    restart_after_close(
+        || {
+            if target_id == "codex" {
+                crate::commands::codex_sessions::prepare_codex_session_restart().map(|_| ())
+            } else {
+                Ok(())
+            }
+        },
+        || launch_app(&path).map_err(|_| ()),
+        was_running,
+    )
 }
 
 /// 某个安装路径下是否有进程在跑。按可执行文件路径判断，不能用进程名关键词：
@@ -169,7 +221,9 @@ pub async fn check_all_processes() -> Vec<ProcessStatus> {
         ("claude-code", process_keywords("claude-code")),
     ];
 
-    targets.iter().map(|(id, keywords)| {
+    targets
+        .iter()
+        .map(|(id, keywords)| {
         let mut found_pid: Option<u32> = None;
         for (pid, proc) in sys.processes() {
             let name = proc.name().to_string_lossy().to_lowercase();
@@ -183,12 +237,39 @@ pub async fn check_all_processes() -> Vec<ProcessStatus> {
             running: found_pid.is_some(),
             pid: found_pid,
         }
-    }).collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_failure_reports_committed_manual_open_state() {
+        let outcome = restart_after_close(|| Ok(()), || Err(()), true).unwrap();
+        assert_eq!(outcome.status, "applied_needs_manual_open");
+    }
+
+    #[test]
+    fn prepare_failure_never_launches() {
+        let launched = std::cell::Cell::new(false);
+        let result = restart_after_close(
+            || Err(SafeCommandError::busy()),
+            || {
+                launched.set(true);
+                Ok(())
+            },
+            true,
+        );
+        assert!(result.is_err());
+        assert!(!launched.get());
+    }
+
+    #[test]
+    fn exit_timeout_stops_before_prepare_and_launch() {
+        assert!(!wait_for_app_exit(|| true, 2, std::time::Duration::ZERO));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

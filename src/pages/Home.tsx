@@ -18,6 +18,7 @@ import {
   parseBalanceSnapshot,
   type BalanceSnapshot,
 } from "../lib/balance";
+import { safeFailure } from "../lib/codexSessions";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -339,7 +340,7 @@ export default function Home() {
       }
       localStorage.setItem(TARGET_STORAGE_KEY, targetId);
     } catch (e) {
-      setNotice({ ok: false, text: String(e instanceof Error ? e.message : e) });
+      setNotice({ ok: false, text: safeFailure(e).message });
     } finally {
       setProvisioning(false);
     }
@@ -361,11 +362,11 @@ export default function Home() {
       for (const id of ids) {
         const name = targets.find((t) => t.id === id)?.name ?? id;
         try {
-          const detail = await invoke<string>("restart_target", { targetId: id });
+          const detail = await invoke<{ status: string; message: string }>("restart_target", { targetId: id });
           okCount += 1;
-          lines.push(`${name}：${detail}`);
+          lines.push(`${name}：${detail.message}`);
         } catch (e) {
-          lines.push(`${name}：${e instanceof Error ? e.message : String(e)}`);
+          lines.push(`${name}：${safeFailure(e).message}`);
         }
       }
       setNotice({ ok: okCount === ids.length, text: lines.join("；") });
@@ -389,7 +390,7 @@ export default function Home() {
           if (r.ok) okCount += 1;
           lines.push(`${name}：${r.detail}`);
         } catch (e) {
-          lines.push(`${name}：${e instanceof Error ? e.message : String(e)}`);
+          lines.push(`${name}：${safeFailure(e).message}`);
         }
       }
       setNotice({ ok: okCount === ids.length, text: lines.join("；") });
@@ -423,7 +424,7 @@ export default function Home() {
         text: total === 0 ? "本就是官方默认配置，无需改动" : `已恢复官方默认，重启应用后用官方账号登录`,
       });
     } catch (e) {
-      setNotice({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      setNotice({ ok: false, text: safeFailure(e).message });
     } finally {
       setRestoring(false);
     }

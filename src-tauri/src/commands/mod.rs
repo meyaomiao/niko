@@ -1,9 +1,10 @@
 pub mod auth;
-pub mod codex_sessions;
 pub mod bootstrap;
+pub mod codex_sessions;
 pub mod diagnostics;
 pub mod payment;
 pub mod process;
 pub mod registration;
-pub mod targets;
+pub mod safe_error;
 pub mod snapshots;
+pub mod targets;

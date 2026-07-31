@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
@@ -11,8 +11,16 @@ import {
   RefreshCwIcon,
 } from "../components/Icons";
 import type {
-  CodexSessionInventory,
   CodexSessionMutationOutcome,
+  CodexSessionPage,
+} from "../lib/codexSessions";
+import {
+  acceptsResponse,
+  beginRequest,
+  initialRequestGuard,
+  mountRequests,
+  safeFailure,
+  unmountRequests,
 } from "../lib/codexSessions";
 
 const CARD = "nk-card";
@@ -83,62 +91,77 @@ export default function Settings() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   // Codex 会话状态与整理
-  const [codexInventory, setCodexInventory] = useState<CodexSessionInventory | null>(null);
+  const [codexInventory, setCodexInventory] = useState<CodexSessionPage | null>(null);
   const [codexScanning, setCodexScanning] = useState(false);
   const [codexAction, setCodexAction] = useState<"custom" | "openai" | null>(null);
   const [codexMessage, setCodexMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [codexRetryTarget, setCodexRetryTarget] = useState<"custom" | "openai" | null>(null);
+  const codexGuard = useRef(initialRequestGuard());
 
   const scanCodexSessions = async () => {
+    const request = beginRequest(codexGuard.current, "scan");
+    codexGuard.current = request.state;
     setCodexScanning(true);
     try {
-      const result = await invoke<CodexSessionInventory>("scan_codex_session_inventory");
+      const result = await invoke<CodexSessionPage>("scan_codex_session_inventory", {
+        query: "",
+        cursor: null,
+        limit: 1,
+      });
+      if (!acceptsResponse(codexGuard.current, "scan", request.generation)) return null;
       setCodexInventory(result);
       return result;
-    } catch {
-      setCodexMessage({ ok: false, text: "本地会话暂时无法读取，请稍后再试。" });
+    } catch (error) {
+      if (!acceptsResponse(codexGuard.current, "scan", request.generation)) return null;
+      setCodexMessage({ ok: false, text: safeFailure(error).message });
       return null;
     } finally {
-      setCodexScanning(false);
+      if (acceptsResponse(codexGuard.current, "scan", request.generation)) {
+        setCodexScanning(false);
+      }
     }
   };
 
   const normalizeCodexSessions = async (targetProvider: "custom" | "openai") => {
+    const request = beginRequest(codexGuard.current, "action");
+    codexGuard.current = request.state;
     setCodexAction(targetProvider);
     setCodexMessage(null);
     setCodexRetryTarget(null);
     try {
-      if (targetProvider === "openai") {
-        await invoke("restore_target_defaults", { targetId: "codex" });
-        setCodexMessage({ ok: true, text: "已恢复到官方，本地会话可以继续查看" });
-        await scanCodexSessions();
-        return;
-      }
       const result = await invoke<CodexSessionMutationOutcome>(
         "normalize_codex_session_storage",
         { targetProvider },
       );
-      setCodexMessage({ ok: result.ok, text: result.message });
-      setCodexRetryTarget(result.ok || !result.retryable ? null : targetProvider);
+      if (!acceptsResponse(codexGuard.current, "action", request.generation)) return;
+      setCodexMessage({ ok: true, text: result.message });
+      setCodexRetryTarget(null);
       await scanCodexSessions();
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
+      if (!acceptsResponse(codexGuard.current, "action", request.generation)) return;
+      const failure = safeFailure(error);
       setCodexMessage({
         ok: false,
-        text: text || "本地会话暂时无法整理，请稍后重试。",
+        text: failure.message,
       });
-      setCodexRetryTarget(targetProvider);
+      setCodexRetryTarget(failure.retryable ? targetProvider : null);
     } finally {
-      setCodexAction(null);
+      if (acceptsResponse(codexGuard.current, "action", request.generation)) {
+        setCodexAction(null);
+      }
     }
   };
 
   useEffect(() => {
+    codexGuard.current = mountRequests(codexGuard.current);
     invoke<boolean>("autostart_is_enabled")
       .then(setAutostart)
       .catch(() => setAutostart(null));
     loadSnapshots();
     void scanCodexSessions();
+    return () => {
+      codexGuard.current = unmountRequests(codexGuard.current);
+    };
   }, []);
 
   const loadSnapshots = async () => {
@@ -163,7 +186,7 @@ export default function Settings() {
       await invoke("restore_snapshot", { targetId, filename });
       setRestoreMsg({ ok: true, text: `✓ 已恢复 ${TARGET_LABELS[targetId] ?? targetId} 的快照` });
     } catch (e) {
-      setRestoreMsg({ ok: false, text: `✗ 恢复失败：${String(e)}` });
+      setRestoreMsg({ ok: false, text: `✗ 恢复失败：${safeFailure(e).message}` });
     } finally {
       setRestoring(null);
     }
@@ -200,7 +223,7 @@ export default function Settings() {
         setUpdateStatus("已是最新版本");
       }
     } catch (e) {
-      setUpdateStatus(`检查失败：${String(e)}`);
+      setUpdateStatus(`检查失败：${safeFailure(e).message}`);
     } finally {
       setCheckingUpdate(false);
     }
@@ -216,7 +239,7 @@ export default function Settings() {
       setPingResult({
         reachable: false,
         error_kind: "unknown",
-        error_detail: String(e),
+        error_detail: safeFailure(e).message,
         suggestion: "请导出日志后联系支持",
       });
     } finally {
@@ -241,7 +264,7 @@ export default function Settings() {
       const written = await invoke<string>("export_log", { destPath: dest });
       setExportMsg(`✓ 日志已导出到 ${written}`);
     } catch (e) {
-      setExportMsg(`✗ 导出失败：${String(e)}`);
+      setExportMsg(`✗ 导出失败：${safeFailure(e).message}`);
     } finally {
       setExporting(false);
     }
@@ -292,11 +315,17 @@ export default function Settings() {
               <div>
                 <h2 className={OVERLINE}>ChatGPT 会话</h2>
                 <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
-                  {codexInventory?.layout_hint ?? "正在检查本地会话…"}
+                  {codexInventory ? "本地会话状态" : "正在检查本地会话…"}
                 </p>
               </div>
               <span className="nk-pill shrink-0">
-                {codexInventory ? `${codexInventory.thread_count} 个会话` : "检查中"}
+                {codexInventory
+                  ? codexInventory.status === "healthy"
+                    ? "当前状态正常"
+                    : codexInventory.status === "needs_check"
+                      ? "发现需要整理的会话"
+                      : "有部分会话暂时不可用"
+                  : "检查中"}
               </span>
             </div>
 
@@ -316,12 +345,12 @@ export default function Settings() {
                 <ArrowRightIcon />
               </button>
               <button
-                onClick={() => void normalizeCodexSessions("custom")}
+                onClick={() => void scanCodexSessions()}
                 disabled={codexScanning || codexAction !== null}
                 className={SECONDARY_BTN}
               >
                 <RefreshCwIcon />
-                {codexAction === "custom" ? "检查中…" : "重新检查"}
+                {codexScanning ? "检查中…" : "重新检查"}
               </button>
               <button
                 onClick={() => void normalizeCodexSessions("openai")}

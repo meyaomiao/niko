@@ -1,11 +1,11 @@
 use niko_lib::codex_sessions::{
     migrate_codex_sessions_transactional, migrate_codex_sessions_transactional_with_faults,
     recover_codex_session_migrations, recover_codex_session_migrations_with_faults,
-    scan_codex_sessions, CodexProcessPolicy, FaultPoint, InjectedFaultKind, MigrationErrorKind,
-    MigrationFaultInjector, MigrationOutcome, MigrationProviderTarget, MigrationRequest,
-    MigrationState, RolloutEncoding, ScanRequest, CUSTOM_PROVIDER, FIXTURE_ROOT_MARKER,
-    FIXTURE_ROOT_MARKER_CONTENT, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
-    OFFICIAL_PROVIDER,
+    scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, FaultPoint, InjectedFaultKind,
+    MigrationErrorKind, MigrationFaultInjector, MigrationOutcome, MigrationProviderTarget,
+    MigrationRequest, MigrationState, RolloutEncoding, ScanRequest, CUSTOM_PROVIDER,
+    FIXTURE_ROOT_MARKER, FIXTURE_ROOT_MARKER_CONTENT, MIGRATION_ROOT_MARKER,
+    MIGRATION_ROOT_MARKER_CONTENT, OFFICIAL_PROVIDER,
 };
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::{json, Value as JsonValue};
@@ -52,6 +52,31 @@ struct OneFault {
     point: FaultPoint,
     kind: InjectedFaultKind,
     fired: Mutex<bool>,
+}
+
+struct NthFault {
+    point: FaultPoint,
+    remaining: Mutex<usize>,
+}
+
+impl NthFault {
+    fn new(point: FaultPoint, occurrence: usize) -> Self {
+        Self {
+            point,
+            remaining: Mutex::new(occurrence),
+        }
+    }
+}
+
+impl MigrationFaultInjector for NthFault {
+    fn inject(&self, point: FaultPoint, _artifact_id: Option<&str>) -> Option<InjectedFaultKind> {
+        if point != self.point {
+            return None;
+        }
+        let mut remaining = self.remaining.lock().unwrap();
+        *remaining -= 1;
+        (*remaining == 0).then_some(InjectedFaultKind::Crash)
+    }
 }
 
 impl OneFault {
@@ -495,7 +520,7 @@ fn commits_full_manifest_config_last_and_is_idempotent() {
     assert_eq!(journal["state"], "committed");
     assert_eq!(journal["restart_allowed"], true);
     let entries = journal["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 7);
+    assert_eq!(entries.len(), 8);
     assert_eq!(entries.last().unwrap()["kind"], "config");
     assert!(entries.iter().all(|entry| entry["backup_hash"].is_string()));
     let serialized = serde_json::to_string(&journal).unwrap();
@@ -514,6 +539,155 @@ fn commits_full_manifest_config_last_and_is_idempotent() {
         .unwrap()
         .migrations
         .is_empty());
+}
+
+#[test]
+fn provider_route_auth_and_sessions_commit_and_restore_together() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    let api_key = "fixture-secret-must-not-enter-journal";
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some(api_key.to_owned()),
+        model: Some("gpt-fixture".to_owned()),
+        mixed: false,
+    });
+
+    let applied =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+            .unwrap();
+    assert_eq!(applied.outcome, MigrationOutcome::Committed);
+    assert_provider(&fixture, CUSTOM_PROVIDER);
+
+    let auth: JsonValue = serde_json::from_slice(&fs::read(&fixture.auth_path).unwrap()).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], api_key);
+    assert_eq!(auth["auth_mode"], "apikey");
+    assert_eq!(auth["token"], AUTH_SENTINEL);
+    let config = fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    let provider = config["model_providers"]["custom"].as_table().unwrap();
+    assert_eq!(
+        provider["base_url"].as_str(),
+        Some("https://relay.fixture.invalid/v1")
+    );
+    assert_eq!(config["model"].as_str(), Some("gpt-fixture"));
+    let journal = serde_json::to_string(&latest_journal(&fixture)).unwrap();
+    assert!(!journal.contains(api_key));
+    assert!(!journal.contains(AUTH_SENTINEL));
+
+    fixture.request.codex = None;
+    let restored =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::OpenAi)
+            .unwrap();
+    assert_eq!(restored.outcome, MigrationOutcome::Committed);
+    assert_provider(&fixture, OFFICIAL_PROVIDER);
+    let auth: JsonValue = serde_json::from_slice(&fs::read(&fixture.auth_path).unwrap()).unwrap();
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert!(auth.get("auth_mode").is_none());
+    assert_eq!(auth["token"], AUTH_SENTINEL);
+    let config = fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(config.get("model_provider").is_none());
+    assert!(config.get("model").is_none());
+    assert!(config
+        .get("model_providers")
+        .and_then(toml::Value::as_table)
+        .is_none_or(|providers| !providers.contains_key("custom")));
+}
+
+#[test]
+fn mixed_mode_keeps_chatgpt_auth_and_stages_key_only_in_provider_route() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-mixed-secret".to_owned()),
+        model: None,
+        mixed: true,
+    });
+    migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+        .unwrap();
+    let auth: JsonValue = serde_json::from_slice(&fs::read(&fixture.auth_path).unwrap()).unwrap();
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert!(auth.get("auth_mode").is_none());
+    assert_eq!(auth["token"], AUTH_SENTINEL);
+    let config = fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        config["model_providers"]["custom"]["experimental_bearer_token"].as_str(),
+        Some("fixture-mixed-secret")
+    );
+}
+
+#[test]
+fn auth_and_config_commit_crashes_recover_idempotently_in_both_directions() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("fixture-recovery-secret".to_owned()),
+        model: Some("gpt-fixture".to_owned()),
+        mixed: false,
+    });
+    let auth_commit_crash = NthFault::new(FaultPoint::CommitArtifact, 5);
+    let error = migrate_codex_sessions_transactional_with_faults(
+        &fixture.request,
+        MigrationProviderTarget::Custom,
+        &auth_commit_crash,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, MigrationErrorKind::InjectedCrash);
+    let recovery = recover_codex_session_migrations(&fixture.request).unwrap();
+    assert!(recovery.restart_allowed);
+    assert_provider(&fixture, CUSTOM_PROVIDER);
+    let auth: JsonValue = serde_json::from_slice(&fs::read(&fixture.auth_path).unwrap()).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "fixture-recovery-secret");
+
+    fixture.request.codex = None;
+    let config_commit_crash = NthFault::new(FaultPoint::CommitArtifact, 6);
+    let error = migrate_codex_sessions_transactional_with_faults(
+        &fixture.request,
+        MigrationProviderTarget::OpenAi,
+        &config_commit_crash,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, MigrationErrorKind::InjectedCrash);
+    let recovery = recover_codex_session_migrations(&fixture.request).unwrap();
+    assert!(recovery.restart_allowed);
+    assert_provider(&fixture, OFFICIAL_PROVIDER);
+    let auth: JsonValue = serde_json::from_slice(&fs::read(&fixture.auth_path).unwrap()).unwrap();
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+}
+
+#[test]
+fn malformed_auth_or_config_is_zero_write() {
+    for broken in ["auth", "config"] {
+        let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+        fixture.request.codex = Some(CodexMigrationInput {
+            base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+            api_key: Some("fixture-secret".to_owned()),
+            model: None,
+            mixed: false,
+        });
+        if broken == "auth" {
+            fs::write(&fixture.auth_path, b"{not-json").unwrap();
+        } else {
+            fs::write(&fixture.config_path, b"model_provider = [not-toml").unwrap();
+        }
+        let before = raw_business_snapshot(&fixture);
+        let error =
+            migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+                .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            MigrationErrorKind::CorruptStorage | MigrationErrorKind::InvalidRequest
+        ));
+        assert_eq!(raw_business_snapshot(&fixture), before);
+        assert_no_runtime_writes(&fixture);
+    }
 }
 
 #[test]
@@ -1063,21 +1237,19 @@ fn sqlite_online_backup_captures_committed_wal_state() {
 
 #[cfg(unix)]
 #[test]
-fn unreadable_auth_json_is_not_part_of_the_transaction() {
+fn unreadable_auth_json_blocks_with_zero_business_writes() {
     use std::os::unix::fs::PermissionsExt;
 
     let fixture = create_fixture(OFFICIAL_PROVIDER);
-    let auth = fs::read(&fixture.auth_path).unwrap();
+    let before = raw_business_snapshot(&fixture);
     fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o000)).unwrap();
-    let report =
+    let error =
         migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
-            .unwrap();
-    assert_eq!(report.outcome, MigrationOutcome::Committed);
+            .unwrap_err();
+    assert_eq!(error.kind, MigrationErrorKind::PermissionDenied);
     fs::set_permissions(&fixture.auth_path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(fs::read(&fixture.auth_path).unwrap(), auth);
-    let journal = serde_json::to_string(&latest_journal(&fixture)).unwrap();
-    assert!(!journal.contains("auth.json"));
-    assert!(!journal.contains(AUTH_SENTINEL));
+    assert_eq!(raw_business_snapshot(&fixture), before);
+    assert_no_runtime_writes(&fixture);
 }
 
 #[cfg(unix)]

@@ -825,6 +825,47 @@ pub fn all_targets() -> Vec<Box<dyn Target>> {
     vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget)]
 }
 
+pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
+    match target_id {
+        "claude-desktop" => {
+            let mut paths = vec![home_dir().join(".claude").join("settings.json")];
+            if let Some(dir) = claude_3p_config_dir() {
+                paths.push(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json")));
+                paths.push(dir.join("_meta.json"));
+            }
+            Ok(paths)
+        }
+        other => Err(format!("unknown transaction target: {other}")),
+    }
+}
+
+pub fn preflight_target_apply(target_id: &str) -> Result<(), String> {
+    for path in transaction_paths(target_id)? {
+        if !path.exists() {
+            continue;
+        }
+        let raw = fs::read_to_string(&path).map_err(|_| "target settings unreadable".to_owned())?;
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|_| "target settings malformed".to_owned())?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "target settings have an unsupported shape".to_owned())?;
+        if path.file_name().and_then(|name| name.to_str()) == Some("settings.json")
+            && object.get("env").is_some_and(|env| !env.is_object())
+        {
+            return Err("target settings have an unsupported shape".to_owned());
+        }
+        if path.file_name().and_then(|name| name.to_str()) == Some("_meta.json") {
+            if object.get("entries").is_some_and(|entries| !entries.is_array())
+                || object.get("appliedId").is_some_and(|id| !id.is_string())
+            {
+                return Err("target settings have an unsupported shape".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
 // ─── 连通性测试：回读磁盘上真实生效的配置 ────────────────────────────────────
 
 /// 从目标应用配置文件里读回真正生效的接入参数。
