@@ -121,8 +121,12 @@ export default function Settings() {
       setCodexMessage({ ok: result.ok, text: result.message });
       setCodexRetryTarget(result.ok || !result.retryable ? null : targetProvider);
       await scanCodexSessions();
-    } catch {
-      setCodexMessage({ ok: false, text: "本地会话暂时无法整理，请稍后重试。" });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setCodexMessage({
+        ok: false,
+        text: text || "本地会话暂时无法整理，请稍后重试。",
+      });
       setCodexRetryTarget(targetProvider);
     } finally {
       setCodexAction(null);
