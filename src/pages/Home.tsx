@@ -32,6 +32,11 @@ import {
   summarizeActiveGroups,
   type ActiveGroupStatus,
 } from "../lib/activeGroup";
+import {
+  displayDeviceLabel,
+  friendlyConnectivityDetail,
+  friendlyDesktopError,
+} from "../lib/copy";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -67,7 +72,7 @@ function formatTime(ts: number): string {
 
 /** 小白用户不懂 token 单位，用字数举例说明 */
 const TOKEN_TIP =
-  "token 是模型计费的最小文本单位。中文约 1 个字 ≈ 1.5 token，英文约 1 个单词 ≈ 1.3 token。100 万 token 大致相当于 60~70 万汉字，约等于一本长篇小说的量。输入（你发的内容）和输出（模型回复）分别计价。";
+  "token 是模型计算文字量的单位。你发出的内容和 AI 回复的内容分别计价，页面上的价格按 100 万 token 计算。";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -105,6 +110,8 @@ export default function Home() {
 
   const [targets, setTargets] = useState<TargetInfo[]>([]);
   const [targetId, setTargetId] = useState("");
+  const [targetsLoading, setTargetsLoading] = useState(true);
+  const [targetsError, setTargetsError] = useState("");
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
   const [activeStatuses, setActiveStatuses] = useState<Record<string, ActiveGroupStatus>>({});
   const [detecting, setDetecting] = useState(false);
@@ -144,6 +151,27 @@ export default function Home() {
       balanceUpdatedAt: snapshot.updatedAt,
       defaultGroup: groupName,
     });
+  }, []);
+
+  const loadTargets = useCallback(async () => {
+    setTargetsLoading(true);
+    setTargetsError("");
+    try {
+      const list = await invoke<TargetInfo[]>("list_targets");
+      setTargets(list);
+      const installed = list.filter((t) => t.installed);
+      const last = localStorage.getItem(TARGET_STORAGE_KEY);
+      const pick =
+        installed.find((t) => t.id === last)?.id ??
+        (installed.length === 1 ? installed[0].id : installed[0]?.id ?? "");
+      setTargetId(pick);
+    } catch {
+      setTargets([]);
+      setTargetId("");
+      setTargetsError("未能读取本机应用状态，请重新检查。");
+    } finally {
+      setTargetsLoading(false);
+    }
   }, []);
 
   const refreshBalance = useCallback(async () => {
@@ -198,19 +226,9 @@ export default function Home() {
       .finally(() => setLoading(false));
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
-    invoke<TargetInfo[]>("list_targets")
-      .then((list) => {
-        setTargets(list);
-        const installed = list.filter((t) => t.installed);
-        const last = localStorage.getItem(TARGET_STORAGE_KEY);
-        const pick =
-          installed.find((t) => t.id === last)?.id ??
-          (installed.length === 1 ? installed[0].id : installed[0]?.id ?? "");
-        setTargetId(pick);
-      })
-      .catch(() => {});
+    void loadTargets();
     api.listDevices(auth.accessToken).then(setDevices).catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loadTargets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const refreshVisibleBalance = () => {
@@ -328,9 +346,9 @@ export default function Home() {
   // 列表内联价格：按次计费显示单次价格，否则显示「输入 / 输出」
   const priceLabel = (name: string) => {
     const p = priceOf(pricingIndex.get(name), groupRatio);
-    if (!p) return "";
+    if (!p) return "价格暂不可用";
     if (p.perRequest) return `${fmtUSD(p.input)}/次`;
-    return `${fmtUSD(p.input)} / ${fmtUSD(p.output)}`;
+    return `${fmtUSD(p.input)} 发出 · ${fmtUSD(p.output)} 回复`;
   };
 
   const selectedPrice = priceOf(pricingIndex.get(model), groupRatio);
@@ -387,21 +405,21 @@ export default function Home() {
         );
         const map: Record<string, ApplyResult> = {};
         applied.forEach((r) => {
-          map[r.id] = { ok: r.ok, changed: r.changed, error: r.error };
+          map[r.id] = { ok: r.ok, changed: r.changed, error: r.error ? friendlyDesktopError(r.error) : undefined };
         });
         setResults(map);
         const okCount = applied.filter((r) => r.ok).length;
         const errors = applied
           .filter((result) => !result.ok && result.error)
-          .map((result) => result.error as string);
+          .map((result) => friendlyDesktopError(result.error));
         setNotice(
           applied.length === 0
-            ? { ok: false, text: "未检测到已安装的应用，请先安装 ChatGPT 或 Claude" }
+            ? { ok: false, text: "没有找到已安装的应用，请先安装 ChatGPT 或 Claude。" }
             : {
                 ok: okCount === applied.length,
                 text: errors.length > 0
-                  ? `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}；${errors.join("；")}`
-                  : `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}`,
+                  ? `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}；${errors.join("；")}`
+                  : `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}`,
               }
         );
       } else {
@@ -416,12 +434,12 @@ export default function Home() {
           },
         });
         setResults({ [targetId]: { ok: true, changed } });
-        setNotice({ ok: true, text: `已为 ${targetLabel} 启用 ${model || group}` });
+        setNotice({ ok: true, text: `已为 ${targetLabel} 接入 ${model || group}` });
       }
       localStorage.setItem(TARGET_STORAGE_KEY, targetId);
       setDetectNonce((value) => value + 1);
     } catch (e) {
-      setNotice({ ok: false, text: safeFailure(e).message });
+      setNotice({ ok: false, text: friendlyDesktopError(e) });
     } finally {
       setProvisioning(false);
     }
@@ -469,9 +487,9 @@ export default function Home() {
         try {
           const r = await invoke<{ ok: boolean; detail: string }>("test_connectivity", { targetId: id });
           if (r.ok) okCount += 1;
-          lines.push(`${name}：${r.detail}`);
+          lines.push(`${name}：${r.ok ? r.detail : friendlyConnectivityDetail(r.detail)}`);
         } catch (e) {
-          lines.push(`${name}：${safeFailure(e).message}`);
+          lines.push(`${name}：${friendlyConnectivityDetail(e)}`);
         }
       }
       setNotice({ ok: okCount === ids.length, text: lines.join("；") });
@@ -486,7 +504,7 @@ export default function Home() {
     // 二次确认：这会移除中转配置，用户可能只是误点
     if (!confirmRestore) {
       setConfirmRestore(true);
-      setNotice({ ok: false, text: "将移除本应用写入的中转配置，恢复用官方账号登录，再点一次确认" });
+      setNotice({ ok: false, text: "将移除 Niko 的设置并恢复官方账号登录，再点一次确认。" });
       window.setTimeout(() => setConfirmRestore(false), 5000);
       return;
     }
@@ -503,10 +521,10 @@ export default function Home() {
       setDetectNonce((value) => value + 1);
       setNotice({
         ok: true,
-        text: total === 0 ? "本就是官方默认配置，无需改动" : `已恢复官方默认，重启应用后用官方账号登录`,
+        text: total === 0 ? "本来就是官方登录方式，无需改动" : "已恢复官方登录方式，重启应用后用官方账号登录",
       });
     } catch (e) {
-      setNotice({ ok: false, text: safeFailure(e).message });
+      setNotice({ ok: false, text: friendlyDesktopError(e) });
     } finally {
       setRestoring(false);
     }
@@ -631,7 +649,7 @@ export default function Home() {
                     充值
                   </button>
                   <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
-                    用量明细
+                    使用明细
                   </button>
                 </div>
               </div>
@@ -642,13 +660,25 @@ export default function Home() {
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={TITLE}>接入应用</h2>
                 <span className={SUBTLE}>
-                  已安装 {installedTargets.length}/{targets.length}
+                  {targetsLoading ? "正在检查…" : targetsError ? "检查失败" : `已安装 ${installedTargets.length}/${targets.length}`}
                 </span>
               </div>
-              {installedTargets.length === 0 ? (
+              {targetsLoading ? (
+                <div className="flex items-center gap-2" role="status">
+                  <span className="nk-spinner" aria-hidden="true" />
+                  <p className={SUBTLE}>正在检查本机应用，请稍候。</p>
+                </div>
+              ) : targetsError ? (
+                <div>
+                  <p className="nk-alert-danger">{targetsError}</p>
+                  <button onClick={() => void loadTargets()} className={`mt-3 ${GHOST_BTN}`}>
+                    重新检查
+                  </button>
+                </div>
+              ) : installedTargets.length === 0 ? (
                 <div>
                   <p className={SUBTLE}>
-                    没检测到支持的应用。先安装 ChatGPT 桌面端或 Claude 桌面端，再回来一键接入。
+                    没有找到支持的应用。先安装 ChatGPT 桌面端或 Claude 桌面端，再回来接入。
                   </p>
                   <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
                     安装指引
@@ -684,7 +714,7 @@ export default function Home() {
                                 <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
                                   {t.name}
                                 </p>
-                                <p className={SUBTLE}>{t.installed ? "已安装" : "未检测到安装"}</p>
+                                <p className={SUBTLE}>{t.installed ? "已安装" : "还没有安装"}</p>
                               </div>
                             </div>
                             {active && <span className="shrink-0 text-xs">✓</span>}
@@ -692,15 +722,15 @@ export default function Home() {
                           {result && (
                             /* 改动项是一串很长的配置路径，全列会把卡片撑爆，这里只给条数，明细放 title */
                             <p
-                              title={result.ok ? result.changed?.join("\n") : result.error}
+                              title={result.ok ? "设置已更新" : undefined}
                               className={`mt-1.5 truncate text-xs ${
                                 result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
                               }`}
                             >
                               {result.ok
                                 ? result.changed && result.changed.length > 0
-                                  ? `✓ 已写入 ${result.changed.length} 项配置`
-                                  : "✓ 配置已是最新"
+                                  ? `✓ 已更新 ${result.changed.length} 项设置`
+                                  : "✓ 设置已是最新"
                                 : `✗ ${result.error}`}
                             </p>
                           )}
@@ -794,7 +824,7 @@ export default function Home() {
                     >
                       <div className="min-w-0">
                         <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                          {d.device_name || d.device_id.slice(0, 8)}
+                          {displayDeviceLabel(d.device_name, d.platform)}
                           {d.is_current && <span className="ml-2 opacity-60">当前</span>}
                         </p>
                         <p className={SUBTLE}>
@@ -832,7 +862,7 @@ export default function Home() {
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
                   <span className={`relative flex items-center gap-1 ${SUBTLE}`}>
-                    每百万 token · 含 {groupRatio}x 倍率
+                    价格按 100 万 token 计算
                     <button
                       type="button"
                       aria-label="什么是 token"
@@ -873,7 +903,7 @@ export default function Home() {
               )}
 
               {groups.length === 0 ? (
-                <p className={SUBTLE}>当前账号没有可用分组，请联系管理员开通</p>
+                <p className={SUBTLE}>当前账号没有可用模型服务，请联系管理员开通。</p>
               ) : (
                 <>
                   <div className="flex shrink-0 gap-1 overflow-x-auto border-b [border-color:var(--nk-line)]">
@@ -899,19 +929,19 @@ export default function Home() {
                       下拉把「名称 + 倍率 + 说明」压进一行，列表高度也不再随分组数变化。 */}
                   <div className="mt-2.5 flex shrink-0 items-center gap-3">
                     <p className={`${LABEL} shrink-0`}>
-                      分组
+                      模型服务
                       <span className="ml-1.5 opacity-70">{vendorGroups.length}</span>
                     </p>
                     <div className="relative min-w-0 flex-1">
                       <select
                         value={group}
                         onChange={(e) => pickGroup(e.target.value)}
-                        aria-label="选择分组"
+                        aria-label="选择模型服务"
                         className={SELECT}
                       >
                         {vendorGroups.map((g) => (
                           <option key={g.name} value={g.name} className="text-gray-900">
-                            {g.name} · {g.ratio}x{g.desc ? ` · ${g.desc}` : ""}
+                            {g.name}{g.desc ? ` · ${g.desc}` : ""}
                           </option>
                         ))}
                       </select>
@@ -935,7 +965,11 @@ export default function Home() {
                     />
                   </div>
                   <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 max-md:max-h-80">
-                    {models.length === 0 && <p className="nk-empty">没有匹配的模型</p>}
+                    {models.length === 0 && (
+                      <p className="nk-empty">
+                        {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前模型服务没有可用模型。"}
+                      </p>
+                    )}
                     {models.map((m) => {
                       const compat = compatOf(m);
                       return (
@@ -968,31 +1002,30 @@ export default function Home() {
                     })}
                   </div>
 
-                  {/* 价格明细常驻：条件渲染会在选中模型时挤压上方列表，导致刚点的行跳走。
-                      倍率已在卡片标题右侧说明，这里不再重复模型名与倍率。 */}
+                  {/* 价格明细常驻，避免选中模型后列表跳动。 */}
                   <div className="nk-inset mt-2.5 min-h-[3.25rem] shrink-0 px-3 py-2">
                     {selectedPrice ? (
                       <>
                         {selectedPrice.perRequest ? (
                           <p className="text-xs text-gray-700 dark:text-gray-200">
-                            按次计费 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 次
+                            每次请求 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 次
                           </p>
                         ) : (
                           <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-700 dark:text-gray-200">
                             <span>
-                              输入 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span>
+                              你发出的内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 100 万 token
                             </span>
                             <span>
-                              输出 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span>
+                              AI 回复的内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span> / 100 万 token
                             </span>
                             {selectedPrice.cache !== undefined && (
                               <span>
-                                读缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span>
+                                读取已保存内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span> / 100 万 token
                               </span>
                             )}
                             {selectedPrice.createCache !== undefined && (
                               <span>
-                                写缓存 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span>
+                                保存内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span> / 100 万 token
                               </span>
                             )}
                           </div>
@@ -1002,7 +1035,7 @@ export default function Home() {
                         </p>
                       </>
                     ) : (
-                      <p className={`${SUBTLE} leading-9`}>选择模型后显示价格</p>
+                      <p className={`${SUBTLE} leading-9`}>选择模型后显示价格和计费单位。</p>
                     )}
                   </div>
 
@@ -1011,34 +1044,34 @@ export default function Home() {
                     <button
                       onClick={enable}
                       disabled={provisioning || !group || !model || !targetId}
-                      title={targetLabel ? `启用到 ${targetLabel}` : "选择应用后启用"}
+                      title={targetLabel ? `接入到 ${targetLabel}` : "选择应用后接入"}
                       className="nk-btn-primary min-w-24 flex-1"
                     >
-                      {provisioning ? "配置中…" : "启用"}
+                      {provisioning ? "接入中…" : "接入到应用"}
                     </button>
                     <button
                       onClick={restartTargets}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title={targetLabel ? `启动 / 重启 ${targetLabel}，配置只在启动时读取` : "选择应用后可重启"}
+                      title={targetLabel ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效` : "选择应用后可重启"}
                       className={GHOST_BTN}
                     >
-                      {restarting ? "重启中…" : "重启"}
+                      {restarting ? "重启中…" : "重启应用"}
                     </button>
                     <button
                       onClick={testConnectivity}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title="用磁盘上真实生效的配置发一条最小请求"
+                      title="检查当前设置是否能正常使用"
                       className={GHOST_BTN}
                     >
-                      {testing ? "检测中…" : "检测"}
+                      {testing ? "检查中…" : "检查是否能正常使用"}
                     </button>
                     <button
                       onClick={restoreDefaults}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title="移除本应用写入的中转配置，恢复用官方账号登录"
+                      title="移除 Niko 的设置，恢复用官方账号登录"
                       className={`${GHOST_BTN} ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
                     >
-                      {restoring ? "恢复中…" : confirmRestore ? "再点确认" : "恢复默认"}
+                      {restoring ? "恢复中…" : confirmRestore ? "再点确认" : "恢复到官方"}
                     </button>
                   </div>
                   {/* 常驻一行：结果提示出现时不再压缩上方列表 */}

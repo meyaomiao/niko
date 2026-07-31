@@ -11,6 +11,8 @@ import {
 } from "../api/client";
 import { VENDORS, vendorOfGroup, vendorOfModel, type Vendor } from "../lib/vendor";
 import { ArrowLeftIcon } from "../components/Icons";
+import { friendlyDesktopError } from "../lib/copy";
+import { fmtUSD } from "../lib/pricing";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -27,8 +29,7 @@ const RANGES = [
 type RangeId = (typeof RANGES)[number]["id"] | "custom";
 
 function usd(quota: number): string {
-  const v = quota / 1_000_000;
-  return v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(4)}`;
+  return fmtUSD(quota / 1_000_000);
 }
 
 function num(n: number): string {
@@ -74,7 +75,8 @@ function Sparkline({
 }) {
   if (buckets.length === 0) return null;
   const values = buckets.map(pick);
-  const max = Math.max(...values, 1);
+  const peak = Math.max(...values);
+  const max = Math.max(peak, 1);
   const y = (v: number) => (100 - (v / max) * 88 - 6).toFixed(2);
   const points =
     buckets.length === 1
@@ -108,7 +110,7 @@ function Sparkline({
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-gray-400 dark:text-gray-500">
         <span>{buckets[0].date.slice(5)}</span>
-        <span>峰值 {format(max)}</span>
+        <span>峰值 {format(peak)}</span>
         <span>{buckets[buckets.length - 1].date.slice(5)}</span>
       </div>
     </div>
@@ -205,7 +207,7 @@ export default function Usage() {
         setSummary(s);
         setLogs(l.items ?? []);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError(friendlyDesktopError(e)))
       .finally(() => setLoading(false));
   }, [token, startTimestamp, endTimestamp, group, vendor, vendorModels]);
 
@@ -248,7 +250,7 @@ export default function Usage() {
         >
           <ArrowLeftIcon />
         </button>
-        <h1 className={TITLE}>用量明细</h1>
+        <h1 className={TITLE}>使用明细</h1>
       </header>
 
       <main className="nk-page">
@@ -307,10 +309,10 @@ export default function Usage() {
                   setVendor(e.target.value as Vendor | "");
                   setGroup("");
                 }}
-                aria-label="按模型所属公司筛选"
+                aria-label="按模型厂商筛选"
                 className={SELECT}
               >
-                <option value="">全部公司</option>
+                <option value="">全部模型厂商</option>
                 {VENDORS.map((v) => (
                   <option key={v} value={v}>
                     {v}
@@ -320,10 +322,10 @@ export default function Usage() {
               <select
                 value={group}
                 onChange={(e) => setGroup(e.target.value)}
-                aria-label="按分组筛选"
+                aria-label="按模型服务筛选"
                 className={SELECT}
               >
-                <option value="">全部分组</option>
+                <option value="">全部模型服务</option>
                 {groupOptions.map((name) => (
                   <option key={name} value={name}>
                     {name}
@@ -341,7 +343,7 @@ export default function Usage() {
               className="flex items-center justify-center gap-2 py-6"
             >
               <span className="nk-spinner" aria-hidden="true" />
-              <span className="nk-muted">正在加载用量…</span>
+                <span className="nk-muted">正在加载使用明细…</span>
             </div>
           )}
 
@@ -349,51 +351,54 @@ export default function Usage() {
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className={CARD}>
-                  <p className={LABEL}>累计消费</p>
+                  <p className={LABEL}>累计花费</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
                     {usd(summary.quota)}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">均次 {avgCost}</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">平均每次 {avgCost}</p>
                   <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={usd} />
                 </div>
                 <div className={CARD}>
-                  <p className={LABEL}>累计 token</p>
+                  <p className={LABEL}>累计文字量</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
                     {num(tokensTotal)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    入 {num(summary.prompt_tokens)} · 出 {num(summary.completion_tokens)}
+                    你发出的内容 {num(summary.prompt_tokens)} · AI 回复的内容 {num(summary.completion_tokens)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                    token 是模型计算文字量的单位
                   </p>
                   <Sparkline buckets={trendBuckets} pick={(b) => b.tokens} format={num} />
                 </div>
                 <div className={CARD}>
-                  <p className={LABEL}>请求次数</p>
+                  <p className={LABEL}>使用次数</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
                     {num(requests)}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">流式 {streamRate}</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">连续输出占比 {streamRate}</p>
                   <Sparkline buckets={trendBuckets} pick={(b) => b.requests} format={num} />
                 </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
-                <DimensionList title="模型消费排行" items={summary.by_model ?? []} />
-                <DimensionList title="分组消费排行" items={summary.by_group ?? []} />
+                <DimensionList title="模型使用排行" items={summary.by_model ?? []} />
+                <DimensionList title="模型服务使用排行" items={summary.by_group ?? []} />
               </div>
             </>
           )}
 
           {!loading && !error && (
             <div className={CARD}>
-              <p className={TITLE}>明细记录</p>
+              <p className={TITLE}>使用明细</p>
               {/* Claude Code / Codex 是 agent，一次提问内部会分成读文件、调工具、生成标题等多次
                   独立请求，条数远多于用户感知的对话轮数，不说明会被当成重复计费 */}
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                一次提问通常对应多条记录：Claude Code 与 Codex 会在内部拆成读文件、调用工具等多次请求，各自单独计费。
+                一次提问通常对应多条记录：Claude Code 与 Codex 会在后台拆成读文件、调用工具等多次模型调用，各自单独计费。
               </p>
               {visibleLogs.length === 0 ? (
                 <p className="nk-empty mt-3">
-                  当前筛选条件下暂无用量记录
+                  当前筛选条件下暂无使用记录
                 </p>
               ) : (
                 <div className="nk-table-wrap">
@@ -402,10 +407,10 @@ export default function Usage() {
                     <tr>
                       <th>时间</th>
                       <th>模型</th>
-                      <th>分组</th>
-                      <th className="text-right">输入</th>
-                      <th className="text-right">输出</th>
-                      <th className="text-right">消费</th>
+                      <th>模型服务</th>
+                      <th className="text-right">你发出的内容</th>
+                      <th className="text-right">AI 回复的内容</th>
+                      <th className="text-right">花费</th>
                     </tr>
                   </thead>
                   <tbody>

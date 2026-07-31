@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -16,6 +17,95 @@ import {
   validDesktopSiteKey,
   verificationCallbackUrl,
 } from "../src/js/desktop-verification.js";
+import { ApiError, friendlyApiError, isRetryableApiError } from "../src/js/api.js";
+
+test("website error copy hides server details and gives one next step", () => {
+  assert.equal(
+    friendlyApiError(new ApiError("HTTP 401: API Key invalid", { status: 401, code: "SESSION_EXPIRED" })),
+    "登录状态已过期，请重新登录后再试。",
+  );
+  assert.equal(
+    friendlyApiError(new ApiError("账号或密码错误", { status: 401, code: "AUTH_FAILED" })),
+    "账号或密码不正确，请检查后再试。",
+  );
+  assert.equal(
+    friendlyApiError(new ApiError("quota insufficient", { status: 402 })),
+    "余额不足，请先充值后再试。",
+  );
+  assert.equal(
+    friendlyApiError(new ApiError("/Users/alice/config.toml", { status: 500 })),
+    "账户服务暂时不可用，请稍后重试。",
+  );
+  assert.doesNotMatch(friendlyApiError(new ApiError("API Key /Users/alice/token")), /API Key|\/Users\/|token/i);
+});
+
+test("only transient website failures expose a retry path", () => {
+  const fixed = [
+    [400, "提交的信息不符合要求，请检查输入后重新提交。"],
+    [401, "登录状态已过期，请重新登录后再试。"],
+    [402, "余额不足，请先充值后再试。"],
+    [403, "当前账号没有权限完成这项操作，请联系支持。"],
+    [404, "没有找到这项内容，请回到个人中心查看最新记录。"],
+    [409, "当前页面状态已变化，请刷新页面后再操作。"],
+    [418, "请求无法完成，请联系支持确认这项操作。"],
+  ];
+  for (const [status, message] of fixed) {
+    const error = new ApiError("server detail", { status });
+    assert.equal(isRetryableApiError(error), false);
+    assert.equal(friendlyApiError(error), message);
+  }
+
+  const transient = [
+    new ApiError("timeout", { status: 408 }),
+    new ApiError("rate limited", { status: 429 }),
+    new ApiError("server error", { status: 500 }),
+    new ApiError("unavailable", { status: 503 }),
+    new ApiError("offline", { code: "NETWORK_ERROR" }),
+  ];
+  for (const error of transient) {
+    assert.equal(isRetryableApiError(error), true);
+    assert.match(friendlyApiError(error), /重试/);
+  }
+
+  const codedTransient = [
+    new ApiError("server detail", { status: 0, code: "NETWORK_ERROR" }),
+    new ApiError("server detail", { status: 0, code: "TIMEOUT" }),
+    new ApiError("server detail", { status: 0, code: "RATE_LIMITED" }),
+  ];
+  for (const error of codedTransient) {
+    assert.equal(isRetryableApiError(error), true);
+    assert.match(friendlyApiError(error), /重试/);
+  }
+
+  const unknownApiError = new ApiError("network timeout", { status: 0 });
+  assert.equal(isRetryableApiError(unknownApiError), false);
+  assert.equal(friendlyApiError(unknownApiError), "操作无法完成，请联系支持。");
+
+  const unknown = new Error("unexpected client failure");
+  assert.equal(isRetryableApiError(unknown), false);
+  assert.equal(friendlyApiError(unknown), "操作无法完成，请联系支持。");
+});
+
+test("account and payment record states use the same retry classification", () => {
+  const account = readFileSync(new URL("../src/js/account.js", import.meta.url), "utf8");
+  const paymentReturn = readFileSync(new URL("../src/js/payment-return.js", import.meta.url), "utf8");
+
+  assert.match(account, /账户数据没有丢失，请重新打开账户页查看；如果仍异常，请联系支持。/);
+  assert.match(account, /isRetryableApiError\(error\)/);
+  assert.match(paymentReturn, /if \(!isRetryableApiError\(error\)\)/);
+  assert.match(paymentReturn, /retry\.hidden = true/);
+});
+
+test("main flow copy uses接入 language instead of configuration jargon", () => {
+  const homepage = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
+  const desktopHome = readFileSync(new URL("../../src/pages/Home.tsx", import.meta.url), "utf8");
+
+  assert.match(homepage, /三步接入应用/);
+  assert.match(homepage, /接入后检查是否能正常使用/);
+  assert.doesNotMatch(homepage, /配置后立即检查|三步完成配置|把配置交给它/);
+  assert.match(desktopHome, /让刚接入的设置生效/);
+  assert.doesNotMatch(desktopHome, /配置只在启动时读取/);
+});
 
 test("desktop verification keeps the production action and nonce/site-key-bound callback", () => {
   const nonce = "a".repeat(32);

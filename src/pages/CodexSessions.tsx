@@ -123,7 +123,7 @@ export default function CodexSessions() {
           onClick={() => void load(false)}
           disabled={loading}
           className="nk-btn-ghost px-2.5"
-          aria-label="重新检查本地会话"
+          aria-label="重新检查会话"
           title="重新检查"
         >
           <RefreshCwIcon className={loading ? "animate-spin motion-reduce:animate-none" : ""} />
@@ -137,7 +137,7 @@ export default function CodexSessions() {
               <div className="min-w-0">
                 <p className="nk-overline">ChatGPT</p>
                 <h2 className="mt-1 text-base font-semibold">
-                  {page ? codexNormalizationLabel(page.status) : "正在检查本地会话…"}
+                  {page ? codexNormalizationLabel(page.status) : "正在检查会话…"}
                 </h2>
               </div>
               <span className="nk-pill shrink-0">{page?.items.length ?? 0} 个会话</span>
@@ -147,14 +147,14 @@ export default function CodexSessions() {
               maxLength={SESSION_QUERY_LIMIT}
               onChange={(event) => setQuery(event.target.value)}
               className="nk-input mt-4 w-full text-xs"
-              placeholder="搜索会话编号"
-              aria-label="搜索本地会话"
+              placeholder="搜索会话"
+              aria-label="搜索会话"
             />
             {error && <p className="nk-alert-danger mt-3" role="alert">{error}</p>}
           </section>
 
           {loading && !page ? (
-            <p className="nk-empty" role="status">正在检查本地会话…</p>
+            <p className="nk-empty" role="status">正在检查会话…</p>
           ) : page?.items.length ? (
             <section className="space-y-2" aria-label="本地会话列表">
               {page.items.map((thread) => {
@@ -163,7 +163,7 @@ export default function CodexSessions() {
                   <div key={thread.thread_id} className="nk-row flex items-center gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-mono text-xs">
-                        {thread.title || thread.thread_id}
+                        {thread.title || "未命名会话"}
                       </p>
                       <p className="mt-1 text-[11px] text-[var(--nk-muted)]">
                         {thread.archived
@@ -177,7 +177,7 @@ export default function CodexSessions() {
                       onClick={() => void openThread(thread)}
                       disabled={!thread.can_continue || opening !== null}
                       className="nk-btn-secondary px-2.5"
-                      aria-label={`继续会话 ${thread.thread_id.slice(0, 8)}`}
+                      aria-label="继续当前会话"
                     >
                       <span>{isOpening ? "打开中…" : "继续"}</span>
                       {!isOpening && <ArrowRightIcon />}
@@ -197,7 +197,7 @@ export default function CodexSessions() {
             </section>
           ) : (
             <p className="nk-empty">
-              {query.trim() ? "没有匹配的会话" : "还没有找到本地会话"}
+              {query.trim() ? "没有匹配的会话，请换一个关键词。" : "还没有找到可继续的会话。"}
             </p>
           )}
         </div>

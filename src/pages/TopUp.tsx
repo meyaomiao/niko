@@ -6,6 +6,7 @@ import { api, type PayMethod, type TopUpInfo, type TopUpRecord } from "../api/cl
 import { useSession } from "../hooks/useSession";
 import { ArrowLeftIcon } from "../components/Icons";
 import { formatBalanceUSD, parseBalanceSnapshot, type BalanceSnapshot } from "../lib/balance";
+import { classifyDesktopError, friendlyDesktopError } from "../lib/copy";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -24,7 +25,7 @@ function statusLabel(status: string): { text: string; cls: string } {
     case "pending":
       return { text: "待支付", cls: "text-amber-600 dark:text-amber-400" };
     default:
-      return { text: "已失效", cls: "text-gray-400" };
+      return { text: "状态暂不可用，请重新读取", cls: "text-gray-400" };
   }
 }
 
@@ -57,6 +58,8 @@ export default function TopUp() {
   const balanceRef = useRef(balance);
   const quotaRef = useRef(auth?.quota);
   const [records, setRecords] = useState<TopUpRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
   const pollRef = useRef<number | null>(null);
 
   const token = auth?.accessToken ?? "";
@@ -109,11 +112,19 @@ export default function TopUp() {
 
   const loadHistory = async () => {
     if (!token) return;
+    setHistoryLoading(true);
+    setHistoryError("");
     try {
       const res = await api.topupHistory(token);
       setRecords(res.items ?? []);
-    } catch {
-      /* 记录加载失败不阻塞充值 */
+    } catch (e) {
+      if (classifyDesktopError(e) === "session") {
+        handleSessionExpired();
+        return;
+      }
+      setHistoryError(friendlyDesktopError(e));
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -133,9 +144,8 @@ export default function TopUp() {
         const opts = data.amount_options ?? [];
         setAmount(opts.length ? opts[0] : data.min_topup);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "加载失败";
-        if (msg.includes("登录") || msg.includes("过期")) handleSessionExpired();
-        setError(msg);
+        if (classifyDesktopError(e) === "session") handleSessionExpired();
+        setError(friendlyDesktopError(e));
       } finally {
         setLoading(false);
       }
@@ -152,7 +162,9 @@ export default function TopUp() {
   const methodMin = selectedMethod?.min_topup ? Number(selectedMethod.min_topup) : minTopup;
   const amountValid =
     Number.isFinite(effectiveAmount) && effectiveAmount >= Math.max(minTopup, methodMin);
-  const payable = (effectiveAmount * discountOf(effectiveAmount)).toFixed(2);
+  const payable = amountValid
+    ? (effectiveAmount * discountOf(effectiveAmount)).toFixed(2)
+    : "—";
 
   /** 支付在收银台窗口完成，入账靠服务端回调，因此这里轮询订单状态与余额 */
   const startPolling = () => {
@@ -191,7 +203,8 @@ export default function TopUp() {
       await invoke("open_cashier", { url: order.url, params: order.params });
       startPolling();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "下单失败");
+      if (classifyDesktopError(e) === "session") handleSessionExpired();
+      setError(friendlyDesktopError(e));
     } finally {
       setSubmitting(false);
     }
@@ -220,14 +233,14 @@ export default function TopUp() {
             </div>
           ) : !info?.enable_online_topup || methods.length === 0 ? (
             <div className={CARD}>
-              <p className={TITLE}>站内充值暂不可用</p>
-              <p className={`mt-1 ${SUBTLE}`}>管理员未开启在线支付，请稍后再试。</p>
+              <p className={TITLE}>在线充值暂时不可用</p>
+              <p className={`mt-1 ${SUBTLE}`}>当前没有可用的支付方式，请稍后重新读取。</p>
             </div>
           ) : (
             <>
               <div className={CARD}>
                 <p className={TITLE}>选择金额</p>
-                <p className={`mt-0.5 ${SUBTLE}`}>1 单位 = 站内 $1 额度，最低 {minTopup}</p>
+                <p className={`mt-0.5 ${SUBTLE}`}>充值金额会增加对应的可用余额，最低 ${minTopup}</p>
                 <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
                   {options.map((opt) => {
                     const d = discountOf(opt);
@@ -257,7 +270,7 @@ export default function TopUp() {
                 </div>
                 <div className="mt-3 flex items-center gap-2">
                   <label className={LABEL} htmlFor="topup-custom">
-                    自定义
+                    其他金额
                   </label>
                   <input
                     id="topup-custom"
@@ -309,7 +322,7 @@ export default function TopUp() {
                 </button>
                 {waiting && (
                   <button onClick={loadHistory} className={GHOST_BTN}>
-                    刷新到账状态
+                    重新读取到账状态
                   </button>
                 )}
               </div>
@@ -321,7 +334,7 @@ export default function TopUp() {
               )}
               {waiting && (
                 <p className={SUBTLE}>
-                  已打开支付窗口，完成付款后余额会自动刷新，请勿关闭本页。
+                  支付页面已打开，完成付款后余额会自动读取，请不要关闭本页。
                 </p>
               )}
               {error && <p className="nk-alert-danger">{error}</p>}
@@ -332,10 +345,14 @@ export default function TopUp() {
             <div className="flex items-center justify-between">
               <p className={TITLE}>最近充值</p>
               <button onClick={loadHistory} className={GHOST_BTN}>
-                刷新
+                重新读取
               </button>
             </div>
-            {records.length === 0 ? (
+            {historyLoading ? (
+              <p className="nk-empty mt-3" role="status">正在读取充值记录…</p>
+            ) : historyError ? (
+              <p className="nk-alert-danger mt-3">{historyError}</p>
+            ) : records.length === 0 ? (
               <p className="nk-empty mt-3">暂无充值记录</p>
             ) : (
               <ul className="mt-2 divide-y divide-black/5 dark:divide-white/10">

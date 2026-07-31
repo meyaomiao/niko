@@ -3,7 +3,9 @@ import {
   apiRequest,
   displayMoney,
   formatDate,
+  friendlyApiError,
   getPublicConfig,
+  isRetryableApiError,
   unwrap,
 } from "./api.js";
 import {
@@ -54,8 +56,7 @@ function setDialogStatus(name, message = "", tone = "error") {
   target.dataset.tone = message ? tone : "";
 }
 
-function showTopupPayment(orderId = "", openFailed = false) {
-  const order = orderId ? `订单 ${orderId} 已创建。` : "订单已创建。";
+function showTopupPayment(openFailed = false) {
   elements.topupLoading.hidden = true;
   elements.topupFields.hidden = true;
   elements.topupSubmit.disabled = false;
@@ -65,18 +66,18 @@ function showTopupPayment(orderId = "", openFailed = false) {
   setDialogStatus(
     "topup",
     openFailed
-      ? `${order}支付页面未能自动打开，请点击“重新打开支付页”。`
-      : `${order}正在新标签页打开支付页面；如未打开，请点击“重新打开支付页”。`,
+      ? "充值已创建，但支付页面未能自动打开，请点击“重新打开支付页”。"
+      : "充值已创建，正在新标签页打开支付页面；如未打开，请点击“重新打开支付页”。",
     openFailed ? "warning" : "success",
   );
 }
 
-function openTopupPayment(orderId = "") {
-  showTopupPayment(orderId);
+function openTopupPayment() {
+  showTopupPayment();
   try {
     topupPayment.open(document, "_blank");
   } catch {
-    showTopupPayment(orderId, true);
+    showTopupPayment(true);
   }
 }
 
@@ -104,7 +105,7 @@ function showAccess({ title, message, login = true }) {
 function requireLogin() {
   showAccess({
     title: "需要先登录",
-    message: "登录后可查看同一账号的余额、充值记录和消费明细。",
+    message: "登录后可查看同一账号的余额、充值记录和使用明细。",
   });
 }
 
@@ -121,7 +122,10 @@ function renderAccount(user) {
 
   document.querySelector("[data-username]").textContent = username;
   document.querySelector("[data-profile-username]").textContent = username;
-  document.querySelector("[data-user-id]").textContent = String(user.id || user.user_id || "—");
+  const userId = document.querySelector("[data-user-id]");
+  if (userId) {
+    userId.textContent = String(user.id || user.user_id || "—");
+  }
   document.querySelector("[data-profile-email]").textContent = email || "未绑定";
   document.querySelector("[data-created-at]").textContent = formatDate(user.created_at, {
     includeTime: false,
@@ -181,7 +185,7 @@ function statusLabel(status) {
     partially_refunded: "部分退款",
     refunded: "已退款",
   };
-  return labels[status] || status || "未知";
+  return labels[status] || "状态暂不可用，请重新读取";
 }
 
 function statusTone(status) {
@@ -216,9 +220,8 @@ function renderTopup(item) {
   const row = document.createElement("li");
   row.className = "record-row";
 
-  const orderId = String(item.order_id || item.id || "—");
   row.append(
-    textBlock(`充值订单 ${orderId}`, item.payment_channel || item.channel || ""),
+    textBlock("充值记录", item.payment_channel || item.channel || ""),
   );
 
   const value = document.createElement("span");
@@ -244,7 +247,7 @@ function renderConsumption(item) {
   const row = document.createElement("li");
   row.className = "record-row";
 
-  row.append(textBlock(item.model || "模型调用", String(item.id || "")));
+  row.append(textBlock(item.model || "模型使用"));
 
   const value = document.createElement("span");
   value.className = "record-value";
@@ -255,7 +258,7 @@ function renderConsumption(item) {
   tokens.className = "record-meta";
   const promptTokens = item.prompt_tokens ?? "—";
   const completionTokens = item.completion_tokens ?? "—";
-  tokens.append(textBlock(`输入 ${promptTokens}`, `输出 ${completionTokens}`));
+  tokens.append(textBlock(`你发出的内容 ${promptTokens}`, `AI 回复的内容 ${completionTokens}`));
   row.append(tokens);
 
   const time = document.createElement("time");
@@ -278,7 +281,7 @@ function renderRecordState(kind, heading, detail, retry = false) {
     const button = document.createElement("button");
     button.className = "command-button";
     button.type = "button";
-    button.textContent = "重新加载";
+    button.textContent = "重试";
     button.addEventListener("click", () => loadRecords(kind, false));
     state.append(button);
   }
@@ -298,7 +301,7 @@ async function loadRecords(kind, append) {
     list.replaceChildren();
     renderRecordState(
       kind,
-      kind === "topups" ? "正在加载充值记录" : "正在加载消费明细",
+      kind === "topups" ? "正在加载充值记录" : "正在加载使用明细",
       "请稍候…",
     );
   }
@@ -326,8 +329,8 @@ async function loadRecords(kind, append) {
     if (list.children.length === 0) {
       renderRecordState(
         kind,
-        kind === "topups" ? "暂无充值记录" : "暂无消费明细",
-        kind === "topups" ? "完成第一笔充值后，订单会显示在这里。" : "产生模型消费后，明细会显示在这里。",
+        kind === "topups" ? "暂无充值记录" : "暂无使用记录",
+        kind === "topups" ? "完成第一笔充值后，订单会显示在这里。" : "产生模型使用后，明细会显示在这里。",
       );
     }
   } catch (error) {
@@ -337,9 +340,9 @@ async function loadRecords(kind, append) {
     }
     renderRecordState(
       kind,
-      kind === "topups" ? "充值记录加载失败" : "消费明细加载失败",
-      "账户数据没有丢失，请稍后重试。",
-      true,
+      kind === "topups" ? "充值记录暂时无法读取" : "使用明细暂时无法读取",
+      friendlyApiError(error, "账户数据没有丢失，请重新打开账户页查看；如果仍异常，请联系支持。"),
+      isRetryableApiError(error),
     );
   } finally {
     state.loading = false;
@@ -530,7 +533,7 @@ async function submitTopup(event) {
       };
     });
     topupIdempotency.clear();
-    openTopupPayment(handoff.orderId);
+    openTopupPayment();
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       elements.topupDialog.close();
@@ -539,7 +542,7 @@ async function submitTopup(event) {
     }
     setDialogStatus(
       "topup",
-      error instanceof ApiError ? error.message : "订单创建失败，请稍后重试。",
+      friendlyApiError(error, "订单创建失败，请稍后重试。"),
     );
     elements.topupSubmit.disabled = false;
     elements.topupSubmit.textContent = "前往支付";
@@ -651,7 +654,7 @@ async function sendEmailCode() {
   } catch (error) {
     setDialogStatus(
       "email",
-      error instanceof ApiError ? error.message : "验证码发送失败，请稍后重试。",
+      friendlyApiError(error, "验证码发送失败，请稍后重试。"),
     );
     button.disabled = false;
   }
@@ -687,7 +690,7 @@ async function bindEmail(event) {
     }
     setDialogStatus(
       "email",
-      error instanceof ApiError ? error.message : "邮箱绑定失败，请检查验证码后重试。",
+      friendlyApiError(error, "邮箱绑定失败，请检查验证码后重试。"),
     );
   } finally {
     submit.disabled = false;
@@ -700,7 +703,7 @@ async function logout() {
     await apiRequest("/auth/logout", { method: "POST", body: {} });
     window.location.assign("/");
   } catch (error) {
-    setNotice(error instanceof ApiError ? error.message : "退出失败，请稍后重试。");
+    setNotice(friendlyApiError(error, "退出失败，请稍后重试。"));
     elements.logout.disabled = false;
   }
 }

@@ -6,7 +6,7 @@
     <title>Niko — 一键接入 AI 助手的桌面工具</title>
     <meta
       name="description"
-      content="Niko 是一款轻量桌面工具，帮你把可用模型接入 ChatGPT 与 Claude 桌面端，无需手动寻找配置文件或复制密钥。"
+      content="Niko 是一款轻量桌面工具，帮你把可用模型接入 ChatGPT 与 Claude 桌面端，无需手动查找应用设置或复制密钥。"
     />
     <meta name="theme-color" content="#fffaf5" />
     <meta name="color-scheme" content="light" />
@@ -27,7 +27,7 @@
     <meta property="og:title" content="Niko — 把模型接进你已经在用的 AI 应用" />
     <meta
       property="og:description"
-      content="选择应用、分组和模型，Niko 自动完成配置，并在写入前保存快照。"
+      content="选择应用、模型服务和模型，Niko 自动完成接入，并在修改前保存可恢复的备份。"
     />
     <meta property="og:url" content="https://niko-ai.cc/" />
     <meta property="og:image" content="https://niko-ai.cc/og.png" />
@@ -38,7 +38,7 @@
     <meta name="twitter:title" content="Niko — 把模型接进你已经在用的 AI 应用" />
     <meta
       name="twitter:description"
-      content="无需手动找配置文件、复制接口地址或密钥。"
+      content="无需手动查找应用设置、复制服务地址或连接密钥。"
     />
     <meta name="twitter:image" content="https://niko-ai.cc/og.png" />
 
@@ -49,7 +49,7 @@
         "name": "Niko",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS 12+, Windows 10+",
-        "description": "将可用模型配置接入 ChatGPT 与 Claude 桌面端的轻量桌面工具。",
+        "description": "将可用模型接入 ChatGPT 与 Claude 桌面端的轻量桌面工具。",
         "url": "https://niko-ai.cc/",
         "downloadUrl": [
           "https://github.com/meyaomiao/niko/releases/download/niko-v0.1.3/Niko_0.1.3_universal.dmg",
@@ -114,8 +114,8 @@
             <span>把模型接进你已经在用的 AI 应用。</span>
           </h1>
           <p class="hero-text">
-            登录账号，选择应用、分组和模型。Niko 会自动把需要的配置写入
-            ChatGPT 或 Claude 桌面端，不用找配置文件，也不用复制 API 地址和密钥。
+            登录账号，选择应用、模型服务和模型。Niko 会自动完成接入
+            ChatGPT 或 Claude 桌面端，不用查找应用设置，也不用手动填写服务地址和连接密钥。
           </p>
           <div class="hero-actions hero-downloads" aria-label="下载 Niko v0.1.3">
             <a
@@ -149,28 +149,28 @@
             </div>
             <div class="workflow-intro">
               <span>准备接入</span>
-              <strong>三步完成配置</strong>
+              <strong>三步接入应用</strong>
             </div>
             <ol class="workflow-list">
               <li>
                 <span class="step-number">1</span>
                 <div><small>选择应用</small><strong>ChatGPT 或 Claude</strong></div>
-                <span class="step-state detected">已检测</span>
+                <span class="step-state detected">已找到</span>
               </li>
               <li>
                 <span class="step-number">2</span>
-                <div><small>选择模型</small><strong>按分组查看可用模型</strong></div>
+                <div><small>选择模型</small><strong>按模型服务查看可用模型</strong></div>
                 <span class="step-state">选择</span>
               </li>
               <li>
                 <span class="step-number">3</span>
-                <div><small>安全写入</small><strong>保存快照后更新配置</strong></div>
+                <div><small>安全更新</small><strong>保存可恢复的备份后更新设置</strong></div>
                 <span class="step-state protected">可恢复</span>
               </li>
             </ol>
             <div class="window-action">
               <span>原有设置会尽量保留</span>
-              <span class="mock-button">启用</span>
+              <span class="mock-button">接入到应用</span>
             </div>
           </div>
         </div>
@@ -182,7 +182,7 @@
           <h2 id="intro-title">它不是另一个聊天窗口。</h2>
           <p>
             Niko 只负责把账号和模型安全地接入官方应用。真正的对话、代码与工具调用，仍然发生在
-            ChatGPT 或 Claude 里。少一层界面，也少一套需要维护的配置。
+            ChatGPT 或 Claude 里。少一层界面，也少一套需要维护的接入设置。
           </p>
         </div>
       </section>
@@ -195,28 +195,28 @@
         <div class="feature-list">
           <article>
             <p class="feature-index">01</p>
-            <h3>自动找到应用</h3>
-            <p>检测本机已安装的 ChatGPT 与 Claude 桌面端，选中一个或全部应用后再接入。</p>
+            <h3>检查应用是否已安装</h3>
+            <p>检查本机已安装的 ChatGPT 与 Claude 桌面端，选中一个或全部应用后再接入。</p>
           </article>
           <article>
             <p class="feature-index">02</p>
-            <h3>选分组，也选模型</h3>
-            <p>登录 Niko 账号后查看可用分组、模型、价格与兼容情况，再把选择写入目标应用。</p>
+            <h3>选模型服务，也选模型</h3>
+            <p>登录 Niko 账号后查看可用模型服务、模型、价格与兼容情况，再把选择接入目标应用。</p>
           </article>
           <article>
             <p class="feature-index">03</p>
             <h3>写入前先留后路</h3>
-            <p>修改配置前保存快照；需要退出接入时，可以恢复历史快照或官方默认配置。</p>
+            <p>修改设置前保存可恢复的备份；需要退出接入时，可以恢复备份或官方默认设置。</p>
           </article>
           <article>
             <p class="feature-index">04</p>
-            <h3>配置后立即检查</h3>
-            <p>启动或重启目标应用，并通过连通性测试确认当前配置是否真的可以请求模型。</p>
+            <h3>接入后检查是否能正常使用</h3>
+            <p>启动或重启目标应用，并检查当前设置是否真的可以正常使用模型。</p>
           </article>
           <article>
             <p class="feature-index">05</p>
             <h3>日常信息不再分散</h3>
-            <p>查看余额、用量与设备，完成充值、更新、主题切换、开机启动、托盘和脱敏日志导出。</p>
+            <p>查看余额、使用明细与设备，完成充值、更新、主题切换、开机启动、托盘和脱敏日志导出。</p>
           </article>
         </div>
       </section>
@@ -226,13 +226,13 @@
           <p class="section-kicker">设计理念</p>
           <h2 id="principles-title">尽量少动，随时能退。</h2>
           <p>
-            Niko 不在本地运行代理服务。协议适配由账户服务完成，客户端只修改接入所需字段，并尽量保留原有设置。
+            Niko 不在本地运行代理服务。不同应用的连接方式由账户服务处理，客户端只修改接入所需设置，并尽量保留原有内容。
           </p>
         </div>
         <dl class="principle-list">
           <div>
             <dt>简单</dt>
-            <dd>登录、选应用、选模型、启用，一条清楚的主路径。</dd>
+            <dd>登录、选应用、选模型、接入到应用，一条清楚的主路径。</dd>
           </div>
           <div>
             <dt>轻量</dt>
@@ -240,11 +240,11 @@
           </div>
           <div>
             <dt>可恢复</dt>
-            <dd>写入前保存快照，失败时回滚，也能恢复官方默认。</dd>
+            <dd>修改前保存可恢复的备份，失败时保留原设置，也能恢复官方默认。</dd>
           </div>
           <div>
             <dt>少暴露密钥</dt>
-            <dd>无需查看或复制 API Key；登录信息保存在系统凭证存储中。</dd>
+            <dd>无需查看或复制连接密钥；登录信息保存在系统的安全存储中。</dd>
           </div>
         </dl>
       </section>
@@ -252,7 +252,7 @@
       <section class="download section" id="download" aria-labelledby="download-title">
         <div class="download-copy">
           <p class="section-kicker">开始使用</p>
-          <h2 id="download-title">安装 Niko，然后把配置交给它。</h2>
+          <h2 id="download-title">安装 Niko，然后接入你的应用。</h2>
           <p>
             v0.1.3 已发布。选择当前电脑的系统下载安装，账号与数据可在不同设备间继续使用。
           </p>
@@ -309,7 +309,7 @@
         <ol class="install-steps">
           <li><span>1</span><div><strong>安装并打开</strong><p>macOS 12+ 或 Windows 10+</p></div></li>
           <li><span>2</span><div><strong>登录 Niko</strong><p>官网与桌面端使用同一账号</p></div></li>
-          <li><span>3</span><div><strong>选择并启用</strong><p>按提示重启应用，再做连通性测试</p></div></li>
+          <li><span>3</span><div><strong>选择并接入</strong><p>按提示重启应用，再检查是否能正常使用</p></div></li>
         </ol>
       </section>
 
@@ -320,8 +320,8 @@
         </div>
         <div class="roadmap-line">
           <p><span>下一步</span> 支持更多官方 AI 客户端与命令行工具</p>
-          <p><span>持续</span> 完善不同客户端版本的兼容检测</p>
-          <p><span>持续</span> 改进诊断、故障提示与配置恢复</p>
+          <p><span>持续</span> 完善不同客户端版本的兼容性检查</p>
+          <p><span>持续</span> 改进诊断、故障提示与设置恢复</p>
           <p><span>计划</span> 完善 Windows 代码签名与安装体验</p>
         </div>
       </section>
@@ -329,7 +329,7 @@
       <section class="final-cta" aria-labelledby="final-title">
         <img src="/assets/niko-mark.svg" alt="" width="84" height="84" />
         <p class="section-kicker">Niko</p>
-        <h2 id="final-title">配置少一点，开始快一点。</h2>
+        <h2 id="final-title">手动设置少一点，开始快一点。</h2>
         <div class="hero-actions">
           <a
             class="button button-primary"
@@ -350,7 +350,7 @@
         <img src="/assets/niko-mark.svg" alt="" width="36" height="36" />
         <div><strong>Niko</strong><span>桌面端 AI 接入工具</span></div>
       </div>
-      <p>账号、余额、充值与模型消费在 Niko 的统一账户中管理。</p>
+      <p>账号、余额、充值与模型使用在 Niko 的统一账户中管理。</p>
       <div class="footer-links">
         <a href="https://github.com/meyaomiao/niko" target="_blank" rel="noreferrer">GitHub</a>
         <a href="https://github.com/meyaomiao/niko/issues" target="_blank" rel="noreferrer">问题反馈</a>

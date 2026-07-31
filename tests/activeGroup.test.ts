@@ -14,7 +14,7 @@ function status(target_id: string, state: ActiveGroupStatus["status"], group?: s
 test("account default recommendation does not masquerade as the active group", () => {
   const statuses = { codex: status("codex", "active", "A") };
   assert.equal(commonActiveGroup(statuses, ["codex"]), "A");
-  assert.equal(summarizeActiveGroups(statuses, ["codex"]).text, "当前正在使用：A");
+  assert.equal(summarizeActiveGroups(statuses, ["codex"]).text, "当前正在使用的模型服务：A");
   assert.equal(summarizeActiveGroups({}, ["codex"]).kind, "unknown");
 });
 
@@ -44,11 +44,11 @@ test("all targets only expose a common group when every target agrees", () => {
 test("changed, unavailable and delayed states use safe user-facing messages", () => {
   assert.equal(
     summarizeActiveGroups({ codex: status("codex", "changed") }, ["codex"]).text,
-    "这个应用的设置后来被改过，请重新启用后再试",
+    "这个应用的设置后来被改过，请重新接入到应用后再试。",
   );
   assert.equal(
     summarizeActiveGroups({ codex: status("codex", "not_niko") }, ["codex"]).text,
-    "当前未启用 Niko，可使用推荐分组",
+    "当前应用还没有接入 Niko，可选择模型服务后接入。",
   );
   assert.equal(
     summarizeActiveGroups({}, ["codex"], true).text,

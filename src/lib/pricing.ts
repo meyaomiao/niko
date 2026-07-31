@@ -19,24 +19,50 @@ export function buildPricingIndex(list: PricingItem[] | undefined): Map<string, 
 
 export function priceOf(item: PricingItem | undefined, groupRatio: number): ModelPrice | null {
   if (!item) return null;
+  if (!Number.isFinite(groupRatio) || groupRatio <= 0) return null;
+
+  const validAmount = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const multiplyPrice = (left: number, right: number): number | null => {
+    const value = left * right;
+    return Number.isFinite(value) ? value : null;
+  };
+
   if (item.quota_type === 1) {
-    return { perRequest: true, input: (item.model_price || 0) * groupRatio, output: 0 };
+    if (!validAmount(item.model_price)) return null;
+    const input = multiplyPrice(item.model_price, groupRatio);
+    return input === null ? null : { perRequest: true, input, output: 0 };
   }
-  const base = item.model_ratio * 2 * groupRatio;
+  if (item.quota_type !== 0 || !validAmount(item.model_ratio) || !validAmount(item.completion_ratio)) {
+    return null;
+  }
+
+  const base = multiplyPrice(item.model_ratio * 2, groupRatio);
+  if (base === null) return null;
+  const completionRatio = item.completion_ratio || 1;
+  const output = multiplyPrice(base, completionRatio);
+  if (output === null) return null;
   const price: ModelPrice = {
     perRequest: false,
     input: base,
-    output: base * (item.completion_ratio || 1),
+    output,
   };
-  if (item.cache_ratio != null) price.cache = base * item.cache_ratio;
-  if (item.create_cache_ratio != null) price.createCache = base * item.create_cache_ratio;
+  if (validAmount(item.cache_ratio)) {
+    const cache = multiplyPrice(base, item.cache_ratio);
+    if (cache !== null) price.cache = cache;
+  }
+  if (validAmount(item.create_cache_ratio)) {
+    const createCache = multiplyPrice(base, item.create_cache_ratio);
+    if (createCache !== null) price.createCache = createCache;
+  }
   return price;
 }
 
-/** 保留有效数字并去掉多余的 0，避免 $0.0000 这类无意义显示 */
+/** 金额保留可读精度；免费不显示成容易误解的 $0。 */
 export function fmtUSD(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  if (value === 0) return "$0";
-  const digits = value < 0.01 ? 6 : value < 1 ? 4 : 2;
-  return `$${Number(value.toFixed(digits))}`;
+  if (!Number.isFinite(value) || value < 0) return "价格暂不可用";
+  if (value === 0) return "免费";
+  if (value < 0.000001) return "<$0.000001";
+  const digits = value < 0.01 ? 6 : 2;
+  return `$${value.toFixed(digits)}`;
 }

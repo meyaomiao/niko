@@ -954,19 +954,34 @@ pub struct ConnectivityResult {
     pub detail: String,
 }
 
+fn safe_effective_config_error(error: &str) -> String {
+    if error.contains("未找到") {
+        return "没有找到目标应用的设置，请先安装并打开应用，再接入到应用。".to_owned();
+    }
+    if error.contains("尚未接入")
+        || error.contains("缺少")
+        || error.contains("没有")
+        || error.contains("没有默认模型")
+    {
+        return "应用设置还没有生效，请先接入到应用后再检查。".to_owned();
+    }
+    "无法读取应用设置，请重新接入后再检查。".to_owned()
+}
+
 /// 用目标应用磁盘上真实生效的配置发一条最小请求，确认配置真的能用。
 #[tauri::command]
 pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, String> {
-    let cfg = crate::targets::effective_config(&target_id)?;
+    let cfg = crate::targets::effective_config(&target_id)
+        .map_err(|error| safe_effective_config_error(&error))?;
     let model = cfg
         .model
         .clone()
-        .ok_or("配置里没有默认模型，请先点击启用")?;
+        .ok_or("应用设置里还没有选好模型，请先接入到应用后再检查。")?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "模型服务暂时不可用，请稍后重试。".to_owned())?;
 
     // 两家协议的请求体和鉴权头都不同，必须按各自格式发，否则测不出真实可用性
     let req = match cfg.auth_style.as_str() {
@@ -998,17 +1013,17 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
             let code = r.status().as_u16();
             let ok = code < 300;
             let detail = if ok {
-                format!("连通正常，{model} 可用（{:.1}s）", ms as f64 / 1000.0)
+                format!("可以正常使用，{model} 可用（{:.1}s）", ms as f64 / 1000.0)
             } else {
                 let _ = r.text().await;
                 let hint = match code {
-                    401 | 403 => "Key 无效或该分组无权限",
-                    404 => "地址或模型不存在，可尝试重新启用",
-                    429 => "请求过于频繁，稍后再试",
-                    c if c >= 500 => "上游或服务端错误",
-                    _ => "请求被拒绝",
+                    401 | 403 => "连接密钥无效或已过期，请重新接入后再试",
+                    404 => "服务地址或模型不可用，请重新接入后再试",
+                    429 => "服务暂时繁忙，请稍后重试",
+                    c if c >= 500 => "模型服务暂时不可用，请稍后重试",
+                    _ => "检查没有完成，请重新接入后再试",
                 };
-                format!("HTTP {code}：{hint}")
+                hint.to_owned()
             };
             crate::logx::append(
                 "test_connectivity",
@@ -1025,11 +1040,11 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
         Err(e) => {
             crate::logx::append("test_connectivity", &format!("{target_id} request_failed"));
             let detail = if e.is_timeout() {
-                "请求超时，检查网络或代理设置".to_owned()
+                "网络连接超时，请检查网络后重试。".to_owned()
             } else if e.is_connect() {
-                "无法连接服务器，检查网络或代理设置".to_owned()
+                "网络连接失败，请检查网络后重试。".to_owned()
             } else {
-                format!("请求失败：{e}")
+                "检查没有完成，请重新接入后再试。".to_owned()
             };
             Ok(ConnectivityResult {
                 target_id,

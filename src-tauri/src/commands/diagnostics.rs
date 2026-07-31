@@ -16,7 +16,7 @@ pub async fn ping(url: String) -> Result<PingResult, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "检查没有完成，请稍后重试。".to_owned())?;
 
     let t0 = Instant::now();
     match client.head(&url).send().await {
@@ -28,11 +28,15 @@ pub async fn ping(url: String) -> Result<PingResult, String> {
                 Ok(PingResult {
                     reachable: false,
                     latency_ms: Some(ms),
-                    error: Some(format!("HTTP {}", resp.status())),
+                    error: Some("模型服务暂时不可用，请稍后重试。".to_owned()),
                 })
             }
         }
-        Err(e) => Ok(PingResult { reachable: false, latency_ms: None, error: Some(e.to_string()) }),
+        Err(e) => Ok(PingResult {
+            reachable: false,
+            latency_ms: None,
+            error: Some(safe_reqwest_detail(&e)),
+        }),
     }
 }
 
@@ -71,7 +75,7 @@ pub async fn verify_targets(base_url: String, api_key: String) -> Vec<serde_json
                 results.push(serde_json::json!({
                     "id": t.id(),
                     "ok": false,
-                    "error": format!("HTTP {}", r.status())
+                    "error": safe_status_detail(r.status().as_u16())
                 }));
             }
             Err(e) => {
@@ -82,7 +86,7 @@ pub async fn verify_targets(base_url: String, api_key: String) -> Vec<serde_json
                 results.push(serde_json::json!({
                     "id": t.id(),
                     "ok": false,
-                    "error": e.to_string()
+                    "error": safe_reqwest_detail(&e)
                 }));
             }
         }
@@ -109,7 +113,7 @@ pub async fn ping_diag(url: String) -> Result<DiagPingResult, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "检查没有完成，请稍后重试。".to_owned())?;
 
     let t0 = Instant::now();
     match client.head(&url).send().await {
@@ -122,16 +126,16 @@ pub async fn ping_diag(url: String) -> Result<DiagPingResult, String> {
                     reachable: false,
                     latency_ms: Some(ms),
                     error_kind: Some("auth".to_owned()),
-                    error_detail: Some(format!("HTTP {code} 未授权")),
-                    suggestion: Some("请检查 API Key 是否填写正确，或 Key 已过期".to_owned()),
+                    error_detail: Some("连接密钥无效或已过期".to_owned()),
+                    suggestion: Some("请重新接入后再检查。".to_owned()),
                 })
             } else if code >= 500 {
                 Ok(DiagPingResult {
                     reachable: false,
                     latency_ms: Some(ms),
                     error_kind: Some("server".to_owned()),
-                    error_detail: Some(format!("HTTP {code} 服务端错误")),
-                    suggestion: Some("服务端暂时不可用，稍后重试或联系管理员".to_owned()),
+                    error_detail: Some("模型服务暂时不可用".to_owned()),
+                    suggestion: Some("请稍后重试。".to_owned()),
                 })
             } else {
                 Ok(DiagPingResult {
@@ -151,7 +155,7 @@ pub async fn ping_diag(url: String) -> Result<DiagPingResult, String> {
                 reachable: false,
                 latency_ms: None,
                 error_kind: Some(kind),
-                error_detail: Some(detail),
+                error_detail: Some(safe_reqwest_detail(&e)),
                 suggestion: Some(suggestion),
             })
         }
@@ -162,25 +166,45 @@ fn classify_reqwest_error(e: &reqwest::Error) -> (String, String) {
     if e.is_timeout() {
         return (
             "network".to_owned(),
-            "连接超时，请检查网络或使用代理".to_owned(),
+            "网络连接超时，请检查网络后重试。".to_owned(),
         );
     }
     if e.is_connect() {
         return (
             "network".to_owned(),
-            "无法连接到服务器，请检查网络或代理设置".to_owned(),
+            "网络连接失败，请检查网络后重试。".to_owned(),
         );
     }
     if e.is_status() {
         return (
             "server".to_owned(),
-            "服务端返回了异常状态码，稍后重试".to_owned(),
+            "模型服务暂时不可用，请稍后重试。".to_owned(),
         );
     }
     (
         "unknown".to_owned(),
-        "未知错误，请导出日志后联系支持".to_owned(),
+        "检查没有完成，请稍后重试。".to_owned(),
     )
+}
+
+fn safe_reqwest_detail(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        return "网络连接超时，请检查网络后重试。".to_owned();
+    }
+    if e.is_connect() {
+        return "网络连接失败，请检查网络后重试。".to_owned();
+    }
+    "检查没有完成，请稍后重试。".to_owned()
+}
+
+fn safe_status_detail(code: u16) -> String {
+    match code {
+        401 | 403 => "连接密钥无效或已过期，请重新接入后再试。".to_owned(),
+        404 => "服务地址或模型不可用，请重新接入后再试。".to_owned(),
+        429 => "服务暂时繁忙，请稍后重试。".to_owned(),
+        500..=599 => "模型服务暂时不可用，请稍后重试。".to_owned(),
+        _ => "检查没有完成，请重新接入后再试。".to_owned(),
+    }
 }
 
 // ─── E7-3: 日志导出 ─────────────────────────────────────────────────────────
@@ -347,11 +371,11 @@ pub async fn probe_compat(
 
 fn classify_status(code: u16) -> (String, String) {
     match code {
-        401 | 403 => ("auth".to_owned(), format!("HTTP {code}：Key 无效或无该分组权限")),
-        404 => ("model".to_owned(), format!("HTTP {code}：当前分组不存在该模型")),
-        429 => ("rate_limit".to_owned(), format!("HTTP {code}：请求过于频繁，稍后重试")),
-        c if c >= 500 => ("server".to_owned(), format!("HTTP {c}：上游或服务端错误")),
-        c => ("unknown".to_owned(), format!("HTTP {c}：请求被拒绝")),
+        401 | 403 => ("auth".to_owned(), "连接密钥无效或已过期，请重新接入后再试。".to_owned()),
+        404 => ("model".to_owned(), "当前模型不可用，请重新选择模型后再试。".to_owned()),
+        429 => ("rate_limit".to_owned(), "服务暂时繁忙，请稍后重试。".to_owned()),
+        500..=599 => ("server".to_owned(), "模型服务暂时不可用，请稍后重试。".to_owned()),
+        _ => ("unknown".to_owned(), "检查没有完成，请重新接入后再试。".to_owned()),
     }
 }
 

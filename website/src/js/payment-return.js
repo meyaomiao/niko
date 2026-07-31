@@ -1,4 +1,4 @@
-import { ApiError, apiRequest, unwrap } from "./api.js";
+import { ApiError, apiRequest, friendlyApiError, isRetryableApiError, unwrap } from "./api.js";
 
 const result = document.querySelector("[data-payment-result]");
 const mark = document.querySelector("[data-result-mark]");
@@ -34,28 +34,28 @@ function orderStatus(payload) {
 function renderStatus(status) {
   switch (status) {
     case "success":
-      render("success", "充值已到账", "订单已由支付回调确认，个人中心余额将显示最新结果。", "✓");
+      render("success", "充值已到账", "这次充值已由支付结果确认，个人中心余额将显示最新结果。", "✓");
       return;
     case "failed":
-      render("failed", "支付未完成", "订单支付失败，账户余额没有变化。你可以返回个人中心重新发起充值。", "×");
+      render("failed", "支付未完成", "这次充值没有完成，账户余额没有变化。你可以返回个人中心重新发起充值。", "×");
       return;
     case "expired":
-      render("failed", "订单已过期", "本次充值订单已过期，账户余额没有变化。", "×");
+      render("failed", "充值已过期", "这次充值已过期，账户余额没有变化。", "×");
       return;
     case "partially_refunded":
-      render("success", "订单已部分退款", "退款结果已经记入统一账户，请前往个人中心查看余额和记录。", "✓");
+      render("success", "充值已部分退款", "退款结果已经记入统一账户，请前往个人中心查看余额和记录。", "✓");
       return;
     case "refunded":
-      render("success", "订单已退款", "退款结果已经记入统一账户，请前往个人中心查看余额和记录。", "✓");
+      render("success", "充值已退款", "退款结果已经记入统一账户，请前往个人中心查看余额和记录。", "✓");
       return;
     default:
-      render("pending", "正在确认支付结果", "支付平台回跳不代表到账，正在等待服务端支付回调。", "…");
+      render("pending", "正在确认充值结果", "支付页面返回不代表已经到账，正在等待支付结果确认。", "…");
   }
 }
 
 async function pollOrder() {
   if (!validOrderId) {
-    render("failed", "无法识别订单", "回跳地址缺少有效订单号，请从个人中心查看充值记录。", "×");
+    render("failed", "无法识别这次充值", "回跳地址缺少有效信息，请从个人中心查看充值记录。", "×");
     retry.hidden = true;
     return;
   }
@@ -74,13 +74,18 @@ async function pollOrder() {
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        render("failed", "登录状态已失效", "请重新登录后再查看这笔充值订单。", "×");
+        render("failed", "登录状态已失效", "请重新登录后再查看这次充值。", "×");
         action.href = `/login/?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
         action.textContent = "重新登录";
         return;
       }
+      if (!isRetryableApiError(error)) {
+        render("failed", "暂时无法查询充值结果", friendlyApiError(error, "请到个人中心查看最新记录。"), "×");
+        retry.hidden = true;
+        return;
+      }
       if (attempt >= 2) {
-        render("failed", "暂时无法查询订单", "支付结果不会由此页面决定，请稍后重新查询或查看充值记录。", "×");
+        render("failed", "暂时无法查询充值结果", "支付结果不会由此页面决定，请稍后重试或查看充值记录。", "×");
         retry.hidden = false;
         return;
       }
@@ -89,7 +94,7 @@ async function pollOrder() {
   }
 
   if (!stopped) {
-    render("pending", "订单仍在处理中", "支付回调可能需要一点时间。你可以稍后在个人中心查看最终结果。", "…");
+    render("pending", "充值仍在处理中", "支付结果确认可能需要一点时间。你可以稍后在个人中心查看最终结果。", "…");
     retry.hidden = false;
   }
 }

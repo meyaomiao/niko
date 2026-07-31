@@ -22,9 +22,9 @@ export type ActiveGroupView =
   | { kind: "changed"; text: string }
   | { kind: "unknown"; text: string };
 
-const ACTIVE_TEXT = "当前正在使用";
-const CHANGED_TEXT = "这个应用的设置后来被改过，请重新启用后再试";
-const UNKNOWN_TEXT = "暂时无法确认当前分组";
+const ACTIVE_TEXT = "当前正在使用的模型服务";
+const CHANGED_TEXT = "这个应用的设置后来被改过，请重新接入到应用后再试。";
+const UNKNOWN_TEXT = "暂时无法确认当前使用的模型服务，请重新检查。";
 const ACTIVE_STATES = new Set<ActiveGroupState>([
   "active",
   "not_niko",
@@ -96,13 +96,13 @@ export function summarizeActiveGroups(
     selected.every((status) => status?.status === "active")
     && selected.some((status) => status?.status === "active")
   ) {
-    return { kind: "different", text: "不同应用正在使用不同分组" };
+    return { kind: "different", text: "不同应用正在使用不同的模型服务，请分别检查。" };
   }
   if (selected.some((status) => status?.status === "changed")) {
     return { kind: "changed", text: CHANGED_TEXT };
   }
   if (selected.every((status) => status?.status === "not_niko")) {
-    return { kind: "not_niko", text: "当前未启用 Niko，可使用推荐分组" };
+    return { kind: "not_niko", text: "当前应用还没有接入 Niko，可选择模型服务后接入。" };
   }
   return { kind: "unknown", text: UNKNOWN_TEXT };
 }

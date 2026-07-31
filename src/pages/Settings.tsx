@@ -43,10 +43,10 @@ interface DiagPingResult {
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
-  network: "网络不通",
-  auth: "凭证无效",
-  server: "服务端错误",
-  unknown: "未知错误",
+  network: "网络连接失败",
+  auth: "连接密钥无效或已过期",
+  server: "模型服务暂时不可用",
+  unknown: "检查没有完成",
 };
 
 const TARGET_LABELS: Record<string, string> = {
@@ -83,6 +83,7 @@ export default function Settings() {
   // 快照恢复 (E5-5)
   const [snapshots, setSnapshots] = useState<Record<string, SnapshotEntry[]>>({});
   const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [snapshotError, setSnapshotError] = useState("");
   const [restoring, setRestoring] = useState<string | null>(null);
   const [restoreMsg, setRestoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -166,16 +167,21 @@ export default function Settings() {
 
   const loadSnapshots = async () => {
     setSnapshotLoading(true);
+    setSnapshotError("");
     const result: Record<string, SnapshotEntry[]> = {};
+    let failed = false;
     await Promise.all(
       ALL_TARGET_IDS.map(async (id) => {
         try {
           const list = await invoke<SnapshotEntry[]>("list_snapshots", { targetId: id });
           if (list.length > 0) result[id] = list;
-        } catch { /* ignore */ }
+        } catch {
+          failed = true;
+        }
       })
     );
     setSnapshots(result);
+    if (failed) setSnapshotError("备份暂时无法读取，请重新读取。");
     setSnapshotLoading(false);
   };
 
@@ -184,7 +190,7 @@ export default function Settings() {
     setRestoreMsg(null);
     try {
       await invoke("restore_snapshot", { targetId, filename });
-      setRestoreMsg({ ok: true, text: `✓ 已恢复 ${TARGET_LABELS[targetId] ?? targetId} 的快照` });
+      setRestoreMsg({ ok: true, text: `✓ 已恢复 ${TARGET_LABELS[targetId] ?? targetId} 的应用设置` });
     } catch (e) {
       setRestoreMsg({ ok: false, text: `✗ 恢复失败：${safeFailure(e).message}` });
     } finally {
@@ -240,7 +246,7 @@ export default function Settings() {
         reachable: false,
         error_kind: "unknown",
         error_detail: safeFailure(e).message,
-        suggestion: "请导出日志后联系支持",
+        suggestion: "请稍后重试。",
       });
     } finally {
       setPinging(false);
@@ -261,8 +267,8 @@ export default function Settings() {
         setExporting(false);
         return;
       }
-      const written = await invoke<string>("export_log", { destPath: dest });
-      setExportMsg(`✓ 日志已导出到 ${written}`);
+      await invoke<string>("export_log", { destPath: dest });
+      setExportMsg("✓ 日志已导出，可交给支持人员查看。");
     } catch (e) {
       setExportMsg(`✗ 导出失败：${safeFailure(e).message}`);
     } finally {
@@ -299,7 +305,7 @@ export default function Settings() {
             <h2 className={`mb-3 ${OVERLINE}`}>当前账户</h2>
             <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
               <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
-              <p>默认推荐：<span className="text-gray-900 dark:text-white">{auth?.defaultGroup ?? "—"}</span></p>
+              <p>推荐的模型服务：<span className="text-gray-900 dark:text-white">{auth?.defaultGroup ?? "—"}</span></p>
             </div>
             <button
               onClick={logout}
@@ -315,7 +321,7 @@ export default function Settings() {
               <div>
                 <h2 className={OVERLINE}>ChatGPT 会话</h2>
                 <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
-                  {codexInventory ? "本地会话状态" : "正在检查本地会话…"}
+                  {codexInventory ? "当前会话状态" : "正在检查会话…"}
                 </p>
               </div>
               <span className="nk-pill shrink-0">
@@ -323,7 +329,7 @@ export default function Settings() {
                   ? codexInventory.status === "healthy"
                     ? "当前状态正常"
                     : codexInventory.status === "needs_check"
-                      ? "发现需要整理的会话"
+                      ? "发现需要检查的会话"
                       : "有部分会话暂时不可用"
                   : "检查中"}
               </span>
@@ -401,7 +407,7 @@ export default function Settings() {
           {/* E5-5: 快照恢复 */}
           <section className={CARD}>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className={OVERLINE}>配置快照恢复</h2>
+              <h2 className={OVERLINE}>可恢复的备份</h2>
               <button
                 onClick={loadSnapshots}
                 disabled={snapshotLoading}
@@ -419,9 +425,13 @@ export default function Settings() {
               </div>
             )}
 
-            {!hasAnySnapshot && !snapshotLoading && (
+            {snapshotError && (
+              <p className="nk-alert-danger mb-3" role="alert">{snapshotError}</p>
+            )}
+
+            {!hasAnySnapshot && !snapshotLoading && !snapshotError && (
               <p className="nk-empty">
-                暂无备份。首次配置接入目标后会自动创建快照。
+                还没有备份。首次接入应用时会自动保存一份，之后可从这里恢复。
               </p>
             )}
 
@@ -444,7 +454,7 @@ export default function Settings() {
                           className="nk-row flex items-center justify-between gap-3"
                         >
                           <div>
-                            <p className="text-xs text-gray-800 dark:text-gray-200">{snap.original_name}</p>
+                            <p className="text-xs text-gray-800 dark:text-gray-200">可恢复的应用设置</p>
                             <p className="text-xs text-gray-500 dark:text-gray-400">{formatTime(snap.timestamp)}</p>
                           </div>
                           <button
@@ -463,9 +473,9 @@ export default function Settings() {
             })}
           </section>
 
-          {/* 连通性检测 */}
+          {/* 检查是否能正常使用 */}
           <section className={CARD}>
-            <h2 className={`mb-3 ${OVERLINE}`}>连通性自检</h2>
+            <h2 className={`mb-3 ${OVERLINE}`}>检查是否能正常使用</h2>
             <div className="flex gap-2">
               <input
                 value={pingUrl}
@@ -478,7 +488,7 @@ export default function Settings() {
                 disabled={pinging}
                 className="nk-btn-primary"
               >
-                {pinging ? "检测中…" : "检测"}
+                {pinging ? "检查中…" : "开始检查"}
               </button>
             </div>
             {pingResult && (
@@ -488,14 +498,14 @@ export default function Settings() {
                 </div>
               ) : (
                 <div className="nk-alert-danger mt-3 space-y-1.5">
-                  <p className="font-medium text-red-600 dark:text-red-400">
+                    <p className="font-medium text-red-600 dark:text-red-400">
                     ✗ {ERROR_KIND_LABELS[pingResult.error_kind ?? "unknown"]}
                   </p>
                   {pingResult.error_detail && (
-                    <p className="text-red-600/80 dark:text-red-300/80">详情：{pingResult.error_detail}</p>
+                    <p className="text-red-600/80 dark:text-red-300/80">当前状态：{pingResult.error_detail}</p>
                   )}
                   {pingResult.suggestion && (
-                    <p className="text-gray-700 dark:text-gray-300">建议：{pingResult.suggestion}</p>
+                    <p className="text-gray-700 dark:text-gray-300">下一步：{pingResult.suggestion}</p>
                   )}
                 </div>
               )

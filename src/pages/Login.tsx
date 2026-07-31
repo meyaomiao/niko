@@ -24,6 +24,7 @@ import {
 import Logo from "../components/Logo";
 import TargetAppIcon from "../components/TargetAppIcon";
 import { BookOpenIcon } from "../components/Icons";
+import { displayDeviceLabel, friendlyLoginError } from "../lib/copy";
 
 // 设备信息
 function getDeviceId(): string {
@@ -196,8 +197,8 @@ function getInstallGuideSteps(target: LoginTarget, platform: InstallPlatform): I
       tone: "bg-[var(--nk-danger-soft)] text-[var(--nk-accent)]",
     },
     {
-      title: "回到 Niko 重新检测",
-      description: "应用打开后回到这里点击“重新检测”，显示“已安装”即可继续。",
+      title: "回到 Niko 重新检查",
+      description: "应用打开后回到这里点击“重新检查”，显示“已安装”即可继续。",
       icon: "detect",
       tone: "bg-[var(--nk-success-soft)] text-[var(--nk-success)]",
     },
@@ -233,12 +234,12 @@ function TargetPreparation({
   const allInstalled = detectionStatus === "success" && installedCount === targets.length;
   const showGuide = detectionStatus === "success" && !allInstalled && selectedTarget;
   const statusLabel = detectionStatus === "checking"
-    ? "正在检测本机应用"
+    ? "正在检查本机应用"
     : detectionStatus === "error"
-      ? "检测失败"
+      ? "检查失败"
       : allInstalled
         ? "应用已准备好"
-        : `检测完成 · 还需安装 ${missingTargets.length} 个应用`;
+        : `检查完成 · 还需安装 ${missingTargets.length} 个应用`;
   const statusDot =
     detectionStatus === "checking"
       ? "text-indigo-600 dark:text-indigo-400"
@@ -271,7 +272,7 @@ function TargetPreparation({
           className="nk-btn-secondary"
         >
           <RefreshIcon spinning={detectionStatus === "checking"} />
-          {detectionStatus === "checking" ? "检测中" : "重新检测"}
+          {detectionStatus === "checking" ? "检查中" : "重新检查"}
         </button>
       </div>
 
@@ -329,7 +330,7 @@ function TargetPreparation({
                     </p>
                   ) : renderState === "missing" ? (
                     <p className="mt-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-                      未检测到安装
+                      还没有安装
                     </p>
                   ) : renderState === "checking" ? (
                     <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -373,7 +374,7 @@ function TargetPreparation({
           </div>
           <p className="mt-4 text-sm font-medium text-gray-800 dark:text-gray-200">暂时没能读取安装状态</p>
           <p className="mt-1 max-w-sm text-xs leading-5 text-gray-500 dark:text-gray-400">
-            确认应用已经安装后，再点击右上角“重新检测”。
+            确认应用已经安装后，再点击右上角“重新检查”。
           </p>
         </div>
       )}
@@ -517,7 +518,7 @@ export default function Login() {
       setDetectionStatus("success");
     } catch {
       setDetectionStatus("error");
-      setDetectionError("未能读取本机应用状态，请重新检测。");
+      setDetectionError("未能读取本机应用状态，请重新检查。");
     }
   };
 
@@ -576,7 +577,7 @@ export default function Login() {
     try {
       await open(target.downloadUrl);
     } catch {
-      setTargetActionError(`无法打开浏览器，请手动访问：${target.downloadUrl}`);
+      setTargetActionError("无法打开下载页面，请手动打开浏览器访问官方页面。");
     }
   };
 
@@ -604,7 +605,7 @@ export default function Login() {
         enterDeviceLimit(err, "login");
         return;
       }
-      setError(err instanceof Error ? err.message : "登录失败");
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -626,7 +627,7 @@ export default function Login() {
         enterDeviceLimit(err, "2fa");
         return;
       }
-      setError(err instanceof Error ? err.message : "验证失败");
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -637,7 +638,7 @@ export default function Login() {
     setDeviceLimit(err.deviceLimit);
     setSelectedDevices([]);
     setLimitFrom(from);
-    setError(err.message);
+    setError(friendlyLoginError(err));
     setStage("device-limit");
   };
 
@@ -673,7 +674,7 @@ export default function Login() {
         enterDeviceLimit(err, limitFrom);
         return;
       }
-      setError(err instanceof Error ? err.message : "登录失败");
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -950,7 +951,7 @@ export default function Login() {
                     />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                        {d.device_name || d.device_id.slice(0, 8)}
+                        {displayDeviceLabel(d.device_name, d.platform)}
                       </span>
                       <span className="block text-xs text-gray-500 dark:text-gray-400">
                         {d.platform} · 最后活跃 {formatDeviceTime(d.accessed_time)}

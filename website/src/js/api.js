@@ -15,6 +15,85 @@ export class ApiError extends Error {
   }
 }
 
+export function isRetryableApiError(error) {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+  const code = String(error.code || "").toUpperCase();
+  return (
+    code === "NETWORK_ERROR" ||
+    code === "TIMEOUT" ||
+    code === "RATE_LIMITED" ||
+    error.status === 408 ||
+    error.status === 429 ||
+    (error.status >= 500 && error.status <= 599)
+  );
+}
+
+export function friendlyApiError(error, fallback = "操作无法完成，请联系支持。") {
+  if (!(error instanceof ApiError)) {
+    return fallback;
+  }
+  const code = String(error.code || "").toUpperCase();
+  const text = `${code} ${error.message || ""}`.toLowerCase();
+  if (["INVALID_CREDENTIALS", "AUTH_FAILED", "AUTH_INVALID_CREDENTIALS"].includes(code)) {
+    return "账号或密码不正确，请检查后再试。";
+  }
+  if (error.status === 401 || /session|登录状态|未登录|过期/.test(text)) {
+    return "登录状态已过期，请重新登录后再试。";
+  }
+  if (
+    error.status === 402 ||
+    /余额不足|余额|quota|insufficient|balance/.test(text)
+  ) {
+    return "余额不足，请先充值后再试。";
+  }
+  if (code === "NETWORK_ERROR" || code === "TIMEOUT") {
+    return "网络连接失败，请检查网络后重试。";
+  }
+  if (error.status === 429 || code === "RATE_LIMITED") {
+    return error.retryAfter > 0
+      ? `操作过于频繁，请在 ${error.retryAfter} 秒后重试。`
+      : "操作过于频繁，请稍后重试。";
+  }
+  if (["TURNSTILE_FAILED", "TURNSTILE_REQUIRED", "VERIFICATION_REQUIRED"].includes(code)) {
+    return "安全验证未通过，请重新验证。";
+  }
+  if (["USERNAME_TAKEN", "ACCOUNT_CONFLICT"].includes(code)) {
+    return "这个用户名暂不可用，请换一个再试。";
+  }
+  if (code === "PASSWORD_MISMATCH") {
+    return "两次输入的密码不一致。";
+  }
+  if (code.startsWith("TOPUP") || /支付|订单|充值/.test(text)) {
+    return isRetryableApiError(error)
+      ? "充值服务暂时不可用，请稍后重试。"
+      : "充值信息无法处理，请检查充值金额和支付方式。";
+  }
+  if (error.status === 400) {
+    return "提交的信息不符合要求，请检查输入后重新提交。";
+  }
+  if (error.status === 403) {
+    return "当前账号没有权限完成这项操作，请联系支持。";
+  }
+  if (error.status === 404) {
+    return "没有找到这项内容，请回到个人中心查看最新记录。";
+  }
+  if (error.status === 409) {
+    return "当前页面状态已变化，请刷新页面后再操作。";
+  }
+  if (error.status === 408) {
+    return "请求超时，请稍后重试。";
+  }
+  if (error.status >= 500 && error.status <= 599) {
+    return "账户服务暂时不可用，请稍后重试。";
+  }
+  if (error.status >= 400 && error.status <= 499) {
+    return "请求无法完成，请联系支持确认这项操作。";
+  }
+  return "操作无法完成，请联系支持。";
+}
+
 function readCookie(name) {
   const prefix = `${encodeURIComponent(name)}=`;
   for (const part of document.cookie.split(";")) {

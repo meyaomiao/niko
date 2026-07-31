@@ -5,7 +5,7 @@ export type CompatLevel = "native" | "good" | "limited" | "unsupported";
 
 export const COMPAT_LABEL: Record<CompatLevel, string> = {
   native: "原生兼容",
-  good: "转换接入",
+  good: "服务适配",
   limited: "部分受限",
   unsupported: "不建议",
 };
@@ -35,23 +35,23 @@ const MATRIX: Record<string, Record<Family, CompatLevel>> = {
 
 const NOTES: Record<string, Record<Family, string>> = {
   "codex": {
-    claude: "经服务端协议转换接入，对话与工具调用正常",
-    gpt: "同协议直连，原生能力全部可用",
-    gemini: "多模态与思考链存在差异，部分能力缺失",
-    other: "未在该目标上验证过的模型，能力可能缺失",
+    claude: "通过服务适配接入，对话与工具调用正常",
+    gpt: "可直接使用，原生能力全部可用",
+    gemini: "图片理解和深度思考等能力有差异，部分能力可能不可用",
+    other: "暂未在该应用验证，部分能力可能不可用",
   },
   "claude-desktop": {
-    claude: "配置写入内置 Claude Code 面板，原生能力全部可用",
-    gpt: "内置 Claude Code 面板经服务端协议转换接入，扩展思考不可用",
-    gemini: "多模态与思考链差异最大，仅基础对话可用",
-    other: "未在该目标上验证过的模型，能力可能缺失",
+    claude: "可在内置 Claude Code 面板使用，原生能力全部可用",
+    gpt: "通过服务适配接入内置 Claude Code 面板，深度思考不可用",
+    gemini: "图片理解和深度思考等能力差异较大，目前仅支持基础对话",
+    other: "暂未在该应用验证，部分能力可能不可用",
   },
 };
 
 export function baselineFor(targetId: string, model: string): { level: CompatLevel; note: string } {
   const family = modelFamily(model);
   const level = MATRIX[targetId]?.[family] ?? "unsupported";
-  const note = NOTES[targetId]?.[family] ?? "该组合未收录，等级未知";
+  const note = NOTES[targetId]?.[family] ?? "暂未收录该组合，兼容性未知";
   return { level, note };
 }
 

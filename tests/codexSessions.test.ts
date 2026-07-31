@@ -16,7 +16,7 @@ test("accepts only the versioned bounded safe error contract", () => {
   ]) {
     const result = safeFailure(rejection);
     assert.equal(result.retryable, false);
-    assert.equal(result.message, "操作失败，请稍后再试。");
+    assert.equal(result.message, "操作没有完成，请重试。");
     assert.doesNotMatch(JSON.stringify(result), /Users|config\.toml|auth\.json|journal|WAL|SQLite|custom|lock|API|token/i);
   }
 });

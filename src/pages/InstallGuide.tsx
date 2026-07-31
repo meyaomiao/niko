@@ -145,9 +145,9 @@ export default function InstallGuide() {
               还没装 ChatGPT 桌面端或 Claude 桌面端？
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              本应用负责把账号和模型配置写进这些应用，本身不替代它们。请先从官网装好
+              本应用负责把账号和模型设置接入这些应用，本身不替代它们。请先从官网装好
               ChatGPT 桌面端或 Claude 桌面端，再回到首页选择应用并一键接入，
-              本应用会自动检测到已安装的应用。
+              本应用会自动检查应用是否已经安装。
             </p>
           </div>
         </div>

@@ -41,7 +41,7 @@
         <img src="/assets/niko-mark.svg" alt="" width="58" height="58" />
         <p class="account-eyebrow">个人中心</p>
         <h1 data-access-title>需要先登录</h1>
-        <p data-access-message>登录后可查看余额、充值记录和消费明细。</p>
+        <p data-access-message>登录后可查看余额、充值记录和使用明细。</p>
         <a class="button button-primary" href="/login/?next=/account/" data-access-action>前往登录</a>
       </section>
 
@@ -50,7 +50,6 @@
           <div>
             <p class="account-eyebrow">个人中心</p>
             <h1 id="account-title">你好，<span data-username>用户</span></h1>
-            <p class="account-identity">账户 ID：<span data-user-id>—</span></p>
           </div>
           <div class="balance-block" aria-live="polite">
             <span class="balance-label">当前余额</span>
@@ -59,7 +58,7 @@
           </div>
           <div class="overview-actions">
             <button class="command-button primary" type="button" data-open-topup>充值</button>
-            <button class="command-button" type="button" data-refresh-account>刷新数据</button>
+            <button class="command-button" type="button" data-refresh-account>重新读取</button>
           </div>
         </section>
 
@@ -102,7 +101,7 @@
               aria-selected="false"
               tabindex="-1"
               data-tab="consumptions"
-            >消费明细</button>
+            >使用明细</button>
           </div>
 
           <div
@@ -125,7 +124,7 @@
             data-panel="consumptions"
             hidden
           >
-            <div class="data-state" data-state="consumptions"><p>正在加载消费明细…</p></div>
+            <div class="data-state" data-state="consumptions"><p>正在加载使用明细…</p></div>
             <ol class="record-list" data-list="consumptions" hidden></ol>
             <button class="load-more" type="button" data-load-more="consumptions" hidden>加载更多</button>
           </div>
@@ -157,7 +156,7 @@
           <p class="form-status" data-topup-status role="status" aria-live="polite"></p>
           <div class="dialog-actions">
             <button class="command-button" type="button" data-cancel-dialog data-topup-cancel>取消</button>
-            <button class="command-button" type="button" data-new-topup hidden>创建新订单</button>
+            <button class="command-button" type="button" data-new-topup hidden>开始新的充值</button>
             <button class="command-button primary" type="submit" data-topup-submit disabled>前往支付</button>
           </div>
         </form>

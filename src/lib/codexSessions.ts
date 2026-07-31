@@ -2,14 +2,14 @@ export const SAFE_ERROR_VERSION = 1 as const;
 export const SESSION_PAGE_SIZE = 20;
 export const SESSION_QUERY_LIMIT = 80;
 
-const FALLBACK_MESSAGE = "操作失败，请稍后再试。";
+const FALLBACK_MESSAGE = "操作没有完成，请重试。";
 const SAFE_ERRORS: Record<string, ReadonlyArray<{
   message: string;
   retryable: boolean;
   action?: string;
 }>> = {
   invalid_request: [{ message: "请求无效，请重新检查。", retryable: false }],
-  read_failed: [{ message: "本地内容暂时无法读取。", retryable: true, action: "retry" }],
+  read_failed: [{ message: "会话暂时无法读取。", retryable: true, action: "retry" }],
   busy: [{ message: "另一个操作正在进行，请稍后再试。", retryable: true, action: "retry" }],
   change_failed: [
     { message: "操作未完成，原有内容保持可用。", retryable: false },
@@ -119,7 +119,7 @@ export function acceptsResponse(
 
 export function codexNormalizationLabel(status: string): string {
   if (status === "healthy") return "当前状态正常";
-  if (status === "needs_check") return "发现需要整理的会话";
+  if (status === "needs_check") return "发现需要检查的会话";
   if (status === "blocked") return "有部分会话暂时无法继续";
   return "状态待检查";
 }
