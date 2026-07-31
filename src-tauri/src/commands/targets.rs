@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::commands::codex_sessions::normalize_codex_session_storage_inner;
 use crate::targets::{all_targets, ApplyPlan};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct TargetInfo {
@@ -38,6 +39,12 @@ pub async fn list_targets() -> Result<Vec<TargetInfo>, String> {
 
 #[tauri::command]
 pub async fn apply_target(req: ApplyRequest) -> Result<Vec<String>, String> {
+    if req.target_id == "codex" {
+        let outcome = normalize_codex_session_storage_inner("custom".to_owned());
+        if !outcome.ok {
+            return Err(outcome.message);
+        }
+    }
     let plan = ApplyPlan {
         base_url: req.base_url,
         api_key: req.api_key,
@@ -80,6 +87,17 @@ pub async fn apply_all_targets(
     let mut results = Vec::new();
     for t in &targets {
         if t.is_installed() {
+            if t.id() == "codex" {
+                let outcome = normalize_codex_session_storage_inner("custom".to_owned());
+                if !outcome.ok {
+                    results.push(serde_json::json!({
+                        "id": t.id(),
+                        "ok": false,
+                        "error": outcome.message
+                    }));
+                    continue;
+                }
+            }
             match t.apply(&plan) {
                 Ok(s) => results.push(serde_json::json!({
                     "id": s.target_id,
@@ -252,6 +270,12 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
 /// 移除 Niko 写入的中转配置，让应用回到用官方账号登录的状态
 #[tauri::command]
 pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, String> {
+    if target_id == "codex" {
+        let outcome = normalize_codex_session_storage_inner("openai".to_owned());
+        if !outcome.ok {
+            return Err(outcome.message);
+        }
+    }
     let summary = crate::targets::restore_defaults(&target_id)?;
     crate::logx::append(
         "restore_target_defaults",

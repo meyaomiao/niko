@@ -9,7 +9,7 @@ import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/c
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
-import { LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
+import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
 import TargetAppIcon from "../components/TargetAppIcon";
 import {
   balanceReducer,
@@ -310,10 +310,18 @@ export default function Home() {
         });
         setResults(map);
         const okCount = applied.filter((r) => r.ok).length;
+        const errors = applied
+          .filter((result) => !result.ok && result.error)
+          .map((result) => result.error as string);
         setNotice(
           applied.length === 0
             ? { ok: false, text: "未检测到已安装的应用，请先安装 ChatGPT 或 Claude" }
-            : { ok: okCount > 0, text: `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}` }
+            : {
+                ok: okCount === applied.length,
+                text: errors.length > 0
+                  ? `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}；${errors.join("；")}`
+                  : `已为 ${okCount}/${applied.length} 个应用启用 ${model || group}`,
+              }
         );
       } else {
         const changed = await invoke<string[]>("apply_target", {
@@ -484,6 +492,10 @@ export default function Home() {
           <button onClick={() => navigate("/settings")} className={GHOST_BTN}>
             <SettingsIcon />
             设置
+          </button>
+          <button onClick={() => navigate("/sessions")} className={GHOST_BTN}>
+            <BookOpenIcon />
+            会话
           </button>
           <button onClick={logout} className={GHOST_BTN}>
             <LogOutIcon />

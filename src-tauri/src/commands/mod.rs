@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod codex_sessions;
 pub mod bootstrap;
 pub mod diagnostics;
 pub mod payment;

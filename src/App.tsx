@@ -7,6 +7,7 @@ import TopUp from "./pages/TopUp";
 import Settings from "./pages/Settings";
 import ForceUpgrade from "./pages/ForceUpgrade";
 import InstallGuide from "./pages/InstallGuide";
+import CodexSessions from "./pages/CodexSessions";
 import { loadAuth, saveAuth } from "./store/auth";
 import { api } from "./api/client";
 import { initTheme } from "./hooks/useTheme";
@@ -94,6 +95,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to={loadAuth()?.accessToken ? "/home" : "/login"} replace />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/sessions" element={<CodexSessions />} />
       <Route
         path="/*"
         element={

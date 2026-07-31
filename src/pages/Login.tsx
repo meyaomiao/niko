@@ -23,6 +23,7 @@ import {
 } from "../lib/registration";
 import Logo from "../components/Logo";
 import TargetAppIcon from "../components/TargetAppIcon";
+import { BookOpenIcon } from "../components/Icons";
 
 // 设备信息
 function getDeviceId(): string {
@@ -1136,6 +1137,14 @@ export default function Login() {
             </button>
           </form>
         )}
+        <button
+          type="button"
+          onClick={() => navigate("/sessions")}
+          className="nk-btn-ghost mt-5 w-full text-sm"
+        >
+          <BookOpenIcon />
+          查看本地会话
+        </button>
           </div>
         </section>
       </div>

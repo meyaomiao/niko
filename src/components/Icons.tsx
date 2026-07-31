@@ -64,3 +64,31 @@ export function UpdateIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function BookOpenIcon(props: IconProps) {
+  return (
+    <svg {...shared} {...props}>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5A1.5 1.5 0 0 1 18.5 20H6.5A2.5 2.5 0 0 1 4 17.5Z" />
+      <path d="M7 6h7.5A1.5 1.5 0 0 1 16 7.5V19" />
+    </svg>
+  );
+}
+
+export function RefreshCwIcon(props: IconProps) {
+  return (
+    <svg {...shared} {...props}>
+      <path d="M20 6v5h-5" />
+      <path d="M4 18v-5h5" />
+      <path d="M19 11a8 8 0 0 0-13.4-5.6L4 8" />
+      <path d="M5 13a8 8 0 0 0 13.4 5.6L20 16" />
+    </svg>
+  );
+}
+
+export function ArrowRightIcon(props: IconProps) {
+  return (
+    <svg {...shared} {...props}>
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  );
+}

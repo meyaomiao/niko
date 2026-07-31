@@ -46,10 +46,11 @@ pub trait Target: Send + Sync {
 // ─── E5-2: TOML 保守合并 ────────────────────────────────────────────────────
 //
 // Codex 只从 [model_providers.<name>] 读取自定义端点，顶层 model_provider 指向它。
-// 策略：只改 momotoken 这一个 provider 段和顶层 model / model_provider，其余 key 原封不动。
+// 会话统一后日常只更新 custom 路由，不再因 Provider 切换改写历史。
 
 /// Codex config.toml 里我们独占的 provider 段名
-const CODEX_PROVIDER: &str = "momotoken";
+const CODEX_PROVIDER: &str = "custom";
+const LEGACY_CODEX_PROVIDER: &str = "momotoken";
 
 /// 纯 API 模式固定使用 Codex 当前支持的最高推理档。
 const CODEX_MAX_REASONING_EFFORT: &str = "ultra";
@@ -845,19 +846,19 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
         "codex" => {
             let config_path = h.join(".codex").join("config.toml");
             let raw = fs::read_to_string(&config_path)
-                .map_err(|_| "未找到 ~/.codex/config.toml，请先点击启用".to_owned())?;
+                .map_err(|_| "未找到 ChatGPT 本地配置，请先点击启用".to_owned())?;
             let doc: toml::Table = raw
                 .parse()
                 .map_err(|e| format!("~/.codex/config.toml 解析失败：{e}"))?;
             if doc.get("model_provider").and_then(|v| v.as_str()) != Some(CODEX_PROVIDER) {
-                return Err("当前 Codex 配置未指向 momotoken，请先点击启用".to_owned());
+                return Err("当前 ChatGPT 配置尚未接入 Niko，请先点击启用".to_owned());
             }
             let provider = doc
                 .get("model_providers")
                 .and_then(|v| v.as_table())
                 .and_then(|t| t.get(CODEX_PROVIDER))
                 .and_then(|v| v.as_table())
-                .ok_or("配置里缺少 momotoken provider，请先点击启用")?;
+                .ok_or("ChatGPT 配置里缺少 Niko 接入信息，请先点击启用")?;
             let base_url = provider
                 .get("base_url")
                 .and_then(|v| v.as_str())
@@ -946,30 +947,46 @@ fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
         .map_err(|e| format!("~/.codex/config.toml 解析失败，未做任何修改：{e}"))?;
 
     let mut changed = Vec::new();
-    let owns_config = doc.get("model_provider").and_then(|v| v.as_str()) == Some(CODEX_PROVIDER)
-        || doc
+    let active_provider = doc
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+    let owns_config = matches!(
+        active_provider.as_deref(),
+        Some(CODEX_PROVIDER) | Some(LEGACY_CODEX_PROVIDER)
+    ) || doc
             .get("model_providers")
             .and_then(|v| v.as_table())
-            .is_some_and(|providers| providers.contains_key(CODEX_PROVIDER));
+            .is_some_and(|providers| {
+                providers.contains_key(CODEX_PROVIDER)
+                    || providers.contains_key(LEGACY_CODEX_PROVIDER)
+            });
     if let Some(providers) = doc.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
         if providers.remove(CODEX_PROVIDER).is_some() {
             changed.push(format!("-model_providers.{CODEX_PROVIDER}"));
         }
+        if providers.remove(LEGACY_CODEX_PROVIDER).is_some() {
+            changed.push(format!("-model_providers.{LEGACY_CODEX_PROVIDER}"));
+        }
     }
-    // 只有仍指向我们时才移除，避免抹掉用户手动切到的其他 provider
-    if doc.get("model_provider").and_then(|v| v.as_str()) == Some(CODEX_PROVIDER) {
+    // 只有仍指向 Niko 当前或旧版入口时才移除，避免抹掉用户手动选择的其他来源。
+    if matches!(
+        active_provider.as_deref(),
+        Some(CODEX_PROVIDER) | Some(LEGACY_CODEX_PROVIDER)
+    ) {
         doc.remove("model_provider");
         changed.push("-model_provider".to_owned());
     }
-    if doc.remove("model").is_some() {
-        changed.push("-model".to_owned());
-    }
-    if owns_config
-        && doc.get("model_reasoning_effort").and_then(|v| v.as_str())
+    if owns_config {
+        if doc.remove("model").is_some() {
+            changed.push("-model".to_owned());
+        }
+        if doc.get("model_reasoning_effort").and_then(|v| v.as_str())
             == Some(CODEX_MAX_REASONING_EFFORT)
-    {
-        doc.remove("model_reasoning_effort");
-        changed.push("-model_reasoning_effort".to_owned());
+        {
+            doc.remove("model_reasoning_effort");
+            changed.push("-model_reasoning_effort".to_owned());
+        }
     }
 
     if !changed.is_empty() {
@@ -1207,7 +1224,7 @@ mod tests {
         let changed =
             merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"), None)
                 .unwrap();
-        assert!(changed.contains(&"model_providers.momotoken".to_owned()));
+        assert!(changed.contains(&"model_providers.custom".to_owned()));
         assert!(changed.contains(&"model_provider".to_owned()));
         assert!(changed.contains(&"model".to_owned()));
 
@@ -1216,7 +1233,7 @@ mod tests {
             doc.get("approval_policy").and_then(|v| v.as_str()),
             Some("on-request")
         );
-        assert_eq!(doc.get("model_provider").and_then(|v| v.as_str()), Some("momotoken"));
+        assert_eq!(doc.get("model_provider").and_then(|v| v.as_str()), Some("custom"));
         assert_eq!(doc.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4-6"));
         assert_eq!(
             doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
@@ -1225,7 +1242,7 @@ mod tests {
 
         let providers = doc.get("model_providers").unwrap().as_table().unwrap();
         assert!(providers.contains_key("custom"), "用户已有 provider 必须保留");
-        let ours = providers.get("momotoken").unwrap().as_table().unwrap();
+        let ours = providers.get("custom").unwrap().as_table().unwrap();
         assert_eq!(
             ours.get("base_url").and_then(|v| v.as_str()),
             Some("https://momotoken.win/v1")
@@ -1339,7 +1356,7 @@ mod tests {
             .unwrap()
             .as_table()
             .unwrap()
-            .get("momotoken")
+            .get("custom")
             .unwrap()
             .as_table()
             .unwrap();
@@ -1363,7 +1380,7 @@ mod tests {
         let mut doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
         doc.get_mut("model_providers")
             .and_then(|v| v.as_table_mut())
-            .and_then(|t| t.get_mut("momotoken"))
+            .and_then(|t| t.get_mut("custom"))
             .and_then(|v| v.as_table_mut())
             .unwrap()
             .insert("env_key".to_owned(), toml::Value::String("OPENAI_API_KEY".to_owned()));
@@ -1378,7 +1395,7 @@ mod tests {
             .unwrap()
             .as_table()
             .unwrap()
-            .get("momotoken")
+            .get("custom")
             .unwrap()
             .as_table()
             .unwrap();

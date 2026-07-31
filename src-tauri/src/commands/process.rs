@@ -45,6 +45,9 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
 /// 超时仍在运行则直接放弃启动并报错，避免出现两个实例。
 #[tauri::command]
 pub async fn restart_target(target_id: String) -> Result<String, String> {
+    if target_id == "codex" {
+        crate::commands::codex_sessions::prepare_codex_session_restart()?;
+    }
     let path = crate::targets::app_launch_path(&target_id)
         .ok_or_else(|| "未找到已安装的应用，请先安装后再试".to_owned())?;
 

@@ -4,7 +4,16 @@ import { loadAuth, clearAuth } from "../store/auth";
 import { useNavigate } from "react-router-dom";
 import { BRAND } from "../lib/brand";
 import Logo from "../components/Logo";
-import { ArrowLeftIcon } from "../components/Icons";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  BookOpenIcon,
+  RefreshCwIcon,
+} from "../components/Icons";
+import type {
+  CodexSessionInventory,
+  CodexSessionMutationOutcome,
+} from "../lib/codexSessions";
 
 const CARD = "nk-card";
 const OVERLINE = "nk-overline";
@@ -73,11 +82,59 @@ export default function Settings() {
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
+  // Codex 会话状态与整理
+  const [codexInventory, setCodexInventory] = useState<CodexSessionInventory | null>(null);
+  const [codexScanning, setCodexScanning] = useState(false);
+  const [codexAction, setCodexAction] = useState<"custom" | "openai" | null>(null);
+  const [codexMessage, setCodexMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [codexRetryTarget, setCodexRetryTarget] = useState<"custom" | "openai" | null>(null);
+
+  const scanCodexSessions = async () => {
+    setCodexScanning(true);
+    try {
+      const result = await invoke<CodexSessionInventory>("scan_codex_session_inventory");
+      setCodexInventory(result);
+      return result;
+    } catch {
+      setCodexMessage({ ok: false, text: "本地会话暂时无法读取，请稍后再试。" });
+      return null;
+    } finally {
+      setCodexScanning(false);
+    }
+  };
+
+  const normalizeCodexSessions = async (targetProvider: "custom" | "openai") => {
+    setCodexAction(targetProvider);
+    setCodexMessage(null);
+    setCodexRetryTarget(null);
+    try {
+      if (targetProvider === "openai") {
+        await invoke("restore_target_defaults", { targetId: "codex" });
+        setCodexMessage({ ok: true, text: "已恢复到官方，本地会话可以继续查看" });
+        await scanCodexSessions();
+        return;
+      }
+      const result = await invoke<CodexSessionMutationOutcome>(
+        "normalize_codex_session_storage",
+        { targetProvider },
+      );
+      setCodexMessage({ ok: result.ok, text: result.message });
+      setCodexRetryTarget(result.ok || !result.retryable ? null : targetProvider);
+      await scanCodexSessions();
+    } catch {
+      setCodexMessage({ ok: false, text: "本地会话暂时无法整理，请稍后重试。" });
+      setCodexRetryTarget(targetProvider);
+    } finally {
+      setCodexAction(null);
+    }
+  };
+
   useEffect(() => {
     invoke<boolean>("autostart_is_enabled")
       .then(setAutostart)
       .catch(() => setAutostart(null));
     loadSnapshots();
+    void scanCodexSessions();
   }, []);
 
   const loadSnapshots = async () => {
@@ -223,6 +280,62 @@ export default function Settings() {
             >
               退出登录
             </button>
+          </section>
+
+          {/* Codex 本地会话 */}
+          <section className={CARD}>
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <h2 className={OVERLINE}>ChatGPT 会话</h2>
+                <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
+                  {codexInventory?.layout_hint ?? "正在检查本地会话…"}
+                </p>
+              </div>
+              <span className="nk-pill shrink-0">
+                {codexInventory ? `${codexInventory.thread_count} 个会话` : "检查中"}
+              </span>
+            </div>
+
+            {codexMessage && (
+              <div className={`mb-3 ${codexMessage.ok ? "nk-alert-success" : "nk-alert-danger"}`} role="status">
+                {codexMessage.text}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => navigate("/sessions")}
+                className={SECONDARY_BTN}
+              >
+                <BookOpenIcon />
+                查看会话
+                <ArrowRightIcon />
+              </button>
+              <button
+                onClick={() => void normalizeCodexSessions("custom")}
+                disabled={codexScanning || codexAction !== null}
+                className={SECONDARY_BTN}
+              >
+                <RefreshCwIcon />
+                {codexAction === "custom" ? "检查中…" : "重新检查"}
+              </button>
+              <button
+                onClick={() => void normalizeCodexSessions("openai")}
+                disabled={codexScanning || codexAction !== null}
+                className={SECONDARY_BTN}
+              >
+                {codexAction === "openai" ? "恢复中…" : "恢复到官方"}
+              </button>
+              {codexRetryTarget && (
+                <button
+                  onClick={() => void normalizeCodexSessions(codexRetryTarget)}
+                  disabled={codexScanning || codexAction !== null}
+                  className="nk-btn-ghost"
+                >
+                  重试
+                </button>
+              )}
+            </div>
           </section>
 
           {/* 开机自启 */}
