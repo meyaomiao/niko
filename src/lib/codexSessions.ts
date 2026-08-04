@@ -1,5 +1,5 @@
 export const SAFE_ERROR_VERSION = 1 as const;
-export const SESSION_PAGE_SIZE = 20;
+export const SESSION_PAGE_SIZE = 50;
 export const SESSION_QUERY_LIMIT = 80;
 
 const FALLBACK_MESSAGE = "操作没有完成，请重试。";
@@ -32,18 +32,27 @@ export interface CodexSessionThread {
   summary?: string | null;
   updated_at?: string | null;
   archived: boolean;
+  provider?: string | null;
   can_continue: boolean;
+  needs_migration: boolean;
 }
 
 export interface CodexSessionPage {
   status: "healthy" | "needs_check" | "blocked";
   items: CodexSessionThread[];
-  next_cursor?: string | null;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
 }
 
 export interface CodexSessionMutationOutcome {
   status: "applied" | "unchanged" | "applied_needs_manual_open";
   message: string;
+  requested: number;
+  migrated: number;
+  failed: number;
+  changed_artifacts: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,8 +127,8 @@ export function acceptsResponse(
 }
 
 export function codexNormalizationLabel(status: string): string {
-  if (status === "healthy") return "当前状态正常";
-  if (status === "needs_check") return "发现需要检查的会话";
-  if (status === "blocked") return "有部分会话暂时无法继续";
+  if (status === "healthy") return "本地检查通过，custom 会话可续接";
+  if (status === "needs_check") return "有会话待迁移到 custom";
+  if (status === "blocked") return "有会话存在本地结构阻塞";
   return "状态待检查";
 }

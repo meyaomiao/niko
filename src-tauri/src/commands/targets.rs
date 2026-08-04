@@ -717,10 +717,13 @@ pub async fn apply_target(req: ApplyRequest) -> Result<Vec<String>, SafeCommandE
             Err(error) => {
                 match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
                     Ok(Some(true)) => {
-                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
-                            status: "applied",
-                            message: "已完成检查，可以继续使用。",
-                        }
+                        crate::commands::codex_sessions::mutation_outcome(
+                            "applied",
+                            "已完成检查，可以继续使用。",
+                            0,
+                            0,
+                            0,
+                        )
                     }
                     Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
                     Err(recovery_error) => return Err(recovery_error),
@@ -858,10 +861,13 @@ pub async fn apply_all_targets(
                 Err(error) => {
                     match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
                         Ok(Some(true)) => {
-                            crate::commands::codex_sessions::CodexSessionMutationOutcome {
-                                status: "applied",
-                                message: "已完成检查，可以继续使用。",
-                            }
+                            crate::commands::codex_sessions::mutation_outcome(
+                                "applied",
+                                "已完成检查，可以继续使用。",
+                                0,
+                                0,
+                                0,
+                            )
                         }
                         Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
                         Err(recovery_error) => return Err(recovery_error),
@@ -1100,10 +1106,13 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
             Err(error) => {
                 match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
                     Ok(Some(true)) => {
-                        crate::commands::codex_sessions::CodexSessionMutationOutcome {
-                            status: "applied",
-                            message: "已恢复到官方，可以继续使用。",
-                        }
+                        crate::commands::codex_sessions::mutation_outcome(
+                            "applied",
+                            "已恢复到官方，可以继续使用。",
+                            0,
+                            0,
+                            0,
+                        )
                     }
                     Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
                     Err(recovery_error) => return Err(recovery_error),

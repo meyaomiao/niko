@@ -55,6 +55,7 @@ pub fn run() {
             commands::snapshots::restore_snapshot,
             commands::codex_sessions::scan_codex_session_inventory,
             commands::codex_sessions::normalize_codex_session_storage,
+            commands::codex_sessions::normalize_codex_session_storage_selected,
             commands::codex_sessions::open_codex_thread,
             autostart_enable,
             autostart_disable,

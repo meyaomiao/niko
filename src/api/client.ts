@@ -62,6 +62,25 @@ export interface GroupOption {
   models: string[];
 }
 
+export interface ModelMetadata {
+  name?: string;
+  model_name?: string;
+  id?: string;
+  /** Official release date/version date used for client sorting; YYYY-MM-DD is preferred. */
+  release_date?: string;
+  released_at?: string;
+  official_release_date?: string;
+  version_date?: string;
+  /** Stable server catalog position used when an explicit model_order is unavailable. */
+  catalog_order?: number;
+  /** Optional traceable source label or URL supplied by the server/admin panel. */
+  release_source?: string;
+  source?: string;
+}
+
+/** A string entry keeps the existing API compatible while metadata is adopted. */
+export type BootstrapModel = string | ModelMetadata;
+
 export interface PricingItem {
   model_name: string;
   quota_type: number;
@@ -71,6 +90,9 @@ export interface PricingItem {
   cache_ratio?: number | null;
   create_cache_ratio?: number | null;
   enable_groups?: string[];
+  /** Optional official release metadata mirrored by bootstrap model catalog. */
+  release_date?: string;
+  release_source?: string;
 }
 
 export interface BootstrapData {
@@ -81,7 +103,11 @@ export interface BootstrapData {
     quota_per_unit?: number | string;
   };
   user: { id: number; quota: number; group: string };
-  models: string[];
+  models: BootstrapModel[];
+  /** Keyed official release metadata. The key must match the model name. */
+  model_metadata?: Record<string, ModelMetadata>;
+  /** Explicit server display order for all enabled models. */
+  model_order?: string[];
   groups?: GroupOption[];
   pricing: PricingItem[];
   /** 允许的最大登录设备数，用于首页展示 已用/上限 */

@@ -6,6 +6,7 @@ import {
   type UsageLogItem,
   type UsageSummary,
   type GroupOption,
+  type BootstrapModel,
   type UsageDimension,
   type UsageDayBucket,
 } from "../api/client";
@@ -27,6 +28,10 @@ const RANGES = [
 ] as const;
 
 type RangeId = (typeof RANGES)[number]["id"] | "custom";
+
+function modelName(item: BootstrapModel): string {
+  return typeof item === "string" ? item : (item.name ?? item.model_name ?? item.id ?? "");
+}
 
 function usd(quota: number): string {
   return fmtUSD(quota / 1_000_000);
@@ -173,7 +178,7 @@ export default function Usage() {
       .bootstrap(token)
       .then((data) => {
         setGroups(data.groups ?? []);
-        setAllModels(data.models ?? []);
+        setAllModels((data.models ?? []).map(modelName).filter(Boolean));
       })
       .catch(() => undefined);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

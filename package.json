@@ -1,7 +1,7 @@
 {
   "name": "niko",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "test:auth": "node --experimental-strip-types --test tests/auth.test.ts",
     "test:balance": "node --experimental-strip-types --test tests/balance.test.ts",
     "test:login": "node --experimental-strip-types --test tests/loginTargets.test.ts",
+    "test:model-selection": "node --experimental-strip-types --test tests/modelSelection.test.ts",
     "test:registration": "node --experimental-strip-types --test tests/registration.test.ts",
     "test:sessions": "node --experimental-strip-types --test tests/codexSessions.test.ts",
     "preview": "vite preview",

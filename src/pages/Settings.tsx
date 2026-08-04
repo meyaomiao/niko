@@ -106,8 +106,8 @@ export default function Settings() {
     try {
       const result = await invoke<CodexSessionPage>("scan_codex_session_inventory", {
         query: "",
-        cursor: null,
-        limit: 1,
+        page: 1,
+        page_size: 1,
       });
       if (!acceptsResponse(codexGuard.current, "scan", request.generation)) return null;
       setCodexInventory(result);
@@ -327,10 +327,10 @@ export default function Settings() {
               <span className="nk-pill shrink-0">
                 {codexInventory
                   ? codexInventory.status === "healthy"
-                    ? "当前状态正常"
+                    ? "custom 会话可续接"
                     : codexInventory.status === "needs_check"
-                      ? "发现需要检查的会话"
-                      : "有部分会话暂时不可用"
+                      ? "有会话待迁移到 custom"
+                      : "有会话存在本地结构阻塞"
                   : "检查中"}
               </span>
             </div>

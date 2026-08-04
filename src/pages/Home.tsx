@@ -6,6 +6,7 @@ import { api, type BootstrapData, type GroupOption, type DeviceItem } from "../a
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
+import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelection";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
@@ -79,7 +80,6 @@ const LABEL = "nk-label";
 const TITLE = "nk-title";
 const SUBTLE = "nk-muted";
 const INPUT = "nk-input py-1 text-xs";
-const SELECT = "nk-select w-full";
 const GHOST_BTN = "nk-btn-secondary";
 const PRIMARY_BTN = "nk-btn-primary";
 
@@ -220,7 +220,6 @@ export default function Home() {
         const remembered = groups.find((g) => g.name === auth.defaultGroup);
         if (remembered && !groupTouchedRef.current) {
           setGroup(remembered.name);
-          setModel(remembered.models[0] ?? "");
         }
       })
       .finally(() => setLoading(false));
@@ -252,16 +251,40 @@ export default function Home() {
     return (VENDORS as readonly string[]).includes(v ?? "") ? (v as Vendor) : null;
   }, [targetId, targets]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 按分组名前缀归类到三家上游，未匹配的统一放「其他」；只保留有分组的厂商作为页签。
-  // 与所选应用原生匹配的厂商排在最前，让推荐路径成为默认路径。
+  // 按供应商汇总模型，再由模型反查可用分组。新服务端以 model_order 给出完整显示顺序；
+  // 元数据只作为旧响应的排序辅助，不能覆盖服务端顺序。
   const vendorTabs = useMemo(() => {
-    const buckets: Record<string, GroupOption[]> = { OpenAI: [], Anthropic: [], Google: [], 其他: [] };
-    for (const g of groups) {
-      buckets[vendorOfGroup(g.name)].push(g);
+    const modelMetadata = { ...(bootstrap?.model_metadata ?? {}) };
+    for (const item of bootstrap?.pricing ?? []) {
+      if (item.release_date) {
+        modelMetadata[item.model_name] = {
+          ...modelMetadata[item.model_name],
+          name: modelMetadata[item.model_name]?.name ?? item.model_name,
+          release_date: modelMetadata[item.model_name]?.release_date ?? item.release_date,
+          release_source: modelMetadata[item.model_name]?.release_source ?? item.release_source,
+        };
+      }
     }
-    const tabs = Object.entries(buckets).filter(([, list]) => list.length > 0) as [Vendor, GroupOption[]][];
-    return tabs.sort(([a], [b]) => Number(b === recommendVendor) - Number(a === recommendVendor));
-  }, [groups, recommendVendor]);
+    return buildVendorModelTabs({
+      groups,
+      models: bootstrap?.models,
+      modelMetadata,
+      modelOrder: bootstrap?.model_order,
+      recommendVendor,
+    });
+  }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor]);
+
+  const modelByGroup = useMemo(() => {
+    const index = new Map<string, string>();
+    for (const tab of vendorTabs) {
+      for (const choice of tab.models) {
+        for (const option of choice.groups) {
+          if (!index.has(option.name)) index.set(option.name, choice.name);
+        }
+      }
+    }
+    return index;
+  }, [vendorTabs]);
 
   const detectionTargetIds = useMemo(() => {
     if (targetId === ALL_TARGETS) return installedTargets.map((target) => target.id);
@@ -287,7 +310,7 @@ export default function Home() {
         const detected = commonActiveGroup(map, detectionTargetIds);
         if (detected && !groupTouchedRef.current) {
           setGroup(detected);
-          setModel(groups.find((item) => item.name === detected)?.models[0] ?? "");
+          setModel(modelByGroup.get(detected) ?? "");
           setDetectedGroupApplied(true);
         } else if (!groupTouchedRef.current) {
           setDetectedGroupApplied(false);
@@ -307,19 +330,23 @@ export default function Home() {
       const invalidated = beginRequest(requestGuardRef.current, "detect");
       requestGuardRef.current = invalidated.state;
     };
-  }, [auth?.accessToken, detectionTargetIds, groups, detectNonce]);
+  }, [auth?.accessToken, detectionTargetIds, groups, detectNonce, modelByGroup]);
 
   const activeGroupView = summarizeActiveGroups(activeStatuses, detectionTargetIds, detecting);
 
   // 应用选定后自动落到推荐厂商的第一个分组；用户手动挑过分组后不再干预
   useEffect(() => {
     if (groupTouched || detectedGroupApplied || groups.length === 0) return;
-    const preferred = groups.find((item) => item.name === auth?.defaultGroup) ?? vendorTabs[0]?.[1][0];
-    if (preferred) {
-      setGroup(preferred.name);
-      setModel(preferred.models[0] ?? "");
+    const preferredGroup = groups.find((item) => item.name === auth?.defaultGroup);
+    const preferredModel = preferredGroup
+      ? modelByGroup.get(preferredGroup.name)
+      : vendorTabs[0]?.models[0]?.name;
+    const fallbackGroup = preferredGroup?.name ?? vendorTabs[0]?.models[0]?.groups[0]?.name;
+    if (preferredModel && fallbackGroup) {
+      setModel(preferredModel);
+      setGroup(fallbackGroup);
     }
-  }, [auth?.defaultGroup, detectedGroupApplied, groupTouched, groups, vendorTabs]);
+  }, [auth?.defaultGroup, detectedGroupApplied, groupTouched, groups, modelByGroup, vendorTabs]);
 
   const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
   const targetLabel =
@@ -327,39 +354,67 @@ export default function Home() {
   // 兼容等级按所选应用判断；选「全部」时以第一个已装应用为准
   const compatTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id ?? "" : targetId;
   const compatOf = (name: string) => (compatTargetId ? baselineFor(compatTargetId, name) : null);
-  const selectedCompat = model ? compatOf(model) : null;
 
   const currentGroup = groups.find((g) => g.name === group);
-  // 页签跟随当前分组所属厂商，切换页签时自动选中该厂商第一个分组
+  // 页签跟随当前分组所属厂商，切换页签时自动选中该厂商的最新模型
   const activeVendor: Vendor | null = currentGroup
     ? vendorOfGroup(currentGroup.name)
-    : vendorTabs[0]?.[0] ?? null;
-  const vendorGroups = vendorTabs.find(([v]) => v === activeVendor)?.[1] ?? [];
-  const groupRatio = currentGroup?.ratio ?? 1;
+    : vendorTabs[0]?.vendor ?? null;
+  const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? vendorTabs[0] ?? null;
+  const vendorModels = activeVendorTab?.models ?? [];
+  const currentModelChoice = vendorModels.find((choice) => choice.name === model) ?? null;
+  const modelGroups = currentModelChoice?.groups ?? [];
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
   const models = useMemo(() => {
-    const list = currentGroup?.models ?? bootstrap?.models ?? [];
     const kw = modelFilter.trim().toLowerCase();
-    return kw ? list.filter((m) => m.toLowerCase().includes(kw)) : list;
-  }, [currentGroup, bootstrap, modelFilter]);
+    return kw ? vendorModels.filter((m) => m.name.toLowerCase().includes(kw)) : vendorModels;
+  }, [vendorModels, modelFilter]);
 
-  // 列表内联价格：按次计费显示单次价格，否则显示「输入 / 输出」
-  const priceLabel = (name: string) => {
-    const p = priceOf(pricingIndex.get(name), groupRatio);
+  useEffect(() => {
+    if (!activeVendorTab || groups.length === 0) return;
+    const selected = activeVendorTab.models.find((choice) => choice.name === model) ?? activeVendorTab.models[0];
+    if (!selected) return;
+    if (selected.name !== model) {
+      setModel(selected.name);
+      setGroup(selected.groups[0]?.name ?? "");
+      return;
+    }
+    if (!selected.groups.some((g) => g.name === group)) {
+      setGroup(selected.groups[0]?.name ?? "");
+    }
+  }, [activeVendorTab, groups.length, group, model]);
+
+  const groupPriceLabel = (name: string, ratio: number) => {
+    const p = priceOf(pricingIndex.get(name), ratio);
     if (!p) return "价格暂不可用";
     if (p.perRequest) return `${fmtUSD(p.input)}/次`;
-    return `${fmtUSD(p.input)} 发出 · ${fmtUSD(p.output)} 回复`;
+    return `${fmtUSD(p.input)} / ${fmtUSD(p.output)}`;
   };
-
-  const selectedPrice = priceOf(pricingIndex.get(model), groupRatio);
 
   const pickGroup = (name: string) => {
     groupTouchedRef.current = true;
     setGroup(name);
     setGroupTouched(true);
     setNotice(null);
-    const g = groups.find((x) => x.name === name);
-    setModel(g?.models[0] ?? "");
+  };
+
+  const pickModel = (choice: VendorModelChoice) => {
+    groupTouchedRef.current = true;
+    setModel(choice.name);
+    if (!choice.groups.some((g) => g.name === group)) {
+      setGroup(choice.groups[0]?.name ?? "");
+    }
+    setGroupTouched(true);
+    setNotice(null);
+  };
+
+  const pickVendor = (tab: NonNullable<typeof activeVendorTab>) => {
+    const choice = tab.models[0];
+    groupTouchedRef.current = true;
+    setModel(choice?.name ?? "");
+    setGroup(choice?.groups[0]?.name ?? "");
+    setGroupTouched(true);
+    setNotice(null);
   };
 
   const pickTarget = (id: string) => {
@@ -371,7 +426,7 @@ export default function Home() {
     setDetectedGroupApplied(false);
     const recommended = groups.find((item) => item.name === auth?.defaultGroup);
     setGroup(recommended?.name ?? "");
-    setModel(recommended?.models[0] ?? "");
+    setModel(recommended ? modelByGroup.get(recommended.name) ?? "" : "");
     setGroupTouched(false);
   };
 
@@ -607,7 +662,7 @@ export default function Home() {
 
       <main className="flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         {/* 双列：左侧账户与应用，右侧模型选择，避免宽窗口下大量留白 */}
-        <div className="mx-auto grid min-h-full max-w-5xl grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+        <div className="mx-auto grid min-h-full max-w-[120rem] grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(19rem,32%)_minmax(0,1fr)]">
           <div className="flex min-h-0 flex-col gap-3 pr-0.5 md:overflow-y-auto">
             {/* 余额 */}
             <section className={CARD}>
@@ -858,10 +913,10 @@ export default function Home() {
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
             <section className={`${CARD} flex min-h-[28rem] flex-1 flex-col md:min-h-0`}>
-              <div className="mb-2.5 flex shrink-0 items-center justify-between">
+              <div className="mb-2.5 flex shrink-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
-                  <span className={`relative flex items-center gap-1 ${SUBTLE}`}>
+                  <span className={`relative flex items-center gap-1 self-start ${SUBTLE} sm:self-auto`}>
                     价格按 100 万 token 计算
                     <button
                       type="button"
@@ -907,53 +962,26 @@ export default function Home() {
               ) : (
                 <>
                   <div className="flex shrink-0 gap-1 overflow-x-auto border-b [border-color:var(--nk-line)]">
-                    {vendorTabs.map(([vendor, list]) => (
+                    {vendorTabs.map((tab) => (
                       <button
-                        key={vendor}
-                        onClick={() => pickGroup(list[0].name)}
+                        key={tab.vendor}
+                        onClick={() => pickVendor(tab)}
                         className={`-mb-px border-b-2 px-3 py-2 text-xs transition ${
-                          vendor === activeVendor
+                          tab.vendor === activeVendor
                             ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
                             : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                         }`}
                       >
-                        {vendor}
-                        <span className="ml-1.5 opacity-60">{list.length}</span>
-                        {recommendVendor && vendor !== recommendVendor && (
+                        {tab.vendor}
+                        <span className="ml-1.5 opacity-60">{tab.models.length}</span>
+                        {recommendVendor && tab.vendor !== recommendVendor && (
                           <span className="ml-1.5 opacity-60">转换接入</span>
                         )}
                       </button>
                     ))}
                   </div>
-                  {/* 分组用下拉而非 chip 平铺：分组多时换行会吃掉模型列表的高度，
-                      下拉把「名称 + 倍率 + 说明」压进一行，列表高度也不再随分组数变化。 */}
-                  <div className="mt-2.5 flex shrink-0 items-center gap-3">
+                  <div className="mt-3 flex shrink-0 items-center justify-between gap-3">
                     <p className={`${LABEL} shrink-0`}>
-                      模型服务
-                      <span className="ml-1.5 opacity-70">{vendorGroups.length}</span>
-                    </p>
-                    <div className="relative min-w-0 flex-1">
-                      <select
-                        value={group}
-                        onChange={(e) => pickGroup(e.target.value)}
-                        aria-label="选择模型服务"
-                        className={SELECT}
-                      >
-                        {vendorGroups.map((g) => (
-                          <option key={g.name} value={g.name} className="text-gray-900">
-                            {g.name}{g.desc ? ` · ${g.desc}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                      {/* appearance-none 去掉系统箭头后自己补一个，保持和输入框同一套视觉 */}
-                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">
-                        ▾
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-2.5 flex shrink-0 items-center justify-between gap-3">
-                    <p className={LABEL}>
                       模型
                       <span className="ml-1.5 opacity-70">{models.length}</span>
                     </p>
@@ -961,82 +989,99 @@ export default function Home() {
                       value={modelFilter}
                       onChange={(e) => setModelFilter(e.target.value)}
                       placeholder="搜索模型"
-                      className={`w-40 ${INPUT}`}
+                      aria-label="搜索模型"
+                      className={`w-44 ${INPUT}`}
                     />
                   </div>
-                  <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 max-md:max-h-80">
+                  <div className="nk-model-scroll mt-2 pr-1 max-md:max-h-[32rem]">
                     {models.length === 0 && (
                       <p className="nk-empty">
-                        {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前模型服务没有可用模型。"}
+                        {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前没有可用模型。"}
                       </p>
                     )}
-                    {models.map((m) => {
-                      const compat = compatOf(m);
-                      return (
-                      <button
-                        key={m}
-                        onClick={() => setModel(m)}
-                        className={`nk-row flex w-full items-center justify-between text-left text-xs ${
-                          m === model
-                            ? "nk-row-selected text-gray-900 dark:text-white"
-                            : "text-gray-600 dark:text-gray-300"
-                        }`}
-                      >
-                        <span className="truncate font-mono">{m}</span>
-                        <span className="ml-2 flex shrink-0 items-center gap-2">
-                          {compat && (
-                            <span
-                              title={compat.note}
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${COMPAT_STYLE[compat.level]}`}
-                            >
-                              {COMPAT_LABEL[compat.level]}
+                    <div className="nk-model-grid">
+                      {models.map((choice) => {
+                        const compat = compatOf(choice.name);
+                        return (
+                          <button
+                            key={choice.name}
+                            onClick={() => pickModel(choice)}
+                            aria-pressed={choice.name === model}
+                            className={`nk-model-card w-full text-left ${
+                              choice.name === model
+                                ? "nk-model-card-selected text-gray-900 dark:text-white"
+                                : "text-gray-600 dark:text-gray-300"
+                            }`}
+                          >
+                            <span className="flex min-w-0 flex-col justify-center gap-0.5">
+                              <span className="min-w-0">
+                                <span className="block truncate font-mono text-sm font-semibold">
+                                  {choice.name}
+                                </span>
+                              </span>
+                              <span className="flex min-w-0 items-center justify-between gap-1.5">
+                                <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
+                                  {choice.groups.length} 组
+                                </span>
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  {compat && (
+                                    <span
+                                      title={compat.note}
+                                      className={`truncate rounded-full px-1.5 py-0.5 text-[10px] ${COMPAT_STYLE[compat.level]}`}
+                                    >
+                                      {COMPAT_LABEL[compat.level]}
+                                    </span>
+                                  )}
+                                  {choice.name === model && <span aria-hidden="true">✓</span>}
+                                </span>
+                              </span>
                             </span>
-                          )}
-                          <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
-                            {priceLabel(m)}
-                          </span>
-                          {m === model && <span>✓</span>}
-                        </span>
-                      </button>
-                      );
-                    })}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
-                  {/* 价格明细常驻，避免选中模型后列表跳动。 */}
-                  <div className="nk-inset mt-2.5 min-h-[3.25rem] shrink-0 px-3 py-2">
-                    {selectedPrice ? (
-                      <>
-                        {selectedPrice.perRequest ? (
-                          <p className="text-xs text-gray-700 dark:text-gray-200">
-                            每次请求 <span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 次
-                          </p>
-                        ) : (
-                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-700 dark:text-gray-200">
-                            <span>
-                              你发出的内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.input)}</span> / 100 万 token
-                            </span>
-                            <span>
-                              AI 回复的内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.output)}</span> / 100 万 token
-                            </span>
-                            {selectedPrice.cache !== undefined && (
-                              <span>
-                                读取已保存内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.cache)}</span> / 100 万 token
-                              </span>
-                            )}
-                            {selectedPrice.createCache !== undefined && (
-                              <span>
-                                保存内容：<span className="tabular-nums font-medium">{fmtUSD(selectedPrice.createCache)}</span> / 100 万 token
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        <p className={`mt-1 truncate ${SUBTLE}`}>
-                          {selectedCompat?.note || "\u00a0"}
+                  <div className="nk-group-section mt-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className={LABEL}>
+                        分组
+                        <span className="ml-1.5 opacity-70">{modelGroups.length}</span>
+                      </p>
+                      {model && (
+                        <p className={`${SUBTLE} truncate`}>
+                          仅显示支持当前模型的分组
                         </p>
-                      </>
-                    ) : (
-                      <p className={`${SUBTLE} leading-9`}>选择模型后显示价格和计费单位。</p>
-                    )}
+                      )}
+                    </div>
+                    <div className="nk-group-list mt-1.5 pr-1">
+                      {modelGroups.length === 0 && <p className="nk-empty">先选择模型</p>}
+                      {modelGroups.map((g) => (
+                        <button
+                          key={g.name}
+                          onClick={() => pickGroup(g.name)}
+                          aria-pressed={g.name === group}
+                          className={`nk-group-card w-full text-left ${
+                            g.name === group
+                              ? "nk-group-card-selected text-gray-900 dark:text-white"
+                              : "text-gray-600 dark:text-gray-300"
+                          }`}
+                        >
+                          <span className="flex min-h-[1.75rem] min-w-0 items-center justify-between gap-3">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="shrink-0 truncate text-[11px] font-medium">{g.name}</span>
+                              <span className="truncate text-[10px] text-gray-500 dark:text-gray-400">
+                                {g.desc || "标准分组"}
+                              </span>
+                            </span>
+                            <span className="flex shrink-0 items-center gap-2 tabular-nums text-[11px] font-medium text-gray-700 dark:text-gray-200">
+                              <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">{g.ratio}x</span>
+                              <span>{groupPriceLabel(model, g.ratio)}</span>
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   {/* 四个动作挤在一行：主操作占宽，其余三个短名等分，避免堆四行把卡片撑高 */}

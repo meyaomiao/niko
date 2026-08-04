@@ -410,6 +410,8 @@ POST /api/client/login?turnstile=<token>
 
 `models` 直接由现有 `model.GetPricing()` 加 `service.GetUserUsableGroups()` 组装，价格字段复用 `model.Pricing`（2.1）。`compatibility` 与 `role_hints` 是新增的服务端配置，放在运营设置里，可随时调整而不必发客户端新版。
 
+Niko 0.1.4 的模型选择兼容两种目录响应：旧客户端继续读取 `models: string[]`；新客户端先取 `groups[].models` 的并集，并严格按服务端完整 `model_order` 展示。`model_metadata[name].release_date` 与 `release_source` 只作为发布日期信息及缺少 `model_order` 时的排序辅助；两个字段都缺失时按模型名稳定兜底，不能把客户端输入顺序或数据库返回顺序解释为发布时间。当前官方同步源为上游 `api/all.json`。
+
 `min_supported_version` 用于强制升级：客户端版本低于它时只显示升级页。
 
 ### 6.5 `POST /api/client/provision`

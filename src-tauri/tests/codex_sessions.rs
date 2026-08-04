@@ -295,6 +295,15 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
         }],
         true,
     );
+    top_state
+        .execute(
+            "UPDATE threads
+             SET title = 'A real title', preview = 'A preview', first_user_message = 'First user message',
+                 updated_at_ms = 1760000000123
+             WHERE id = 'thread-a'",
+            [],
+        )
+        .unwrap();
     let modern_state = create_state_db(
         &modern_state_path,
         &[StateSeed {
@@ -306,6 +315,15 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
         }],
         false,
     );
+    modern_state
+        .execute(
+            "UPDATE threads
+             SET preview = '', first_user_message = 'First user fallback',
+                 updated_at_ms = NULL, updated_at = 1760000000
+             WHERE id = 'thread-b'",
+            [],
+        )
+        .unwrap();
     let external_state = create_state_db(
         &external_state_path,
         &[StateSeed {
@@ -404,6 +422,21 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
             })
     }));
     assert_eq!(report.threads.len(), 3);
+    let thread_a = report
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == "thread-a")
+        .unwrap();
+    assert_eq!(thread_a.title.as_deref(), Some("A real title"));
+    assert_eq!(thread_a.summary.as_deref(), Some("A preview"));
+    assert_eq!(thread_a.updated_at_ms, Some(1760000000123));
+    let thread_b = report
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == "thread-b")
+        .unwrap();
+    assert_eq!(thread_b.summary.as_deref(), Some("First user fallback"));
+    assert_eq!(thread_b.updated_at_ms, Some(1760000000000));
     assert!(report
         .threads
         .iter()
@@ -422,6 +455,57 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
     }
 
     drop((top_state, modern_state, external_state, history));
+}
+
+#[test]
+fn reads_legacy_state_schema_without_optional_metadata_columns() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(
+        codex_home.join("config.toml"),
+        config_with_provider("custom", None),
+    )
+    .unwrap();
+    let rollout = codex_home.join("sessions/legacy.jsonl");
+    let thread_id = "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11";
+    write_rollout(&rollout, thread_id, "custom", "/workspace/legacy", false);
+
+    let state = Connection::open(codex_home.join("state_5.sqlite")).unwrap();
+    state
+        .execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                archived INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+    state
+        .execute(
+            "INSERT INTO threads (id, rollout_path, model_provider, cwd, archived)
+             VALUES (?1, ?2, 'custom', '/workspace/legacy', 0)",
+            params![thread_id, rollout.to_string_lossy()],
+        )
+        .unwrap();
+    drop(state);
+
+    let report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
+    assert!(
+        !report.is_blocked(),
+        "diagnostics: {:#?}",
+        report.diagnostics
+    );
+    let thread = report
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == thread_id)
+        .unwrap();
+    assert_eq!(thread.title, None);
+    assert_eq!(thread.summary, None);
+    assert_eq!(thread.updated_at_ms, None);
 }
 
 fn create_single_layout_fixture(provider: &str) -> (tempfile::TempDir, PathBuf) {
@@ -674,4 +758,64 @@ fn refuses_implicit_or_unapproved_roots_without_scanning_them() {
         relative,
         Err(ScanError::CodexHomeMustBeAbsolute(_))
     ));
+}
+
+#[test]
+fn recognizes_current_codex_auxiliary_databases() {
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    fs::create_dir_all(codex_home.join("sqlite")).unwrap();
+    fs::write(codex_home.join("config.toml"), "model = \"fixture\"\n").unwrap();
+
+    let catalog = Connection::open(codex_home.join("sqlite/codex-dev.db")).unwrap();
+    catalog
+        .execute_batch(
+            "CREATE TABLE local_thread_catalog (
+                 host_id TEXT NOT NULL,
+                 thread_id TEXT NOT NULL,
+                 display_title TEXT NOT NULL,
+                 source_created_at REAL NOT NULL,
+                 source_updated_at REAL NOT NULL,
+                 cwd TEXT NOT NULL,
+                 source_kind TEXT NOT NULL,
+                 model_provider TEXT NOT NULL,
+                 PRIMARY KEY (host_id, thread_id)
+             );
+             CREATE TABLE local_thread_catalog_metadata (
+                 id INTEGER PRIMARY KEY,
+                 catalog_revision INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+    drop(catalog);
+
+    let snapshots =
+        Connection::open(codex_home.join("sqlite/codex-history-snapshots-dev.db")).unwrap();
+    snapshots
+        .execute(
+            "CREATE TABLE app_server_history_snapshots (
+                 principal_key TEXT NOT NULL,
+                 host_id TEXT NOT NULL,
+                 thread_id TEXT NOT NULL,
+                 accessed_at INTEGER NOT NULL,
+                 payload_bytes INTEGER NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 PRIMARY KEY (principal_key, host_id, thread_id)
+             )",
+            [],
+        )
+        .unwrap();
+    drop(snapshots);
+
+    let report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
+    assert!(
+        !report.is_blocked(),
+        "diagnostics: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(report.sqlite_databases.len(), 2);
+    assert!(report
+        .sqlite_databases
+        .iter()
+        .all(|database| database.schema_kind == SqliteSchemaKind::Auxiliary));
 }

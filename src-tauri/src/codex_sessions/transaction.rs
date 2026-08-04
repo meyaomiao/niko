@@ -41,6 +41,9 @@ static MIGRATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct MigrationRequest {
     pub scan: ScanRequest,
     pub options: MigrationOptions,
+    /// When present, only these thread ids are rewritten. Config remains
+    /// aligned with the target provider so the selected threads can be used.
+    pub thread_ids: Option<BTreeSet<String>>,
     /// Optional in-memory inputs for the Codex config/auth part of the same
     /// durable migration. Secrets are never copied into the journal.
     pub codex: Option<CodexMigrationInput>,
@@ -59,6 +62,7 @@ impl MigrationRequest {
         Self {
             scan,
             options: MigrationOptions::default(),
+            thread_ids: None,
             codex: None,
         }
     }
@@ -332,6 +336,8 @@ struct MigrationJournal {
     entries: Vec<JournalEntry>,
     old_proofs: Vec<ThreadValidationProof>,
     new_proofs: Vec<ThreadValidationProof>,
+    #[serde(default)]
+    thread_ids: Option<BTreeSet<String>>,
     restart_allowed: bool,
 }
 
@@ -537,6 +543,21 @@ fn build_migration_plan(
     })?;
     reject_blocked_scan(&report)?;
 
+    if let Some(thread_ids) = &request.thread_ids {
+        if thread_ids.is_empty()
+            || thread_ids
+                .iter()
+                .any(|thread_id| !report.threads.iter().any(|thread| thread.thread_id == *thread_id))
+        {
+            return Err(migration_error(
+                MigrationErrorKind::InvalidRequest,
+                "migration_thread_selection_invalid",
+                "the selected thread set is not present in the verified inventory",
+                None,
+            ));
+        }
+    }
+
     let target_provider = target_provider(target).to_owned();
     let auth_path = report.codex_home.join("auth.json");
     let auth_payload = stage_auth(&auth_path, target, request.codex.as_ref())?;
@@ -555,7 +576,11 @@ fn build_migration_plan(
     )?);
 
     for rollout in &report.rollouts {
-        let mutable = rollout.provider != target_provider;
+        let selected = request
+            .thread_ids
+            .as_ref()
+            .is_none_or(|thread_ids| thread_ids.contains(&rollout.thread_id));
+        let mutable = selected && rollout.provider != target_provider;
         let payload = if mutable {
             let logical = read_rollout_logical(rollout).map_err(redact_fixture_error)?;
             let (rewritten, delta) = rewrite_rollout_header_provider(
@@ -589,7 +614,11 @@ fn build_migration_plan(
     for database in &report.sqlite_databases {
         let mut mutation = SqliteMutation::default();
         for row in &database.state_rows {
-            if row.provider != target_provider {
+            let selected = request
+                .thread_ids
+                .as_ref()
+                .is_none_or(|thread_ids| thread_ids.contains(&row.thread_id));
+            if selected && row.provider != target_provider {
                 mutation.state_updates.push(StateUpdate {
                     thread_id: row.thread_id.clone(),
                     source_provider: row.provider.clone(),
@@ -1798,6 +1827,7 @@ fn execute_plan(
             .collect(),
         old_proofs: plan.old_proofs.clone(),
         new_proofs: plan.new_proofs.clone(),
+        thread_ids: request.thread_ids.clone(),
         restart_allowed: false,
     };
     persist_journal(&plan.roots, &journal)?;
@@ -2749,16 +2779,28 @@ fn validate_new_state(
             None,
         )
     })?;
+    let selected = journal.thread_ids.as_ref();
+    let selected_rollout_mismatch = report.rollouts.iter().any(|rollout| {
+        selected.map_or(
+            rollout.provider != journal.target_provider,
+            |thread_ids| {
+                thread_ids.contains(&rollout.thread_id)
+                    && rollout.provider != journal.target_provider
+            },
+        )
+    });
+    let selected_state_mismatch = report
+        .sqlite_databases
+        .iter()
+        .flat_map(|database| database.state_rows.iter())
+        .any(|row| {
+            selected.map_or(row.provider != journal.target_provider, |thread_ids| {
+                thread_ids.contains(&row.thread_id) && row.provider != journal.target_provider
+            })
+        });
     if report.config.active_provider.as_deref() != Some(&journal.target_provider)
-        || report
-            .rollouts
-            .iter()
-            .any(|rollout| rollout.provider != journal.target_provider)
-        || report
-            .sqlite_databases
-            .iter()
-            .flat_map(|database| database.state_rows.iter())
-            .any(|row| row.provider != journal.target_provider)
+        || selected_rollout_mismatch
+        || selected_state_mismatch
     {
         return Err(migration_error(
             MigrationErrorKind::ValidationFailed,

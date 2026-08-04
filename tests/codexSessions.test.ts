@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { acceptsResponse, beginRequest, boundSessionQuery, initialRequestGuard, mountRequests, parseSafeCommandError, safeFailure, unmountRequests } from "../src/lib/codexSessions.ts";
+import {
+  acceptsResponse,
+  beginRequest,
+  boundSessionQuery,
+  initialRequestGuard,
+  mountRequests,
+  parseSafeCommandError,
+  safeFailure,
+  unmountRequests,
+} from "../src/lib/codexSessions.ts";
 
 test("accepts only the versioned bounded safe error contract", () => {
   const safe = { version: 1, code: "busy", message: "另一个操作正在进行，请稍后再试。", retryable: true, action: "retry" };
@@ -55,4 +64,10 @@ test("late detection responses are rejected after target changes", () => {
 
 test("search input is bounded before crossing the command boundary", () => {
   assert.equal(boundSessionQuery(`  ${"a".repeat(200)}  `).length, 80);
+});
+
+test("safe mutation errors remain compact and safe to render", () => {
+  const failure = safeFailure({ version: 1, code: "change_failed", message: "操作未完成，原有内容保持可用。", retryable: false });
+  assert.equal(failure.message, "操作未完成，原有内容保持可用。");
+  assert.doesNotMatch(JSON.stringify(failure), /config\.toml|auth\.json|token|SQLite/i);
 });

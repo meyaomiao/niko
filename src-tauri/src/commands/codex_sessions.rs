@@ -7,6 +7,7 @@ use crate::codex_sessions::{
 };
 use crate::commands::safe_error::SafeCommandError;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,8 +15,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const QUERY_MAX: usize = 80;
-const PAGE_MAX: usize = 20;
-const CURSOR_MASK: usize = 0x5a17_3c2d;
+const PAGE_MAX: usize = 50;
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CodexSessionThread {
@@ -24,20 +24,46 @@ pub struct CodexSessionThread {
     pub summary: Option<String>,
     pub updated_at: Option<String>,
     pub archived: bool,
+    pub provider: Option<String>,
     pub can_continue: bool,
+    pub needs_migration: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CodexSessionPage {
     pub status: &'static str,
     pub items: Vec<CodexSessionThread>,
-    pub next_cursor: Option<String>,
+    pub page: usize,
+    pub page_size: usize,
+    pub total: usize,
+    pub total_pages: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CodexSessionMutationOutcome {
     pub status: &'static str,
-    pub message: &'static str,
+    pub message: String,
+    pub requested: usize,
+    pub migrated: usize,
+    pub failed: usize,
+    pub changed_artifacts: usize,
+}
+
+pub(crate) fn mutation_outcome(
+    status: &'static str,
+    message: impl Into<String>,
+    requested: usize,
+    migrated: usize,
+    changed_artifacts: usize,
+) -> CodexSessionMutationOutcome {
+    CodexSessionMutationOutcome {
+        status,
+        message: message.into(),
+        requested,
+        migrated,
+        failed: 0,
+        changed_artifacts,
+    }
 }
 
 fn home_dir() -> PathBuf {
@@ -66,26 +92,21 @@ fn report_status(report: &ScanReport) -> &'static str {
     }
 }
 
-fn thread_route_is_healthy(
-    active_provider: Option<&str>,
-    archived: Option<bool>,
-    providers: &[String],
-) -> bool {
+fn thread_route_is_healthy(archived: Option<bool>, providers: &[String]) -> bool {
+    // A historical provider can differ from the active route; only the
+    // thread-local provider bucket and archive state are relevant here.
     archived == Some(false)
         && providers.len() == 1
-        && active_provider == providers.first().map(String::as_str)
+        && !providers[0].trim().is_empty()
 }
 
-fn thread_is_healthy(report: &ScanReport, thread: &ThreadInventory) -> bool {
+fn thread_storage_is_healthy(report: &ScanReport, thread: &ThreadInventory) -> bool {
     is_uuid_like(&thread.thread_id)
         && thread.rollout_paths.len() == 1
         && thread.state_databases.len() == 1
         && thread.history_databases.len() <= 1
-        && thread_route_is_healthy(
-            report.config.active_provider.as_deref(),
-            thread.archived,
-            &thread.providers,
-        )
+        && thread.archived == Some(false)
+        && thread.providers.len() == 1
         && !report.diagnostics.iter().any(|diagnostic| {
             diagnostic.level == DiagnosticLevel::Blocker
                 && (diagnostic.thread_id.is_none()
@@ -93,73 +114,147 @@ fn thread_is_healthy(report: &ScanReport, thread: &ThreadInventory) -> bool {
         })
 }
 
-fn encode_cursor(offset: usize) -> String {
-    format!("p1_{:08x}", offset ^ CURSOR_MASK)
+fn thread_is_healthy(report: &ScanReport, thread: &ThreadInventory) -> bool {
+    thread_storage_is_healthy(report, thread)
+        && thread_route_is_healthy(thread.archived, &thread.providers)
 }
 
-fn decode_cursor(cursor: Option<&str>) -> Result<usize, SafeCommandError> {
-    let Some(cursor) = cursor else { return Ok(0) };
-    if cursor.len() != 11 || !cursor.starts_with("p1_") {
-        return Err(SafeCommandError::invalid_request());
-    }
-    usize::from_str_radix(&cursor[3..], 16)
-        .map(|value| value ^ CURSOR_MASK)
-        .map_err(|_| SafeCommandError::invalid_request())
+fn thread_needs_migration_to(
+    report: &ScanReport,
+    thread: &ThreadInventory,
+    target_provider: &str,
+) -> bool {
+    thread_storage_is_healthy(report, thread)
+        && (report.config.active_provider.as_deref() != Some(target_provider)
+            || thread.providers.first().map(String::as_str) != Some(target_provider))
+}
+
+fn thread_needs_migration(report: &ScanReport, thread: &ThreadInventory) -> bool {
+    thread_needs_migration_to(report, thread, "custom")
+}
+
+fn migration_requested(report: &ScanReport, target: MigrationProviderTarget) -> usize {
+    let target_provider = match target {
+        MigrationProviderTarget::Custom => "custom",
+        MigrationProviderTarget::OpenAi => "openai",
+    };
+    report
+        .threads
+        .iter()
+        .filter(|thread| thread_needs_migration_to(report, thread, target_provider))
+        .count()
+}
+
+fn migration_provider_count(report: &ScanReport, target: MigrationProviderTarget) -> usize {
+    let target_provider = match target {
+        MigrationProviderTarget::Custom => "custom",
+        MigrationProviderTarget::OpenAi => "openai",
+    };
+    report
+        .threads
+        .iter()
+        .filter(|thread| {
+            thread_storage_is_healthy(report, thread)
+                && thread.providers.first().map(String::as_str) != Some(target_provider)
+        })
+        .count()
 }
 
 fn page_from_report(
     report: &ScanReport,
     query: &str,
-    offset: usize,
-    limit: usize,
+    page: usize,
+    page_size: usize,
 ) -> Result<CodexSessionPage, SafeCommandError> {
+    if page == 0 {
+        return Err(SafeCommandError::invalid_request());
+    }
     let query = query.trim().to_lowercase();
     let mut threads = report
         .threads
         .iter()
-        .filter(|thread| query.is_empty() || thread.thread_id.to_lowercase().contains(&query))
+        .filter(|thread| {
+            query.is_empty()
+                || thread.thread_id.to_lowercase().contains(&query)
+                || thread
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.to_lowercase().contains(&query))
+                || thread
+                    .summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.to_lowercase().contains(&query))
+        })
         .collect::<Vec<_>>();
-    threads.sort_by(|left, right| right.thread_id.cmp(&left.thread_id));
-    if offset > threads.len() {
+    // Keep one deterministic order for all projects: newest session first.
+    // Missing timestamps stay at the end and the id only breaks ties.
+    threads.sort_by(|left, right| {
+        right
+            .updated_at_ms
+            .cmp(&left.updated_at_ms)
+            .then_with(|| right.thread_id.cmp(&left.thread_id))
+    });
+    let total = threads.len();
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total - 1) / page_size + 1
+    };
+    if page > total_pages && !(total == 0 && page == 1) {
         return Err(SafeCommandError::invalid_request());
     }
-    let end = offset.saturating_add(limit).min(threads.len());
-    let items = threads[offset..end]
+    let start = page.saturating_sub(1).saturating_mul(page_size);
+    let end = start.saturating_add(page_size).min(total);
+    let items = threads[start..end]
         .iter()
         .map(|thread| CodexSessionThread {
             thread_id: thread.thread_id.clone(),
-            title: None,
-            summary: None,
-            updated_at: None,
+            title: thread.title.clone(),
+            summary: thread.summary.clone(),
+            updated_at: thread.updated_at_ms.map(|value| value.to_string()),
             archived: thread.archived.unwrap_or(false),
+            provider: (thread.providers.len() == 1).then(|| thread.providers[0].clone()),
             can_continue: thread_is_healthy(report, thread),
+            needs_migration: thread_needs_migration(report, thread),
         })
         .collect();
     Ok(CodexSessionPage {
         status: report_status(report),
         items,
-        next_cursor: (end < threads.len()).then(|| encode_cursor(end)),
+        page,
+        page_size,
+        total,
+        total_pages,
     })
 }
 
 #[tauri::command]
 pub async fn scan_codex_session_inventory(
     query: Option<String>,
-    cursor: Option<String>,
-    limit: Option<usize>,
+    page: Option<usize>,
+    page_size: Option<usize>,
 ) -> Result<CodexSessionPage, SafeCommandError> {
     let query = query.unwrap_or_default();
     if query.chars().count() > QUERY_MAX {
         return Err(SafeCommandError::invalid_request());
     }
-    let offset = decode_cursor(cursor.as_deref())?;
-    let limit = limit.unwrap_or(PAGE_MAX).clamp(1, PAGE_MAX);
+    let page = page.unwrap_or(1);
+    if page == 0 {
+        return Err(SafeCommandError::invalid_request());
+    }
+    let page_size = page_size.unwrap_or(PAGE_MAX).clamp(1, PAGE_MAX);
     let root = codex_home();
     if !root.exists() {
+        if page > 1 {
+            return Err(SafeCommandError::invalid_request());
+        }
         return Ok(CodexSessionPage {
             status: "healthy",
             items: Vec::new(),
-            next_cursor: None,
+            page,
+            page_size,
+            total: 0,
+            total_pages: 0,
         });
     }
     if !root.is_dir() {
@@ -167,7 +262,7 @@ pub async fn scan_codex_session_inventory(
     }
     let report = scan_codex_sessions(&ScanRequest::new(root))
         .map_err(|_| SafeCommandError::read_failed())?;
-    page_from_report(&report, &query, offset, limit)
+    page_from_report(&report, &query, page, page_size)
 }
 
 fn normalize_target(target: &str) -> Result<MigrationProviderTarget, SafeCommandError> {
@@ -186,6 +281,7 @@ fn mutation_request(codex: Option<CodexMigrationInput>) -> MigrationRequest {
     MigrationRequest {
         scan: ScanRequest::new(codex_home()),
         codex,
+        thread_ids: None,
         options: MigrationOptions {
             busy_retries: 4,
             busy_retry_delay: Duration::from_millis(50),
@@ -252,10 +348,7 @@ pub(crate) fn normalize_codex_session_storage_with_input(
     let root = codex_home();
     if !root.exists() {
         if codex.is_none() {
-            return Ok(CodexSessionMutationOutcome {
-                status: "unchanged",
-                message: "当前状态无需调整。",
-            });
+            return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
         }
         fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
     }
@@ -264,20 +357,115 @@ pub(crate) fn normalize_codex_session_storage_with_input(
     if scan.is_blocked() {
         return Err(SafeCommandError::change_failed(false));
     }
+    let requested = migration_requested(&scan, target);
+    let planned_migrated = migration_provider_count(&scan, target);
     authorize_codex_root(&root)?;
     match migrate_codex_sessions_transactional(&mutation_request(codex), target) {
-        Ok(report) if report.changed_artifacts == 0 => Ok(CodexSessionMutationOutcome {
-            status: "unchanged",
-            message: "当前状态无需调整。",
-        }),
-        Ok(_) if target == MigrationProviderTarget::OpenAi => Ok(CodexSessionMutationOutcome {
-            status: "applied",
-            message: "已恢复到官方，可以继续使用。",
-        }),
-        Ok(_) => Ok(CodexSessionMutationOutcome {
-            status: "applied",
-            message: "已完成检查，可以继续使用。",
-        }),
+        Ok(report) => {
+            let migrated = (report.changed_artifacts > 0)
+                .then_some(planned_migrated)
+                .unwrap_or(0);
+            let message = if report.changed_artifacts == 0 {
+                "当前状态无需调整。".to_owned()
+            } else if target == MigrationProviderTarget::OpenAi {
+                format!(
+                    "已恢复到官方：处理 {requested} 个会话，迁移 {migrated} 个，更新 {} 个文件。",
+                    report.changed_artifacts
+                )
+            } else {
+                format!(
+                    "已完成检查：处理 {requested} 个会话，迁移 {migrated} 个，更新 {} 个文件。",
+                    report.changed_artifacts
+                )
+            };
+            Ok(mutation_outcome(
+                if report.changed_artifacts == 0 { "unchanged" } else { "applied" },
+                message,
+                requested,
+                migrated,
+                report.changed_artifacts,
+            ))
+        }
+        Err(error) => Err(map_migration_error(error.kind, error.retryable)),
+    }
+}
+
+fn normalize_selected_thread_ids(
+    thread_ids: Vec<String>,
+) -> Result<BTreeSet<String>, SafeCommandError> {
+    let mut selected = BTreeSet::new();
+    for thread_id in thread_ids {
+        let thread_id = thread_id.trim();
+        if !is_uuid_like(thread_id) {
+            return Err(SafeCommandError::invalid_request());
+        }
+        selected.insert(thread_id.to_owned());
+    }
+    if selected.is_empty() || selected.len() > PAGE_MAX {
+        return Err(SafeCommandError::invalid_request());
+    }
+    Ok(selected)
+}
+
+pub(crate) fn normalize_codex_session_storage_selected_inner(
+    target_provider: String,
+    thread_ids: Vec<String>,
+) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
+    let target = normalize_target(&target_provider)?;
+    let selected = normalize_selected_thread_ids(thread_ids)?;
+    let root = codex_home();
+    if !root.exists() {
+        return Err(SafeCommandError::read_failed());
+    }
+    let scan = scan_codex_sessions(&ScanRequest::new(&root))
+        .map_err(|_| SafeCommandError::read_failed())?;
+    if scan.is_blocked() {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    if target != MigrationProviderTarget::Custom
+        || selected.iter().any(|thread_id| {
+            scan.threads
+                .iter()
+                .find(|thread| thread.thread_id == *thread_id)
+                .is_none_or(|thread| !thread_needs_migration(&scan, thread))
+        })
+    {
+        return Err(SafeCommandError::change_failed(false));
+    }
+    let requested = selected.len();
+    let planned_migrated = selected
+        .iter()
+        .filter(|thread_id| {
+            scan.threads.iter().any(|thread| {
+                thread.thread_id == **thread_id
+                    && thread.providers.first().map(String::as_str) != Some("custom")
+            })
+        })
+        .count();
+    authorize_codex_root(&root)?;
+    let mut request = mutation_request(None);
+    request.thread_ids = Some(selected);
+    match migrate_codex_sessions_transactional(&request, target) {
+        Ok(report) => {
+            let migrated = (report.changed_artifacts > 0)
+                .then_some(planned_migrated)
+                .unwrap_or(0);
+            let message = if report.changed_artifacts == 0 {
+                "选中的会话无需调整。".to_owned()
+            } else {
+                format!(
+                    "已修复选中的会话：处理 {requested} 个，迁移 {migrated} 个，更新 {} 个文件。",
+                    report.changed_artifacts
+                )
+            };
+            Ok(mutation_outcome(
+                if report.changed_artifacts == 0 { "unchanged" } else { "applied" },
+                message,
+                requested,
+                migrated,
+                report.changed_artifacts,
+            ))
+        }
         Err(error) => Err(map_migration_error(error.kind, error.retryable)),
     }
 }
@@ -319,10 +507,7 @@ pub(crate) fn prepare_codex_session_restart(
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
     let root = codex_home();
     if !root.exists() {
-        return Ok(CodexSessionMutationOutcome {
-            status: "unchanged",
-            message: "当前状态无需调整。",
-        });
+        return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
     }
     let report = scan_codex_sessions(&ScanRequest::new(root))
         .map_err(|_| SafeCommandError::read_failed())?;
@@ -330,10 +515,7 @@ pub(crate) fn prepare_codex_session_restart(
         return Err(SafeCommandError::change_failed(false));
     }
     if !restart_needs_normalization(report.config.active_provider.as_deref()) {
-        return Ok(CodexSessionMutationOutcome {
-            status: "unchanged",
-            message: "当前状态无需调整。",
-        });
+        return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
     }
     normalize_codex_session_storage_inner("custom".to_owned())
 }
@@ -344,6 +526,15 @@ pub async fn normalize_codex_session_storage(
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
     normalize_codex_session_storage_inner(target_provider)
+}
+
+#[tauri::command]
+pub async fn normalize_codex_session_storage_selected(
+    target_provider: String,
+    thread_ids: Vec<String>,
+) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
+    let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
+    normalize_codex_session_storage_selected_inner(target_provider, thread_ids)
 }
 
 fn open_url(url: &str) -> Result<(), ()> {
@@ -382,6 +573,10 @@ fn open_url(url: &str) -> Result<(), ()> {
 #[tauri::command]
 pub async fn open_codex_thread(thread_id: String) -> Result<(), SafeCommandError> {
     let thread_id = thread_id.trim();
+    open_codex_thread_checked(thread_id)
+}
+
+fn open_codex_thread_checked(thread_id: &str) -> Result<(), SafeCommandError> {
     if !is_uuid_like(thread_id) {
         return Err(SafeCommandError::invalid_request());
     }
@@ -401,19 +596,19 @@ pub async fn open_codex_thread(thread_id: String) -> Result<(), SafeCommandError
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn cursor_is_bounded_and_roundtrips() {
-        for offset in [0, 1, 20, 4000] {
-            let value = encode_cursor(offset);
-            assert!(value.len() <= 16);
-            assert_eq!(decode_cursor(Some(&value)).unwrap(), offset);
-        }
-        assert!(decode_cursor(Some("20")).is_err());
-    }
+
     #[test]
     fn uuid_validation_is_strict() {
         assert!(is_uuid_like("019fb1b4-f24c-7ec3-a736-c68cf9a0ae11"));
         assert!(!is_uuid_like("../../auth.json"));
+    }
+
+    #[test]
+    fn selected_thread_ids_are_bounded_and_deduplicated() {
+        let id = "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11".to_owned();
+        assert_eq!(normalize_selected_thread_ids(vec![id.clone(), id]).unwrap().len(), 1);
+        assert!(normalize_selected_thread_ids(vec!["not-a-uuid".to_owned()]).is_err());
+        assert!(normalize_selected_thread_ids(Vec::new()).is_err());
     }
 
     #[test]
@@ -424,23 +619,76 @@ mod tests {
     }
 
     #[test]
-    fn continuation_requires_active_non_archived_provider_route() {
+    fn continuation_ignores_historical_provider_route_mismatch() {
         let custom = vec!["custom".to_owned()];
         let official = vec!["openai".to_owned()];
-        assert!(thread_route_is_healthy(
-            Some("custom"),
-            Some(false),
-            &custom,
-        ));
-        assert!(!thread_route_is_healthy(
-            Some("custom"),
-            Some(true),
-            &custom,
-        ));
-        assert!(!thread_route_is_healthy(
-            Some("custom"),
-            Some(false),
-            &official,
-        ));
+        assert!(thread_route_is_healthy(Some(false), &custom));
+        assert!(thread_route_is_healthy(Some(false), &official));
+        assert!(!thread_route_is_healthy(Some(true), &custom));
+        assert!(!thread_route_is_healthy(Some(false), &[]));
+    }
+
+    #[test]
+    fn paginated_report_has_total_and_rejects_out_of_range_pages() {
+        let report = ScanReport {
+            codex_home: PathBuf::from("/tmp/codex"),
+            config: crate::codex_sessions::ConfigInventory {
+                path: PathBuf::from("/tmp/codex/config.toml"),
+                present: true,
+                active_provider: Some("custom".into()),
+                defined_providers: Vec::new(),
+                effective_sqlite_home: PathBuf::from("/tmp/codex"),
+                sqlite_home_source: crate::codex_sessions::SqliteHomeSource::CodexHome,
+            },
+            rollouts: Vec::new(),
+            session_index: None,
+            sqlite_databases: Vec::new(),
+            threads: (0..PAGE_MAX + 1)
+                .map(|index| ThreadInventory {
+                    thread_id: format!("019fb1b4-f24c-7ec3-a736-c68cf9a0ae{index:02x}"),
+                    rollout_paths: vec![PathBuf::from("rollout")],
+                    state_databases: vec![PathBuf::from("state")],
+                    history_databases: Vec::new(),
+                    providers: vec!["custom".into()],
+                    workspaces: vec![PathBuf::from("workspace")],
+                    archived: Some(false),
+                    title: Some(format!("title-{index}")),
+                    summary: Some(format!("summary-{index}")),
+                    updated_at_ms: Some(index as i64),
+                    storage_versions: Vec::new(),
+                })
+                .collect(),
+            provider_layout: crate::codex_sessions::ProviderLayout::Mixed,
+            diagnostics: Vec::new(),
+            normalization: crate::codex_sessions::NormalizationPlan {
+                status: NormalizationStatus::NoChanges,
+                target_provider: "custom".into(),
+                actions: Vec::new(),
+            },
+        };
+        let first = page_from_report(&report, "", 1, PAGE_MAX).unwrap();
+        assert_eq!(first.page, 1);
+        assert_eq!(first.page_size, PAGE_MAX);
+        assert_eq!(first.total, PAGE_MAX + 1);
+        assert_eq!(first.total_pages, 2);
+        assert_eq!(first.items.len(), PAGE_MAX);
+        assert_eq!(first.items.first().and_then(|item| item.updated_at.as_deref()), Some("50"));
+        assert!(first.items.iter().all(|item| item.can_continue));
+        assert!(page_from_report(&report, "", 3, PAGE_MAX).is_err());
+
+        let mut mismatch_report = report.clone();
+        mismatch_report.threads[PAGE_MAX].providers = vec!["custom".into(), "openai".into()];
+        let mismatch_page = page_from_report(&mismatch_report, "", 1, PAGE_MAX).unwrap();
+        assert!(mismatch_page.items.iter().any(|item| !item.can_continue));
+
+        let mut official_report = mismatch_report.clone();
+        official_report.threads[PAGE_MAX].providers = vec!["openai".into()];
+        let official_page = page_from_report(&official_report, "", 1, PAGE_MAX).unwrap();
+        assert!(official_page.items.iter().any(|item| item.needs_migration));
+
+        let mut empty_report = report;
+        empty_report.threads.clear();
+        assert!(page_from_report(&empty_report, "", 1, PAGE_MAX).is_ok());
+        assert!(page_from_report(&empty_report, "", 2, PAGE_MAX).is_err());
     }
 }

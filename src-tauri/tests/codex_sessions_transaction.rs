@@ -10,7 +10,7 @@ use niko_lib::codex_sessions::{
 };
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::{json, Value as JsonValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier, Mutex};
@@ -639,6 +639,32 @@ fn commits_full_manifest_config_last_and_is_idempotent() {
         .unwrap()
         .migrations
         .is_empty());
+}
+
+#[test]
+fn selected_migration_leaves_unselected_threads_unchanged() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    fixture.request.thread_ids = Some(BTreeSet::from([THREAD_A.to_owned()]));
+
+    let report =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+            .unwrap();
+    assert_eq!(report.outcome, MigrationOutcome::Committed);
+
+    let after = scan_codex_sessions(&fixture.request.scan).unwrap();
+    assert_eq!(after.config.active_provider.as_deref(), Some(CUSTOM_PROVIDER));
+    let selected = after
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == THREAD_A)
+        .unwrap();
+    let untouched = after
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == THREAD_B)
+        .unwrap();
+    assert_eq!(selected.providers, vec![CUSTOM_PROVIDER.to_owned()]);
+    assert_eq!(untouched.providers, vec![OFFICIAL_PROVIDER.to_owned()]);
 }
 
 #[test]

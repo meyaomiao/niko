@@ -205,6 +205,9 @@ pub struct StateThreadRow {
     pub provider: String,
     pub workspace: PathBuf,
     pub archived: bool,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub updated_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -253,6 +256,9 @@ pub struct ThreadInventory {
     pub providers: Vec<String>,
     pub workspaces: Vec<PathBuf>,
     pub archived: Option<bool>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub updated_at_ms: Option<i64>,
     pub storage_versions: Vec<String>,
 }
 
@@ -1107,7 +1113,12 @@ fn inspect_sqlite(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> SqliteArtif
         artifact.schema_kind,
         SqliteSchemaKind::State | SqliteSchemaKind::StateAndThreadHistory
     ) {
-        match read_state_rows(&connection) {
+        match read_state_rows(
+            &connection,
+            table_columns
+                .get("threads")
+                .expect("verified state schema must include threads"),
+        ) {
             Ok(rows) => {
                 if rows.iter().any(|row| {
                     row.thread_id.trim().is_empty()
@@ -1350,13 +1361,23 @@ fn history_capability_status(tables: &BTreeMap<String, BTreeSet<String>>) -> Cap
 fn is_known_auxiliary_schema(tables: &BTreeMap<String, BTreeSet<String>>) -> bool {
     const KNOWN_TABLES: &[&str] = &[
         "_sqlx_migrations",
+        "app_server_history_snapshots",
+        "automations",
+        "automation_runs",
         "external_agent_config_imports",
+        "inbox_items",
         "jobs",
         "logs",
+        "local_app_server_feature_enablement",
+        "local_thread_catalog",
+        "local_thread_catalog_hosts",
+        "local_thread_catalog_metadata",
+        "local_thread_catalog_sync_state",
         "memories",
         "memory_usage",
         "remote_control_enrollments",
         "stage1_outputs",
+        "thread_timeline_ledger",
         "thread_goal_continuation_deferrals",
         "thread_goals",
     ];
@@ -1373,18 +1394,77 @@ fn is_known_auxiliary_schema(tables: &BTreeMap<String, BTreeSet<String>>) -> boo
             .any(|name| name.as_str() != "_sqlx_migrations")
 }
 
-fn read_state_rows(connection: &Connection) -> rusqlite::Result<Vec<StateThreadRow>> {
-    let mut statement = connection.prepare(
-        "SELECT id, rollout_path, model_provider, cwd, archived FROM threads ORDER BY id",
-    )?;
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim().to_owned();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+fn timestamp_to_millis(value: i64) -> i64 {
+    match value.unsigned_abs() {
+        0..=99_999_999_999 => value.saturating_mul(1_000),
+        100_000_000_000..=99_999_999_999_999 => value,
+        100_000_000_000_000..=99_999_999_999_999_999 => value / 1_000,
+        _ => value / 1_000_000,
+    }
+}
+
+fn read_state_rows(
+    connection: &Connection,
+    thread_columns: &BTreeSet<String>,
+) -> rusqlite::Result<Vec<StateThreadRow>> {
+    let title = thread_columns
+        .contains("title")
+        .then_some("title")
+        .unwrap_or("NULL");
+    let preview = thread_columns
+        .contains("preview")
+        .then_some("preview")
+        .unwrap_or("NULL");
+    let first_user_message = thread_columns
+        .contains("first_user_message")
+        .then_some("first_user_message")
+        .unwrap_or("NULL");
+    let updated_at_ms = thread_columns
+        .contains("updated_at_ms")
+        .then_some("updated_at_ms")
+        .unwrap_or("NULL");
+    let updated_at = thread_columns
+        .contains("updated_at")
+        .then_some("updated_at")
+        .unwrap_or("NULL");
+    let sql = format!(
+        "SELECT id, rollout_path, model_provider, cwd, archived, \
+                {title} AS title, {preview} AS preview, {first_user_message} AS first_user_message, \
+                CAST({updated_at_ms} AS INTEGER) AS updated_at_ms, \
+                CAST({updated_at} AS INTEGER) AS updated_at \
+         FROM threads ORDER BY id"
+    );
+    let mut statement = connection.prepare(&sql)?;
     let rows = statement
         .query_map([], |row| {
+            let title = normalize_optional_text(row.get(5)?);
+            let preview = normalize_optional_text(row.get(6)?);
+            let first_user_message = normalize_optional_text(row.get(7)?);
+            let updated_at_ms = row
+                .get::<_, Option<i64>>(8)?
+                .map(timestamp_to_millis)
+                .or_else(|| {
+                    row.get::<_, Option<i64>>(9)
+                        .ok()
+                        .flatten()
+                        .map(timestamp_to_millis)
+                });
             Ok(StateThreadRow {
                 thread_id: row.get(0)?,
                 rollout_path: PathBuf::from(row.get::<_, String>(1)?),
                 provider: row.get(2)?,
                 workspace: PathBuf::from(row.get::<_, String>(3)?),
                 archived: row.get::<_, i64>(4)? != 0,
+                title,
+                summary: preview.or(first_user_message),
+                updated_at_ms,
             })
         })?
         .collect();
@@ -1514,6 +1594,9 @@ struct ThreadBuilder {
     providers: BTreeSet<String>,
     workspaces: BTreeSet<PathBuf>,
     archived: BTreeSet<bool>,
+    title: Option<String>,
+    summary: Option<String>,
+    updated_at_ms: Option<i64>,
     storage_versions: BTreeSet<String>,
 }
 
@@ -1554,6 +1637,15 @@ fn build_thread_inventory(
             thread.providers.insert(row.provider.clone());
             thread.workspaces.insert(row.workspace.clone());
             thread.archived.insert(row.archived);
+            if thread.title.is_none() {
+                thread.title = row.title.clone();
+            }
+            if thread.summary.is_none() {
+                thread.summary = row.summary.clone();
+            }
+            if thread.updated_at_ms.is_none() {
+                thread.updated_at_ms = row.updated_at_ms;
+            }
             thread.storage_versions.insert(format!(
                 "state:{}:{}",
                 database
@@ -1645,6 +1737,9 @@ fn build_thread_inventory(
                 } else {
                     None
                 },
+                title: thread.title,
+                summary: thread.summary,
+                updated_at_ms: thread.updated_at_ms,
                 storage_versions: thread.storage_versions.into_iter().collect(),
             }
         })
