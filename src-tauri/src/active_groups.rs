@@ -44,6 +44,13 @@ pub(crate) struct ActiveGroupStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EffectiveSelection {
+    pub(crate) status: ActiveGroupState,
+    pub(crate) group: Option<String>,
+    pub(crate) model: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RecordRead {
     Missing,
     Valid(ActiveGroupRecord),
@@ -329,51 +336,76 @@ fn group_is_available(group: &str, available_groups: Option<&[String]>) -> bool 
     available_groups.is_none_or(|groups| groups.iter().any(|item| item == group))
 }
 
-pub(crate) fn detect_active_group_at(
+pub(crate) fn detect_effective_selection_at(
     home: &Path,
     target_id: &str,
     available_groups: Option<&[String]>,
-) -> ActiveGroupStatus {
+) -> EffectiveSelection {
+    detect_selection_at(home, target_id, available_groups, true)
+}
+
+fn detect_selection_at(
+    home: &Path,
+    target_id: &str,
+    available_groups: Option<&[String]>,
+    require_model: bool,
+) -> EffectiveSelection {
     let record = read_record_at(home, target_id);
     if matches!(&record, RecordRead::Invalid) {
-        return active_status(target_id, None, ActiveGroupState::Unknown);
+        return EffectiveSelection { status: ActiveGroupState::Unknown, group: None, model: None };
     }
 
     let observation = crate::targets::observe_active_config_at(target_id, home);
     match record {
         RecordRead::Missing => match observation {
             TargetConfigObservation::Other => {
-                active_status(target_id, None, ActiveGroupState::NotNiko)
+                EffectiveSelection { status: ActiveGroupState::NotNiko, group: None, model: None }
             }
             TargetConfigObservation::Unreadable => {
-                active_status(target_id, None, ActiveGroupState::Unreadable)
+                EffectiveSelection { status: ActiveGroupState::Unreadable, group: None, model: None }
             }
             TargetConfigObservation::Matchable(_) | TargetConfigObservation::Ambiguous => {
-                active_status(target_id, None, ActiveGroupState::Unknown)
+                EffectiveSelection { status: ActiveGroupState::Unknown, group: None, model: None }
             }
         },
         RecordRead::Valid(record) => {
             if !group_is_available(&record.group, available_groups) {
-                return active_status(target_id, None, ActiveGroupState::Unknown);
+                return EffectiveSelection { status: ActiveGroupState::Unknown, group: None, model: None };
             }
             match observation {
                 TargetConfigObservation::Unreadable => {
-                    active_status(target_id, None, ActiveGroupState::Unreadable)
+                    EffectiveSelection { status: ActiveGroupState::Unreadable, group: None, model: None }
                 }
-                TargetConfigObservation::Matchable(digest)
-                    if bind_config_digest(&record.group, &digest) == record.config_digest =>
+                TargetConfigObservation::Matchable(config) if require_model && config.model.is_none() => {
+                    EffectiveSelection { status: ActiveGroupState::Unknown, group: None, model: None }
+                }
+                TargetConfigObservation::Matchable(config)
+                    if bind_config_digest(&record.group, &config.digest) == record.config_digest =>
                 {
-                    active_status(target_id, Some(record.group), ActiveGroupState::Active)
+                    EffectiveSelection {
+                        status: ActiveGroupState::Active,
+                        group: Some(record.group),
+                        model: config.model,
+                    }
                 }
                 TargetConfigObservation::Matchable(_)
                 | TargetConfigObservation::Other
                 | TargetConfigObservation::Ambiguous => {
-                    active_status(target_id, None, ActiveGroupState::Changed)
+                    EffectiveSelection { status: ActiveGroupState::Changed, group: None, model: None }
                 }
             }
         }
-        RecordRead::Invalid => active_status(target_id, None, ActiveGroupState::Unknown),
+        RecordRead::Invalid => EffectiveSelection { status: ActiveGroupState::Unknown, group: None, model: None },
     }
+}
+
+pub(crate) fn detect_active_group_at(
+    home: &Path,
+    target_id: &str,
+    available_groups: Option<&[String]>,
+) -> ActiveGroupStatus {
+    let selection = detect_selection_at(home, target_id, available_groups, false);
+    active_status(target_id, selection.group, selection.status)
 }
 
 #[cfg(test)]

@@ -27,6 +27,12 @@ pub struct RestartOutcome {
     pub message: &'static str,
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct CloseOutcome {
+    pub status: &'static str,
+    pub message: &'static str,
+}
+
 fn restart_after_close<P, L>(
     prepare: P,
     launch: L,
@@ -121,6 +127,34 @@ pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCom
         || launch_app(&path).map_err(|_| ()),
         was_running,
     )
+}
+
+/// 请求目标应用正常退出，不改动应用配置或会话内容。
+#[tauri::command]
+pub async fn close_target(target_id: String) -> Result<CloseOutcome, SafeCommandError> {
+    let path = crate::targets::app_launch_path(&target_id)
+        .ok_or_else(SafeCommandError::invalid_request)?;
+
+    if !app_process_running(&path) {
+        return Ok(CloseOutcome {
+            status: "not_running",
+            message: "应用未运行，可以重新检查。",
+        });
+    }
+
+    quit_app(&target_id, &path).map_err(|_| SafeCommandError::busy())?;
+    if !wait_for_app_exit(
+        || app_process_running(&path),
+        20,
+        std::time::Duration::from_millis(250),
+    ) {
+        return Err(SafeCommandError::busy());
+    }
+
+    Ok(CloseOutcome {
+        status: "closed",
+        message: "应用已关闭，可以重新检查。",
+    })
 }
 
 /// 某个安装路径下是否有进程在跑。按可执行文件路径判断，不能用进程名关键词：

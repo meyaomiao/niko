@@ -61,7 +61,7 @@ export function friendlyLoginError(value: unknown): string {
   if (/验证码|2fa|two.?factor|verification code/.test(text)) {
     return "验证码不正确或已过期，请重新输入后再试。";
   }
-  if (/账号|用户名|密码|credential|invalid.?login|invalid.?credentials/.test(text)) {
+  if (/账号|用户名|密码|username|password|credential|invalid.?login|invalid.?credentials|user\s+(?:has\s+been\s+)?banned/.test(text)) {
     return "账号或密码不正确，请检查后再试。";
   }
   return friendlyDesktopError(value);

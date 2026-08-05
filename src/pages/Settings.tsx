@@ -19,6 +19,7 @@ import {
   beginRequest,
   initialRequestGuard,
   mountRequests,
+  normalizeCodexSessionPage,
   safeFailure,
   unmountRequests,
 } from "../lib/codexSessions";
@@ -104,12 +105,14 @@ export default function Settings() {
     codexGuard.current = request.state;
     setCodexScanning(true);
     try {
-      const result = await invoke<CodexSessionPage>("scan_codex_session_inventory", {
+      const rawResult = await invoke<unknown>("scan_codex_session_inventory", {
         query: "",
         page: 1,
         page_size: 1,
       });
       if (!acceptsResponse(codexGuard.current, "scan", request.generation)) return null;
+      const result = normalizeCodexSessionPage(rawResult);
+      if (!result) throw new Error("invalid session response");
       setCodexInventory(result);
       return result;
     } catch (error) {
@@ -321,15 +324,15 @@ export default function Settings() {
               <div>
                 <h2 className={OVERLINE}>ChatGPT 会话</h2>
                 <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
-                  {codexInventory ? "当前会话状态" : "正在检查会话…"}
+                  ChatGPT 支持会话检查、迁移和恢复；Claude 桌面端不支持会话管理。
                 </p>
               </div>
               <span className="nk-pill shrink-0">
                 {codexInventory
                   ? codexInventory.status === "healthy"
-                    ? "custom 会话可续接"
+                    ? "会话可续接"
                     : codexInventory.status === "needs_check"
-                      ? "有会话待迁移到 custom"
+                      ? "有会话待处理"
                       : "有会话存在本地结构阻塞"
                   : "检查中"}
               </span>
@@ -347,7 +350,7 @@ export default function Settings() {
                 className={SECONDARY_BTN}
               >
                 <BookOpenIcon />
-                查看会话
+                查看 ChatGPT 会话
                 <ArrowRightIcon />
               </button>
               <button

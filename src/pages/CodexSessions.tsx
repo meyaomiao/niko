@@ -13,8 +13,10 @@ import {
   beginRequest,
   boundSessionQuery,
   codexNormalizationLabel,
+  codexProviderLabel,
   initialRequestGuard,
   mountRequests,
+  normalizeCodexSessionPage,
   safeFailure,
   SESSION_PAGE_SIZE,
   SESSION_QUERY_LIMIT,
@@ -42,6 +44,7 @@ export default function CodexSessions() {
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [migrating, setMigrating] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -67,12 +70,14 @@ export default function CodexSessions() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<CodexSessionPage>("scan_codex_session_inventory", {
+      const rawResult = await invoke<unknown>("scan_codex_session_inventory", {
         query: boundSessionQuery(queryRef.current),
         page: requestedPage,
         page_size: SESSION_PAGE_SIZE,
       });
       if (!acceptsResponse(guard.current, "scan", request.generation)) return;
+      const result = normalizeCodexSessionPage(rawResult);
+      if (!result) throw new Error("invalid session response");
       setPage(result);
     } catch (rejection) {
       if (acceptsResponse(guard.current, "scan", request.generation)) {
@@ -81,6 +86,37 @@ export default function CodexSessions() {
     } finally {
       if (acceptsResponse(guard.current, "scan", request.generation)) {
         setLoading(false);
+      }
+    }
+  };
+
+  const retryScan = () => {
+    setSelectedIds(new Set());
+    setMigrationMessage(null);
+    void load(1);
+  };
+
+  const closeChatGptAndScan = async () => {
+    if (closing || loading || migrating || opening !== null) return;
+    const request = beginRequest(guard.current, "action");
+    guard.current = request.state;
+    setClosing(true);
+    setError(null);
+    setMigrationMessage(null);
+    try {
+      const result = await invoke<{ status: string; message: string }>("close_target", {
+        targetId: "codex",
+      });
+      if (!acceptsResponse(guard.current, "action", request.generation)) return;
+      setMigrationMessage(result.message);
+      await load(1);
+    } catch (rejection) {
+      if (acceptsResponse(guard.current, "action", request.generation)) {
+        setError(safeFailure(rejection).message);
+      }
+    } finally {
+      if (acceptsResponse(guard.current, "action", request.generation)) {
+        setClosing(false);
       }
     }
   };
@@ -121,8 +157,8 @@ export default function CodexSessions() {
     if (migrating || opening !== null || page?.status === "blocked") return;
     if (selected ? selected.length === 0 : page?.status !== "needs_check") return;
     const prompt = selected
-      ? `将把选中的 ${selected.length} 个会话迁移到 custom，并自动备份后原子更新。是否继续？`
-      : "将把所有待迁移的 Codex 会话统一迁移到 custom，并自动备份后原子更新。是否继续？";
+      ? `将把选中的 ${selected.length} 个会话迁移到 Niko 模型服务，并自动备份后原子更新。是否继续？`
+      : "将把所有待迁移的 ChatGPT 会话统一迁移到 Niko 模型服务，并自动备份后原子更新。是否继续？";
     if (!window.confirm(prompt)) {
       return;
     }
@@ -156,6 +192,7 @@ export default function CodexSessions() {
   const selectableItems = page?.items.filter((thread) => thread.needs_migration) ?? [];
   const allSelectableSelected = selectableItems.length > 0
     && selectableItems.every((thread) => selectedIds.has(thread.thread_id));
+  const globalBlockers = page?.blockers.filter((blocker) => blocker.thread_id === "无法确认") ?? [];
 
   const togglePageSelection = () => {
     setSelectedIds((current) => {
@@ -180,7 +217,7 @@ export default function CodexSessions() {
             <ArrowLeftIcon />
           </button>
           <BookOpenIcon />
-          <h1 className="nk-title">本地会话</h1>
+          <h1 className="nk-title">ChatGPT 会话</h1>
         </div>
         <button
           onClick={() => void load(pageRef.current?.page ?? 1)}
@@ -215,54 +252,91 @@ export default function CodexSessions() {
             />
             {error && <p className="nk-alert-danger mt-3" role="alert">{error}</p>}
             {migrationMessage && <p className="nk-alert-success mt-3" role="status">{migrationMessage}</p>}
+            <div className="nk-inset mt-4 p-3 text-xs text-[var(--nk-muted)]">
+              <p className="font-medium text-[var(--nk-ink)]">会话管理范围</p>
+              <p className="mt-1">仅支持 ChatGPT 桌面端会话的检查、迁移和恢复；Claude 桌面端不支持这些操作。</p>
+            </div>
           </section>
+
+          {globalBlockers.length > 0 && (
+            <section className="nk-alert-danger" aria-label="会话检查状态">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-medium">会话检查暂时无法确认</p>
+                <span>{globalBlockers.length} 项</span>
+              </div>
+              <div className="mt-2 space-y-2">
+                {globalBlockers.map((blocker, index) => (
+                  <div key={`${blocker.reason}-${index}`}>
+                    <p>{blocker.reason}</p>
+                    <p className="mt-0.5 opacity-80">下一步：{blocker.next_step}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => void closeChatGptAndScan()}
+                  disabled={loading || migrating || opening !== null || closing}
+                  className="nk-btn-primary px-2.5"
+                >
+                  {closing ? "关闭中…" : "关闭 ChatGPT 并检查"}
+                </button>
+                <button
+                  onClick={retryScan}
+                  disabled={loading || migrating || opening !== null || closing}
+                  className="nk-btn-secondary px-2.5"
+                >
+                  {loading ? "检查中…" : "重新检查"}
+                </button>
+              </div>
+            </section>
+          )}
 
           {loading && !page ? (
             <p className="nk-empty" role="status">正在检查会话…</p>
           ) : page?.items.length ? (
             <section className="space-y-2" aria-label="本地会话列表">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-xs text-[var(--nk-muted)]">
+              <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--nk-muted)]">
                   <span>已选 {selectedIds.size} 个</span>
                   <button
                     onClick={togglePageSelection}
                     disabled={selectableItems.length === 0 || migrating || opening !== null}
-                    className="nk-btn-secondary px-2.5"
+                    className="nk-btn-secondary whitespace-nowrap px-2.5"
                   >
                     {allSelectableSelected ? "取消全选" : "全选待修复"}
                   </button>
                   <button
                     onClick={() => setSelectedIds(new Set())}
                     disabled={selectedIds.size === 0 || migrating}
-                    className="nk-btn-secondary px-2.5"
+                    className="nk-btn-secondary whitespace-nowrap px-2.5"
                   >
                     清空选择
                   </button>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex w-full flex-wrap gap-1.5 sm:w-auto sm:justify-end">
                   {selectedIds.size > 0 && (
                     <button
                       onClick={() => void migrateToCustom(Array.from(selectedIds))}
                       disabled={migrating || opening !== null || page.status === "blocked"}
-                      className="nk-btn-primary px-2.5"
+                      className="nk-btn-primary whitespace-nowrap px-2.5"
                     >
                       {migrating ? "修复中…" : `修复选中 (${selectedIds.size})`}
                     </button>
                   )}
-                <button
-                  onClick={() => void migrateToCustom()}
-                  disabled={page.status !== "needs_check" || migrating || opening !== null}
-                  className="nk-btn-secondary px-2.5"
-                >
-                  {migrating ? "修复中…" : "修复全部待迁移会话"}
-                </button>
+                  <button
+                    onClick={() => void migrateToCustom()}
+                    disabled={page.status !== "needs_check" || migrating || opening !== null}
+                    className="nk-btn-secondary whitespace-nowrap px-2.5"
+                  >
+                    {migrating ? "修复中…" : "修复全部待迁移会话"}
+                  </button>
                 </div>
               </div>
               {page.items.map((thread) => {
                 const isOpening = opening === thread.thread_id;
                 const isSelected = selectedIds.has(thread.thread_id);
                 return (
-                  <div key={thread.thread_id} className="nk-row flex items-center gap-3">
+                  <div key={thread.thread_id} className="nk-row flex items-start gap-3">
                     <input
                       type="checkbox"
                       checked={isSelected}
@@ -275,23 +349,50 @@ export default function CodexSessions() {
                           return next;
                         });
                       }}
-                      aria-label={`选择会话 ${thread.title || thread.thread_id.slice(0, 8)}`}
-                      className="h-4 w-4 shrink-0 accent-[var(--nk-accent)]"
+                      aria-label={`选择会话 ${thread.title}`}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--nk-accent)]"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-mono text-xs">{thread.title || `会话 ${thread.thread_id.slice(0, 8)}`}</p>
-                      {thread.summary && (
-                        <p className="mt-1 truncate text-[11px] text-[var(--nk-muted)]">{thread.summary}</p>
+                      <p className="truncate text-xs font-medium">{thread.title}</p>
+                      {thread.blockers.length > 0 && (
+                        <div className="mt-2 space-y-1.5">
+                          {thread.blockers.map((blocker, index) => (
+                            <div
+                              key={`${blocker.reason}-${index}`}
+                              className="rounded-lg bg-[var(--nk-danger-soft)] px-2.5 py-2 text-[11px] text-[var(--nk-danger)]"
+                            >
+                              <p>阻塞原因：{blocker.reason}</p>
+                              <p className="mt-0.5 opacity-80">下一步：{blocker.next_step}</p>
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                <button
+                                  onClick={() => void closeChatGptAndScan()}
+                                  disabled={loading || migrating || opening !== null || closing}
+                                  className="nk-btn-primary whitespace-nowrap px-2 py-1 text-[11px]"
+                                >
+                                  {closing ? "关闭中…" : "关闭 ChatGPT 并检查"}
+                                </button>
+                                <button
+                                  onClick={retryScan}
+                                  disabled={loading || migrating || opening !== null || closing}
+                                  className="nk-btn-secondary whitespace-nowrap px-2 py-1 text-[11px]"
+                                >
+                                  {loading ? "检查中…" : "重新检查"}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       )}
                       <p className="mt-1 text-[11px] text-[var(--nk-muted)]">
                         {thread.archived
-                          ? "已归档"
-                          : thread.needs_migration
-                            ? "待迁移到 custom"
+                            ? "已归档"
+                            : thread.needs_migration
+                            ? "待迁移到 Niko 模型服务"
                             : thread.can_continue
                               ? "可续接"
                               : "本地检查发现阻塞"}
-                        {thread.provider && ` · ${thread.provider}`}
+                        {codexProviderLabel(thread.provider) && ` · ${codexProviderLabel(thread.provider)}`}
+                        {` · 会话 ID：${thread.thread_id}`}
                         {` · ${formatSessionTime(thread.updated_at)}`}
                       </p>
                     </div>
@@ -299,7 +400,7 @@ export default function CodexSessions() {
                       <button
                         onClick={() => void openThread(thread)}
                         disabled={opening !== null || migrating}
-                        className="nk-btn-ghost shrink-0 px-2.5"
+                        className="nk-btn-ghost shrink-0 whitespace-nowrap px-2.5"
                         aria-label="在 Codex 中打开当前会话"
                         title="在 Codex 中打开"
                       >
@@ -341,6 +442,7 @@ export default function CodexSessions() {
               {query.trim() ? "没有匹配的会话，请换一个关键词。" : "还没有找到可继续的会话。"}
             </p>
           )}
+
         </div>
       </main>
     </div>

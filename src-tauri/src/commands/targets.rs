@@ -1,5 +1,6 @@
 use crate::active_groups::{
-    clear_record_at, detect_active_group_at, record_for, record_path, write_record_at,
+    clear_record_at, detect_active_group_at, detect_effective_selection_at, record_for, record_path,
+    write_record_at,
     ActiveGroupStatus,
 };
 use crate::codex_sessions::{
@@ -60,9 +61,7 @@ fn provider_transaction_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(r"C:\Users\default\AppData\Roaming"));
     #[cfg(not(target_os = "windows"))]
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"));
+    let base = crate::targets::user_home_dir();
     base.join(".niko").join("provider-transaction")
 }
 
@@ -550,6 +549,15 @@ pub struct TargetInfo {
     pub icon: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct EffectiveSelectionStatus {
+    pub version: u16,
+    pub target_id: String,
+    pub status: crate::active_groups::ActiveGroupState,
+    pub group: Option<String>,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ApplyRequest {
     pub target_id: String,
@@ -620,7 +628,7 @@ fn rollback_provider_transaction(
 
 #[tauri::command]
 pub async fn list_targets() -> Result<Vec<TargetInfo>, SafeCommandError> {
-    let _guard = lock_and_recover_provider_transaction()?;
+    let _guard = lock_provider_transaction_readonly()?;
     let infos = all_targets()
         .iter()
         .map(|t| TargetInfo {
@@ -655,6 +663,50 @@ pub async fn detect_active_groups(
     Ok(all_targets()
         .iter()
         .map(|target| detect_active_group_at(&home, target.id(), available))
+        .collect())
+}
+
+#[tauri::command]
+pub async fn detect_effective_selections(
+    available_groups: Option<Vec<String>>,
+) -> Result<Vec<EffectiveSelectionStatus>, SafeCommandError> {
+    let _guard = lock_provider_transaction_readonly()?;
+    let home = crate::targets::user_home_dir();
+    let root = provider_transaction_root();
+    if fs::symlink_metadata(&root).is_ok() {
+        return Ok(all_targets()
+            .iter()
+            .map(|target| EffectiveSelectionStatus {
+                version: crate::active_groups::ACTIVE_GROUP_STATUS_VERSION,
+                target_id: target.id().to_owned(),
+                status: crate::active_groups::ActiveGroupState::Unknown,
+                group: None,
+                model: None,
+            })
+            .collect());
+    }
+    let available = available_groups.as_deref();
+    Ok(all_targets()
+        .iter()
+        .map(|target| {
+            let selection = detect_effective_selection_at(&home, target.id(), available);
+            let confirmed = selection.status == crate::active_groups::ActiveGroupState::Active
+                && selection.group.is_some()
+                && selection.model.is_some();
+            EffectiveSelectionStatus {
+                version: crate::active_groups::ACTIVE_GROUP_STATUS_VERSION,
+                target_id: target.id().to_owned(),
+                status: if confirmed {
+                    selection.status
+                } else if selection.status == crate::active_groups::ActiveGroupState::Active {
+                    crate::active_groups::ActiveGroupState::Unknown
+                } else {
+                    selection.status
+                },
+                group: confirmed.then_some(selection.group).flatten(),
+                model: confirmed.then_some(selection.model).flatten(),
+            }
+        })
         .collect())
 }
 
@@ -1156,6 +1208,104 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    fn run_ready<F: std::future::Future>(future: F) -> F::Output {
+        let waker = std::task::Waker::noop();
+        let mut context = std::task::Context::from_waker(waker);
+        let mut future = std::pin::pin!(future);
+        match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(output) => output,
+            std::task::Poll::Pending => panic!("startup probe unexpectedly suspended"),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn directory_entries(path: &Path) -> Vec<String> {
+        let mut entries = fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn assert_startup_probes_preserve_fixture(
+        config: &Path,
+        record: &Path,
+        transaction_root: &Path,
+        manifest: Option<&Path>,
+        backup: Option<&Path>,
+    ) {
+        let config_before = fs::read(config).unwrap();
+        let record_before = fs::read(record).unwrap();
+        let transaction_entries_before = transaction_root
+            .exists()
+            .then(|| directory_entries(transaction_root));
+        let manifest_before = manifest.map(|path| fs::read(path).unwrap());
+        let backup_before = backup.map(|path| fs::read(path).unwrap());
+
+        assert!(run_ready(list_targets()).is_ok());
+        assert!(run_ready(detect_active_groups(Some(vec!["CC Switch".to_owned()]))).is_ok());
+        assert!(run_ready(detect_effective_selections(Some(vec!["CC Switch".to_owned()]))).is_ok());
+
+        assert_eq!(fs::read(config).unwrap(), config_before);
+        assert_eq!(fs::read(record).unwrap(), record_before);
+        assert_eq!(
+            transaction_root.exists().then(|| directory_entries(transaction_root)),
+            transaction_entries_before,
+        );
+        if let Some(path) = manifest {
+            assert_eq!(fs::read(path).unwrap(), manifest_before.unwrap());
+        }
+        if let Some(path) = backup {
+            assert_eq!(fs::read(path).unwrap(), backup_before.unwrap());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn startup_probes_are_read_only_with_or_without_pending_provider_transaction() {
+        let temp = tempfile::tempdir().unwrap();
+        let _home = crate::targets::set_test_home(temp.path());
+        let codex = temp.path().join(".codex");
+        let config = codex.join("config.toml");
+        let record = record_path(temp.path(), "codex").unwrap();
+        let transaction_root = provider_transaction_root();
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            &config,
+            b"model_provider = \"cc-switch\"\nmodel = \"gpt-5\"\n\n[model_providers.cc-switch]\nname = \"CC Switch\"\nbase_url = \"https://cc-switch.example/v1\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(&record, b"active-record-before").unwrap();
+
+        assert_startup_probes_preserve_fixture(&config, &record, &transaction_root, None, None);
+
+        let paths = vec![record.clone()];
+        let mut manifest = begin_provider_transaction_at_with_targets(
+            &transaction_root,
+            &paths,
+            Vec::new(),
+            Some(vec!["codex".to_owned()]),
+        )
+        .unwrap();
+        fs::write(&record, b"active-record-during-interrupted-write").unwrap();
+        manifest.phase = ProviderTransactionPhase::RecordsApplied;
+        persist_provider_manifest(&transaction_root, &manifest).unwrap();
+        let manifest_path = transaction_root.join("manifest.json");
+        let backup_path = transaction_root.join("0.backup");
+
+        assert_startup_probes_preserve_fixture(
+            &config,
+            &record,
+            &transaction_root,
+            Some(&manifest_path),
+            Some(&backup_path),
+        );
+    }
 
     fn temporary_replace_artifacts(parent: &Path) -> Vec<PathBuf> {
         fs::read_dir(parent)

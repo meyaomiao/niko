@@ -28,16 +28,17 @@ import {
   unmountRequests,
 } from "../lib/codexSessions";
 import {
-  commonActiveGroup,
-  normalizeActiveGroupStatuses,
-  summarizeActiveGroups,
-  type ActiveGroupStatus,
+  normalizeEffectiveSelectionStatuses,
+  summarizeEffectiveSelections,
+  type ActiveSelection,
+  type EffectiveSelectionStatus,
 } from "../lib/activeGroup";
 import {
   displayDeviceLabel,
   friendlyConnectivityDetail,
   friendlyDesktopError,
 } from "../lib/copy";
+import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
 /// 记住上次配置的应用，多应用用户不必每次重选
@@ -113,10 +114,10 @@ export default function Home() {
   const [targetsLoading, setTargetsLoading] = useState(true);
   const [targetsError, setTargetsError] = useState("");
   const [results, setResults] = useState<Record<string, ApplyResult>>({});
-  const [activeStatuses, setActiveStatuses] = useState<Record<string, ActiveGroupStatus>>({});
+  const [activeStatuses, setActiveStatuses] = useState<Record<string, EffectiveSelectionStatus>>({});
   const [detecting, setDetecting] = useState(false);
-  const [detectedGroupApplied, setDetectedGroupApplied] = useState(false);
   const [detectNonce, setDetectNonce] = useState(0);
+  const [draftSource, setDraftSource] = useState<"recommendation" | "saved" | "manual">("recommendation");
   const groupTouchedRef = useRef(false);
   const requestGuardRef = useRef(initialRequestGuard());
 
@@ -126,8 +127,6 @@ export default function Home() {
       requestGuardRef.current = unmountRequests(requestGuardRef.current);
     };
   }, []);
-  // 用户一旦手动挑过分组，就不再按所选应用自动推荐
-  const [groupTouched, setGroupTouched] = useState(false);
   // Codex 专属：有 ChatGPT 订阅的用户走混用模式，保留官方登录态
   const [codexMixed, setCodexMixed] = useState(
     () => localStorage.getItem(CODEX_MIXED_STORAGE_KEY) === "1"
@@ -215,12 +214,6 @@ export default function Home() {
     void refreshBalance()
       .then((data) => {
         if (!data) return;
-        // 分组不在这里定：等选好应用后按应用推荐（见下方 effect）
-        const groups = data.groups ?? [];
-        const remembered = groups.find((g) => g.name === auth.defaultGroup);
-        if (remembered && !groupTouchedRef.current) {
-          setGroup(remembered.name);
-        }
       })
       .finally(() => setLoading(false));
 
@@ -299,22 +292,15 @@ export default function Home() {
     const request = beginRequest(requestGuardRef.current, "detect");
     requestGuardRef.current = request.state;
     setDetecting(true);
+    setActiveStatuses({});
 
-    void invoke<unknown>("detect_active_groups", {
+    void invoke<unknown>("detect_effective_selections", {
       availableGroups: groups.length > 0 ? groups.map((item) => item.name) : null,
     })
       .then((rawStatuses) => {
         if (!acceptsResponse(requestGuardRef.current, "detect", request.generation)) return;
-        const map = normalizeActiveGroupStatuses(rawStatuses);
+        const map = normalizeEffectiveSelectionStatuses(rawStatuses);
         setActiveStatuses(map);
-        const detected = commonActiveGroup(map, detectionTargetIds);
-        if (detected && !groupTouchedRef.current) {
-          setGroup(detected);
-          setModel(modelByGroup.get(detected) ?? "");
-          setDetectedGroupApplied(true);
-        } else if (!groupTouchedRef.current) {
-          setDetectedGroupApplied(false);
-        }
       })
       .catch(() => {
         if (!acceptsResponse(requestGuardRef.current, "detect", request.generation)) return;
@@ -330,13 +316,29 @@ export default function Home() {
       const invalidated = beginRequest(requestGuardRef.current, "detect");
       requestGuardRef.current = invalidated.state;
     };
-  }, [auth?.accessToken, detectionTargetIds, groups, detectNonce, modelByGroup]);
+  }, [auth?.accessToken, detectionTargetIds, groups, detectNonce]);
 
-  const activeGroupView = summarizeActiveGroups(activeStatuses, detectionTargetIds, detecting);
+  const activeGroupView = summarizeEffectiveSelections(activeStatuses, detectionTargetIds, detecting);
 
   // 应用选定后自动落到推荐厂商的第一个分组；用户手动挑过分组后不再干预
   useEffect(() => {
-    if (groupTouched || detectedGroupApplied || groups.length === 0) return;
+    if (groups.length === 0) return;
+    if (groupTouchedRef.current) return;
+    const storageTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id : targetId;
+    const saved = storageTargetId ? loadDraftSelection(storageTargetId) : null;
+    if (
+      saved
+      && groups.some((item) => item.name === saved.group)
+      && saved.provider === vendorOfGroup(saved.group)
+      && vendorTabs.some((tab) => tab.models.some((choice) => choice.name === saved.model
+        && choice.groups.some((item) => item.name === saved.group)))
+    ) {
+      groupTouchedRef.current = true;
+      setGroup(saved.group);
+      setModel(saved.model);
+      setDraftSource("saved");
+      return;
+    }
     const preferredGroup = groups.find((item) => item.name === auth?.defaultGroup);
     const preferredModel = preferredGroup
       ? modelByGroup.get(preferredGroup.name)
@@ -345,8 +347,50 @@ export default function Home() {
     if (preferredModel && fallbackGroup) {
       setModel(preferredModel);
       setGroup(fallbackGroup);
+      setDraftSource("recommendation");
     }
-  }, [auth?.defaultGroup, detectedGroupApplied, groupTouched, groups, modelByGroup, vendorTabs]);
+  }, [auth?.defaultGroup, groups, installedTargets, modelByGroup, targetId, vendorTabs]);
+
+  const recommendedSelection = useMemo(() => {
+    const recommendedGroup = groups.find((item) => item.name === auth?.defaultGroup);
+    const recommendedModel = recommendedGroup
+      ? modelByGroup.get(recommendedGroup.name)
+      : vendorTabs[0]?.models[0]?.name;
+    const fallbackGroup = recommendedGroup?.name ?? vendorTabs[0]?.models[0]?.groups[0]?.name;
+    return recommendedModel && fallbackGroup
+      ? {
+          provider: vendorOfGroup(fallbackGroup),
+          model: recommendedModel,
+          group: fallbackGroup,
+        }
+      : null;
+  }, [auth?.defaultGroup, groups, modelByGroup, vendorTabs]);
+
+  const draftSelection: ActiveSelection | null = draftSource !== "recommendation" && model && group
+    ? { provider: vendorOfGroup(group), model, group }
+    : null;
+
+  const activeSelectionRows = useMemo(() => detectionTargetIds.flatMap((id) => {
+    const status = activeStatuses[id];
+    if (status?.status !== "active" || !status.group || !status.model) return [];
+    return [{
+      target: targets.find((item) => item.id === id)?.name ?? "应用",
+      provider: vendorOfGroup(status.group),
+      model: status.model,
+      group: status.group,
+    }];
+  }), [activeStatuses, detectionTargetIds, targets]);
+
+  useEffect(() => {
+    if (!group || !model || draftSource === "recommendation") return;
+    const storageTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id : targetId;
+    if (!storageTargetId) return;
+    saveDraftSelection(storageTargetId, {
+      provider: vendorOfGroup(group),
+      model,
+      group,
+    });
+  }, [draftSource, group, installedTargets, model, targetId]);
 
   const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
   const targetLabel =
@@ -394,7 +438,7 @@ export default function Home() {
   const pickGroup = (name: string) => {
     groupTouchedRef.current = true;
     setGroup(name);
-    setGroupTouched(true);
+    setDraftSource("manual");
     setNotice(null);
   };
 
@@ -404,7 +448,7 @@ export default function Home() {
     if (!choice.groups.some((g) => g.name === group)) {
       setGroup(choice.groups[0]?.name ?? "");
     }
-    setGroupTouched(true);
+    setDraftSource("manual");
     setNotice(null);
   };
 
@@ -413,7 +457,7 @@ export default function Home() {
     groupTouchedRef.current = true;
     setModel(choice?.name ?? "");
     setGroup(choice?.groups[0]?.name ?? "");
-    setGroupTouched(true);
+    setDraftSource("manual");
     setNotice(null);
   };
 
@@ -423,11 +467,9 @@ export default function Home() {
     setResults({});
     setNotice(null);
     setActiveStatuses({});
-    setDetectedGroupApplied(false);
-    const recommended = groups.find((item) => item.name === auth?.defaultGroup);
-    setGroup(recommended?.name ?? "");
-    setModel(recommended ? modelByGroup.get(recommended.name) ?? "" : "");
-    setGroupTouched(false);
+    setGroup("");
+    setModel("");
+    setDraftSource("recommendation");
   };
 
   const pickCodexMixed = (mixed: boolean) => {
@@ -645,17 +687,17 @@ export default function Home() {
           <button onClick={toggle} className="nk-btn-ghost px-2.5" aria-label="切换主题">
             {theme === "dark" ? <SunIcon /> : <MoonIcon />}
           </button>
-          <button onClick={() => navigate("/settings")} className={GHOST_BTN}>
+          <button onClick={() => navigate("/settings")} className={GHOST_BTN} aria-label="设置" title="设置">
             <SettingsIcon />
-            设置
+            <span className="hidden sm:inline">设置</span>
           </button>
-          <button onClick={() => navigate("/sessions")} className={GHOST_BTN}>
+          <button onClick={() => navigate("/sessions")} className={GHOST_BTN} aria-label="ChatGPT 会话" title="ChatGPT 会话">
             <BookOpenIcon />
-            会话
+            <span className="hidden sm:inline">ChatGPT 会话</span>
           </button>
-          <button onClick={logout} className={GHOST_BTN}>
+          <button onClick={logout} className={GHOST_BTN} aria-label="退出" title="退出">
             <LogOutIcon />
-            退出
+            <span className="hidden sm:inline">退出</span>
           </button>
         </div>
       </header>
@@ -795,7 +837,7 @@ export default function Home() {
                         {t.id === "claude-desktop" && active && t.installed && (
                           <div className="nk-inset mt-1.5 p-2">
                             <p className={SUBTLE}>
-                              仅作用于内置 Claude Code 面板，桌面端普通对话仍用你的 Anthropic 账号
+                              仅作用于内置 Claude Code 面板，桌面端普通对话仍使用 Anthropic 账号
                             </p>
                           </div>
                         )}
@@ -804,8 +846,8 @@ export default function Home() {
                           <div className="nk-inset mt-1.5 p-2">
                             <div className="grid grid-cols-2 gap-1.5">
                               {[
-                                { mixed: false, label: "我没有 ChatGPT 订阅" },
-                                { mixed: true, label: "我有 ChatGPT 付费订阅" },
+                                { mixed: false, label: "未订阅 ChatGPT" },
+                                { mixed: true, label: "已订阅 ChatGPT" },
                               ].map((opt) => (
                                 <button
                                   key={String(opt.mixed)}
@@ -912,8 +954,8 @@ export default function Home() {
           <div className="flex min-h-0 flex-col md:overflow-hidden">
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
-            <section className={`${CARD} flex min-h-[28rem] flex-1 flex-col md:min-h-0`}>
-              <div className="mb-2.5 flex shrink-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+            <section className={`${CARD} flex min-h-[20rem] flex-none flex-col sm:min-h-[22rem]`}>
+              <div className="mb-1.5 flex shrink-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
                   <span className={`relative flex items-center gap-1 self-start ${SUBTLE} sm:self-auto`}>
@@ -942,25 +984,50 @@ export default function Home() {
                 )}
               </div>
               {targetId && (
-                <p
+                <div
                   role="status"
                   aria-live="polite"
-                  className={`mb-2 shrink-0 text-xs ${
+                  className={`mb-1.5 shrink-0 text-[11px] leading-4 ${
                     activeGroupView.kind === "active"
-                      ? "text-green-600 dark:text-green-400"
+                      ? "text-green-700 dark:text-green-400"
                       : activeGroupView.kind === "changed"
-                        ? "text-orange-600 dark:text-orange-400"
-                        : "text-gray-500 dark:text-gray-400"
+                        ? "text-orange-700 dark:text-orange-400"
+                      : "text-gray-500 dark:text-gray-400"
                   }`}
                 >
-                  {activeGroupView.text}
-                </p>
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0">
+                    {!detecting && activeSelectionRows.length === detectionTargetIds.length && activeSelectionRows.length > 0 ? (
+                      <>
+                        <span className="font-medium">已生效：</span>
+                        {activeSelectionRows.map((selection) => (
+                          <span key={selection.target} className="break-words">
+                            {activeSelectionRows.length > 1 && `${selection.target}：`}
+                            {selection.provider} · {selection.model} · {selection.group}
+                          </span>
+                        ))}
+                      </>
+                    ) : (
+                      <span>{activeGroupView.text}</span>
+                    )}
+                    <span className="text-gray-500 dark:text-gray-400">
+                      草稿：{draftSelection
+                        ? `${draftSelection.provider} · ${draftSelection.model} · ${draftSelection.group}`
+                        : draftSource === "recommendation" ? "未修改" : "未选择"}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      推荐：{recommendedSelection
+                        ? `${recommendedSelection.provider} · ${recommendedSelection.model} · ${recommendedSelection.group}`
+                        : "暂不可用"}
+                    </span>
+                  </div>
+                </div>
               )}
 
               {groups.length === 0 ? (
                 <p className={SUBTLE}>当前账号没有可用模型服务，请联系管理员开通。</p>
               ) : (
                 <>
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden pr-1">
                   <div className="flex shrink-0 gap-1 overflow-x-auto border-b [border-color:var(--nk-line)]">
                     {vendorTabs.map((tab) => (
                       <button
@@ -993,7 +1060,7 @@ export default function Home() {
                       className={`w-44 ${INPUT}`}
                     />
                   </div>
-                  <div className="nk-model-scroll mt-2 pr-1 max-md:max-h-[32rem]">
+                  <div className="nk-model-scroll mt-2">
                     {models.length === 0 && (
                       <p className="nk-empty">
                         {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前没有可用模型。"}
@@ -1084,54 +1151,60 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* 四个动作挤在一行：主操作占宽，其余三个短名等分，避免堆四行把卡片撑高 */}
-                  <div className="mt-2.5 flex shrink-0 flex-wrap items-center gap-1.5">
+                  </div>
+
+                  <div className="mt-1.5 shrink-0 border-t pt-1.5 [border-color:var(--nk-line)]">
+                  <div className="grid grid-cols-4 gap-1">
                     <button
                       onClick={enable}
                       disabled={provisioning || !group || !model || !targetId}
                       title={targetLabel ? `接入到 ${targetLabel}` : "选择应用后接入"}
-                      className="nk-btn-primary min-w-24 flex-1"
+                      aria-label="接入到应用"
+                      className="nk-btn-primary w-full min-w-0 px-1 text-center text-[11px]"
                     >
-                      {provisioning ? "接入中…" : "接入到应用"}
+                      {provisioning ? "接入中…" : "接入"}
                     </button>
                     <button
                       onClick={restartTargets}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
                       title={targetLabel ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效` : "选择应用后可重启"}
-                      className={GHOST_BTN}
+                      aria-label="重启应用"
+                      className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px]`}
                     >
-                      {restarting ? "重启中…" : "重启应用"}
+                      {restarting ? "重启中…" : "重启"}
                     </button>
                     <button
                       onClick={testConnectivity}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
                       title="检查当前设置是否能正常使用"
-                      className={GHOST_BTN}
+                      aria-label="检查连接"
+                      className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px]`}
                     >
-                      {testing ? "检查中…" : "检查是否能正常使用"}
+                      {testing ? "检查中…" : "检查"}
                     </button>
                     <button
                       onClick={restoreDefaults}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
                       title="移除 Niko 的设置，恢复用官方账号登录"
-                      className={`${GHOST_BTN} ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
+                      aria-label="恢复到官方"
+                      className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px] ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
                     >
-                      {restoring ? "恢复中…" : confirmRestore ? "再点确认" : "恢复到官方"}
+                      {restoring ? "恢复中…" : confirmRestore ? "确认" : "恢复"}
                     </button>
                   </div>
-                  {/* 常驻一行：结果提示出现时不再压缩上方列表 */}
-                  <p
-                    title={notice?.text || undefined}
-                    className={`mt-1.5 shrink-0 truncate text-xs ${
-                      notice
-                        ? notice.ok
+                  {notice && (
+                    <p
+                      title={notice.text}
+                      className={`mt-1.5 truncate text-xs ${
+                        notice.ok
                           ? "text-green-600 dark:text-green-400"
                           : "text-orange-600 dark:text-orange-400"
-                        : "text-transparent"
-                    }`}
-                  >
-                    {notice?.text || "\u00a0"}
-                  </p>
+                      }`}
+                    >
+                      {notice.text}
+                    </p>
+                  )}
+                  </div>
                 </>
               )}
             </section>

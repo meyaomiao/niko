@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   commonActiveGroup,
+  commonActiveSelection,
   normalizeActiveGroupStatuses,
+  normalizeEffectiveSelectionStatuses,
   summarizeActiveGroups,
+  summarizeEffectiveSelections,
   type ActiveGroupStatus,
 } from "../src/lib/activeGroup.ts";
 
@@ -64,4 +67,49 @@ test("unknown IPC versions fail closed to unknown", () => {
   ]);
   assert.equal(normalized.codex.status, "unknown");
   assert.equal(normalized["claude-desktop"].status, "unknown");
+});
+
+test("effective status requires a confirmed model and exposes provider, model, and group", () => {
+  const normalized = normalizeEffectiveSelectionStatuses([
+    { version: 1, target_id: "codex", status: "active", group: "gpt-basic", model: "gpt-5.1" },
+    { version: 1, target_id: "claude-desktop", status: "active", group: "gpt-basic" },
+    { version: 1, target_id: "other", status: "changed", group: "gpt-basic", model: "gpt-5.1" },
+  ]);
+  assert.equal(commonActiveSelection(normalized, ["codex"])?.provider, "OpenAI");
+  assert.deepEqual(commonActiveSelection(normalized, ["codex"]), {
+    provider: "OpenAI",
+    model: "gpt-5.1",
+    group: "gpt-basic",
+  });
+  assert.equal(normalized["claude-desktop"].status, "unknown");
+  assert.equal(commonActiveSelection(normalized, ["claude-desktop"]), null);
+  assert.equal(summarizeEffectiveSelections(normalized, ["codex"]).text, "当前正在使用的模型服务：OpenAI · gpt-5.1 · gpt-basic");
+  assert.equal(summarizeEffectiveSelections(normalized, ["other"]).kind, "changed");
+});
+
+test("effective status rejects unsafe display values and never upgrades unknown states", () => {
+  const normalized = normalizeEffectiveSelectionStatuses([
+    { version: 1, target_id: "codex", status: "active", group: "/Users/a/config", model: "gpt-5.1" },
+    { version: 1, target_id: "claude-desktop", status: "unknown", group: "gpt-basic", model: "gpt-5.1" },
+    { version: 1, target_id: "other", status: "unreadable", group: "gpt-basic", model: "gpt-5.1" },
+  ]);
+  assert.equal(normalized.codex.status, "unknown");
+  assert.equal(commonActiveSelection(normalized, ["codex"]), null);
+  assert.equal(commonActiveSelection(normalized, ["claude-desktop"]), null);
+  assert.equal(commonActiveSelection(normalized, ["other"]), null);
+  assert.equal(summarizeEffectiveSelections(normalized, ["claude-desktop"]).kind, "unknown");
+  assert.equal(
+    summarizeEffectiveSelections(
+      { claude: { version: 1, target_id: "claude", status: "not_niko" } },
+      ["claude"],
+    ).kind,
+    "not_niko",
+  );
+  assert.equal(
+    summarizeEffectiveSelections(
+      { claude: { version: 1, target_id: "claude", status: "unreadable" } },
+      ["claude"],
+    ).kind,
+    "unknown",
+  );
 });

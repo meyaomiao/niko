@@ -20,6 +20,10 @@ test("maps common failures to one clear next step", () => {
   assert.equal(friendlyDesktopError("配置里没有默认模型，请先点击启用"), "接入还没有生效，请先接入到应用，再试一次。");
   assert.equal(friendlyConnectivityDetail("配置里没有默认模型，请先点击启用"), "接入还没有生效，请先接入到应用后再检查。");
   assert.equal(friendlyLoginError("账号或密码错误"), "账号或密码不正确，请检查后再试。");
+  assert.equal(
+    friendlyLoginError("Username or password is incorrect, or user has been banned"),
+    "账号或密码不正确，请检查后再试。",
+  );
 });
 
 test("connectivity failures do not expose status codes or raw credentials", () => {

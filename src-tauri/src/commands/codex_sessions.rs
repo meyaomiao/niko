@@ -17,22 +17,33 @@ use std::time::Duration;
 const QUERY_MAX: usize = 80;
 const PAGE_MAX: usize = 50;
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct CodexSessionBlocker {
+    pub title: String,
+    pub thread_id: String,
+    pub reason: &'static str,
+    pub next_step: &'static str,
+}
+
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CodexSessionThread {
     pub thread_id: String,
     pub title: Option<String>,
+    // Keep the #60 IPC field shape without returning session text.
     pub summary: Option<String>,
     pub updated_at: Option<String>,
     pub archived: bool,
     pub provider: Option<String>,
     pub can_continue: bool,
     pub needs_migration: bool,
+    pub blockers: Vec<CodexSessionBlocker>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CodexSessionPage {
     pub status: &'static str,
     pub items: Vec<CodexSessionThread>,
+    pub blockers: Vec<CodexSessionBlocker>,
     pub page: usize,
     pub page_size: usize,
     pub total: usize,
@@ -90,6 +101,143 @@ fn report_status(report: &ScanReport) -> &'static str {
     } else {
         "healthy"
     }
+}
+
+fn safe_session_text(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let mut compact = String::new();
+    let mut spaced = false;
+    for character in value?.trim().chars() {
+        if character.is_control() {
+            spaced = true;
+            continue;
+        }
+        if spaced && !compact.is_empty() {
+            compact.push(' ');
+        }
+        spaced = false;
+        compact.push(character);
+    }
+    let compact = compact.trim();
+    if compact.is_empty() || compact.chars().count() > max_chars {
+        return None;
+    }
+    let lower = compact.to_ascii_lowercase();
+    if compact.contains('/')
+        || compact.contains('\\')
+        || lower.contains("://")
+        || lower.contains("auth.json")
+        || lower.contains("config.toml")
+        || lower.contains("sqlite")
+        || lower.contains("journal")
+        || lower.contains("wal")
+        || lower.contains("token")
+        || lower.contains("api_key")
+        || lower.contains("sk-")
+        || lower.contains("bearer ")
+        || lower.contains("stack trace")
+        || lower.contains("traceback")
+        || lower.contains("panic")
+        || lower.contains("exception")
+        || lower.contains("error")
+        || compact.contains("错误")
+        || compact.contains("失败")
+    {
+        return None;
+    }
+    Some(compact.to_owned())
+}
+
+fn safe_session_title(value: Option<&str>) -> Option<String> {
+    safe_session_text(value, 120)
+}
+
+fn safe_session_summary(value: Option<&str>) -> Option<String> {
+    safe_session_text(value, 96)
+}
+
+fn safe_session_id(value: &str) -> String {
+    if is_uuid_like(value) {
+        value.to_owned()
+    } else {
+        "无法确认".to_owned()
+    }
+}
+
+fn session_provider_label(provider: &str) -> &'static str {
+    match provider {
+        "custom" => "Niko 模型服务",
+        "openai" => "ChatGPT 官方模型服务",
+        _ => "已记录的模型服务",
+    }
+}
+
+fn blocker_copy(code: &str, title: Option<&str>, thread_id: Option<&str>) -> CodexSessionBlocker {
+    let (reason, next_step) = match code {
+        "duplicate_thread_id" => (
+            "同一会话的本地记录重复。",
+            "关闭 ChatGPT 后重新检查；确认前不要迁移该会话。",
+        ),
+        "thread_provider_mismatch" => (
+            "会话的模型服务记录不一致。",
+            "关闭 ChatGPT 后重新检查；确认前不要迁移该会话。",
+        ),
+        "thread_archive_mismatch" => (
+            "会话的归档状态不一致。",
+            "关闭 ChatGPT 后重新检查；确认前不要迁移该会话。",
+        ),
+        "thread_storage_incomplete" => (
+            "会话缺少可验证的本地记录。",
+            "关闭 ChatGPT 后重新检查；确认前不要迁移该会话。",
+        ),
+        "thread_rollout_path_mismatch" => (
+            "会话记录指向的本地内容不一致。",
+            "关闭 ChatGPT 后重新检查；确认前不要迁移该会话。",
+        ),
+        code if code.starts_with("config_") || code == "active_provider_definition_missing" => (
+            "ChatGPT 设置无法确认。",
+            "关闭 ChatGPT 后重新检查会话。",
+        ),
+        code if code.starts_with("sqlite_") => (
+            "会话数据库无法确认。",
+            "关闭 ChatGPT 后重新检查会话。",
+        ),
+        code if code.starts_with("rollout_") || code.starts_with("session_index_") => (
+            "会话记录无法确认。",
+            "关闭 ChatGPT 后重新检查会话。",
+        ),
+        _ => (
+            "会话的本地结构无法确认。",
+            "关闭 ChatGPT 后重新检查会话。",
+        ),
+    };
+    CodexSessionBlocker {
+        title: safe_session_title(title).unwrap_or_else(|| "未命名会话".to_owned()),
+        thread_id: thread_id.map(safe_session_id).unwrap_or_else(|| "无法确认".to_owned()),
+        reason,
+        next_step,
+    }
+}
+
+fn display_session_title(thread: &ThreadInventory) -> String {
+    safe_session_title(thread.title.as_deref())
+        .or_else(|| safe_session_summary(thread.summary.as_deref()))
+        .unwrap_or_else(|| "未命名会话".to_owned())
+}
+
+fn blockers_for_thread(
+    report: &ScanReport,
+    thread: &ThreadInventory,
+) -> Vec<CodexSessionBlocker> {
+    let title = display_session_title(thread);
+    report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.level == DiagnosticLevel::Blocker
+                && diagnostic.thread_id.as_deref() == Some(thread.thread_id.as_str())
+        })
+        .map(|diagnostic| blocker_copy(diagnostic.code, Some(&title), Some(&thread.thread_id)))
+        .collect()
 }
 
 fn thread_route_is_healthy(archived: Option<bool>, providers: &[String]) -> bool {
@@ -174,16 +322,10 @@ fn page_from_report(
         .threads
         .iter()
         .filter(|thread| {
+            let display_title = display_session_title(thread);
             query.is_empty()
                 || thread.thread_id.to_lowercase().contains(&query)
-                || thread
-                    .title
-                    .as_deref()
-                    .is_some_and(|title| title.to_lowercase().contains(&query))
-                || thread
-                    .summary
-                    .as_deref()
-                    .is_some_and(|summary| summary.to_lowercase().contains(&query))
+                || display_title.to_lowercase().contains(&query)
         })
         .collect::<Vec<_>>();
     // Keep one deterministic order for all projects: newest session first.
@@ -207,20 +349,34 @@ fn page_from_report(
     let end = start.saturating_add(page_size).min(total);
     let items = threads[start..end]
         .iter()
-        .map(|thread| CodexSessionThread {
-            thread_id: thread.thread_id.clone(),
-            title: thread.title.clone(),
-            summary: thread.summary.clone(),
-            updated_at: thread.updated_at_ms.map(|value| value.to_string()),
-            archived: thread.archived.unwrap_or(false),
-            provider: (thread.providers.len() == 1).then(|| thread.providers[0].clone()),
-            can_continue: thread_is_healthy(report, thread),
-            needs_migration: thread_needs_migration(report, thread),
+        .map(|thread| {
+            CodexSessionThread {
+                thread_id: safe_session_id(&thread.thread_id),
+                title: Some(display_session_title(thread)),
+                summary: None,
+                updated_at: thread.updated_at_ms.map(|value| value.to_string()),
+                archived: thread.archived.unwrap_or(false),
+                provider: (thread.providers.len() == 1)
+                    .then(|| session_provider_label(&thread.providers[0]).to_owned()),
+                can_continue: thread_is_healthy(report, thread),
+                needs_migration: thread_needs_migration(report, thread),
+                blockers: blockers_for_thread(report, thread),
+            }
         })
+        .collect();
+    let blockers = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.level == DiagnosticLevel::Blocker && diagnostic.thread_id.is_none())
+        .map(|diagnostic| blocker_copy(diagnostic.code, Some("ChatGPT 会话检查"), None))
+        .chain(threads[start..end].iter().flat_map(|thread| {
+            blockers_for_thread(report, thread)
+        }))
         .collect();
     Ok(CodexSessionPage {
         status: report_status(report),
         items,
+        blockers,
         page,
         page_size,
         total,
@@ -251,6 +407,7 @@ pub async fn scan_codex_session_inventory(
         return Ok(CodexSessionPage {
             status: "healthy",
             items: Vec::new(),
+            blockers: Vec::new(),
             page,
             page_size,
             total: 0,
@@ -595,6 +752,7 @@ fn open_codex_thread_checked(thread_id: &str) -> Result<(), SafeCommandError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::codex_sessions::Diagnostic;
     use super::*;
 
     #[test]
@@ -626,6 +784,134 @@ mod tests {
         assert!(thread_route_is_healthy(Some(false), &official));
         assert!(!thread_route_is_healthy(Some(true), &custom));
         assert!(!thread_route_is_healthy(Some(false), &[]));
+    }
+
+    #[test]
+    fn blocker_mapping_is_specific_and_safe() {
+        let blocker = blocker_copy(
+            "thread_provider_mismatch",
+            Some("项目规划"),
+            Some("019fb1b4-f24c-7ec3-a736-c68cf9a0ae11"),
+        );
+        assert_eq!(blocker.title, "项目规划");
+        assert_eq!(blocker.thread_id, "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11");
+        assert_eq!(blocker.reason, "会话的模型服务记录不一致。");
+        assert!(blocker.next_step.contains("关闭 ChatGPT"));
+
+        let unsafe_blocker = blocker_copy(
+            "rollout_header_invalid",
+            Some("/Users/example/.codex/config.toml"),
+            Some("../../auth.json"),
+        );
+        assert_eq!(unsafe_blocker.title, "未命名会话");
+        assert_eq!(unsafe_blocker.thread_id, "无法确认");
+        assert!(!serde_json::to_string(&unsafe_blocker)
+            .unwrap()
+            .contains("config.toml"));
+    }
+
+    #[test]
+    fn display_title_prefers_title_then_safe_summary_then_unnamed() {
+        let mut thread = ThreadInventory {
+            thread_id: "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11".into(),
+            rollout_paths: Vec::new(),
+            state_databases: Vec::new(),
+            history_databases: Vec::new(),
+            providers: Vec::new(),
+            workspaces: Vec::new(),
+            archived: None,
+            title: Some("数据库会话标题".into()),
+            summary: Some("安全摘要".into()),
+            updated_at_ms: None,
+            storage_versions: Vec::new(),
+        };
+        assert_eq!(display_session_title(&thread), "数据库会话标题");
+
+        thread.title = None;
+        assert_eq!(display_session_title(&thread), "安全摘要");
+
+        thread.summary = Some("/Users/example/.codex/config.toml".into());
+        assert_eq!(display_session_title(&thread), "未命名会话");
+    }
+
+    #[test]
+    fn page_maps_thread_blockers_without_returning_raw_diagnostics() {
+        let mut report = ScanReport {
+            codex_home: PathBuf::from("/tmp/codex"),
+            config: crate::codex_sessions::ConfigInventory {
+                path: PathBuf::from("/tmp/codex/config.toml"),
+                present: true,
+                active_provider: Some("custom".into()),
+                defined_providers: vec!["custom".into()],
+                effective_sqlite_home: PathBuf::from("/tmp/codex"),
+                sqlite_home_source: crate::codex_sessions::SqliteHomeSource::CodexHome,
+            },
+            rollouts: Vec::new(),
+            session_index: None,
+            sqlite_databases: Vec::new(),
+            threads: vec![ThreadInventory {
+                thread_id: "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11".into(),
+                rollout_paths: vec![PathBuf::from("rollout")],
+                state_databases: vec![PathBuf::from("state")],
+                history_databases: Vec::new(),
+                providers: vec!["custom".into()],
+                workspaces: vec![PathBuf::from("workspace")],
+                archived: Some(false),
+                title: Some("项目规划".into()),
+                summary: Some("正文不能返回".into()),
+                updated_at_ms: Some(1),
+                storage_versions: Vec::new(),
+            }],
+            provider_layout: crate::codex_sessions::ProviderLayout::NikoMomotoken,
+            diagnostics: vec![Diagnostic {
+                level: DiagnosticLevel::Blocker,
+                code: "thread_provider_mismatch",
+                message: "raw path /Users/example/.codex/config.toml token sk-secret".into(),
+                path: None,
+                thread_id: Some("019fb1b4-f24c-7ec3-a736-c68cf9a0ae11".into()),
+            }],
+            normalization: crate::codex_sessions::NormalizationPlan {
+                status: NormalizationStatus::Blocked,
+                target_provider: "custom".into(),
+                actions: Vec::new(),
+            },
+        };
+        let mut second = report.threads[0].clone();
+        second.thread_id = "019fb1b4-f24c-7ec3-a736-c68cf9a0ae10".into();
+        second.title = Some("第二会话".into());
+        second.updated_at_ms = Some(0);
+        report.threads.push(second);
+        report.diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Blocker,
+            code: "thread_archive_mismatch",
+            message: "second raw diagnostic".into(),
+            path: None,
+            thread_id: Some("019fb1b4-f24c-7ec3-a736-c68cf9a0ae10".into()),
+        });
+
+        let page = page_from_report(&report, "", 1, 1).unwrap();
+        assert_eq!(page.items[0].title, Some("项目规划".into()));
+        assert_eq!(page.items[0].blockers.len(), 1);
+        assert_eq!(page.items[0].blockers[0].title, "项目规划");
+        assert_eq!(page.items[0].blockers[0].thread_id, "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11");
+        assert_eq!(page.items[0].summary, None);
+        assert!(!page.blockers.iter().any(|blocker| {
+            blocker.title == "第二会话"
+                && blocker.thread_id == "019fb1b4-f24c-7ec3-a736-c68cf9a0ae10"
+        }));
+        let second_page = page_from_report(&report, "", 2, 1).unwrap();
+        assert_eq!(second_page.items[0].title, Some("第二会话".into()));
+        assert!(second_page.blockers.iter().any(|blocker| {
+            blocker.title == "第二会话"
+                && blocker.thread_id == "019fb1b4-f24c-7ec3-a736-c68cf9a0ae10"
+        }));
+        assert!(!serde_json::to_string(&page).unwrap().contains("/Users"));
+        assert!(!serde_json::to_string(&page).unwrap().contains("sk-secret"));
+        report.threads[0].title = Some("/Users/example/.codex/config.toml".into());
+        report.threads[0].summary = None;
+        let unsafe_page = page_from_report(&report, "", 1, 1).unwrap();
+        assert_eq!(unsafe_page.items[0].title, Some("未命名会话".into()));
+        assert_eq!(unsafe_page.items[0].blockers[0].title, "未命名会话");
     }
 
     #[test]

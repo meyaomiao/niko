@@ -31,8 +31,14 @@ pub struct ApplySummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TargetConfigMatch {
+    pub(crate) digest: String,
+    pub(crate) model: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TargetConfigObservation {
-    Matchable(String),
+    Matchable(TargetConfigMatch),
     Other,
     Ambiguous,
     Unreadable,
@@ -374,7 +380,37 @@ fn home_dir() -> PathBuf {
     user_home_dir()
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_HOME_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) struct TestHomeGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_home(path: &Path) -> TestHomeGuard {
+    let previous = TEST_HOME_OVERRIDE.with(|slot| slot.replace(Some(path.to_path_buf())));
+    TestHomeGuard { previous }
+}
+
+#[cfg(test)]
+impl Drop for TestHomeGuard {
+    fn drop(&mut self) {
+        TEST_HOME_OVERRIDE.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
 pub(crate) fn user_home_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_HOME_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return path;
+    }
     dirs_home()
 }
 
@@ -1081,6 +1117,25 @@ fn json_model(value: &Value) -> Result<Option<String>, ()> {
     }
 }
 
+fn matchable_target_config(
+    target_id: &str,
+    endpoint: &str,
+    auth_style: &str,
+    model: Option<&str>,
+    credential: &str,
+) -> TargetConfigObservation {
+    TargetConfigObservation::Matchable(TargetConfigMatch {
+        digest: crate::active_groups::config_digest(
+            target_id,
+            endpoint,
+            auth_style,
+            model,
+            credential,
+        ),
+        model: model.map(str::to_owned),
+    })
+}
+
 fn observe_codex_config(home: &Path) -> TargetConfigObservation {
     let config_path = home.join(".codex").join("config.toml");
     let raw = match read_regular_text(&config_path) {
@@ -1146,17 +1201,17 @@ fn observe_codex_config(home: &Path) -> TargetConfigObservation {
     }
     let model = match doc.get("model") {
         None => None,
-        Some(toml::Value::String(model)) => Some(model.as_str()),
+        Some(toml::Value::String(model)) => Some(model.to_owned()),
         Some(_) => return TargetConfigObservation::Ambiguous,
     };
     let endpoint = format!("{}/responses", base_url.trim_end_matches('/'));
-    TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+    matchable_target_config(
         "codex",
         &endpoint,
         &format!("openai:responses:{auth_source}"),
-        model,
+        model.as_deref(),
         &api_key,
-    ))
+    )
 }
 
 fn observe_claude_settings(home: &Path) -> TargetConfigObservation {
@@ -1201,13 +1256,13 @@ fn observe_claude_settings(home: &Path) -> TargetConfigObservation {
         "{}/v1/messages",
         claude_base_url(base).trim_end_matches('/')
     );
-    TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+    matchable_target_config(
         "claude-desktop",
         &endpoint,
         "anthropic",
         model.as_deref(),
         key,
-    ))
+    )
 }
 
 fn observe_claude_config(home: &Path) -> TargetConfigObservation {
@@ -1278,13 +1333,13 @@ fn observe_claude_config(home: &Path) -> TargetConfigObservation {
                     Err(()) => return TargetConfigObservation::Unreadable,
                 };
                 let endpoint = format!("{}/v1/messages", base.trim_end_matches('/'));
-                return TargetConfigObservation::Matchable(crate::active_groups::config_digest(
+                return matchable_target_config(
                     "claude-desktop",
                     &endpoint,
                     "anthropic:managed",
                     model.as_deref(),
                     key,
-                ));
+                );
             }
             Ok(None) => {}
             Err(()) => return TargetConfigObservation::Unreadable,
@@ -2560,6 +2615,72 @@ mod tests {
         let status =
             crate::active_groups::detect_active_group_at(&home, "codex", Some(groups.as_slice()));
         assert_eq!(status.status, crate::active_groups::ActiveGroupState::Unknown);
+    }
+
+    #[test]
+    fn effective_selection_requires_a_model_but_legacy_group_detection_does_not() {
+        let home = detection_home("effective_selection_requires_model");
+        let plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: None,
+            codex_mixed: true,
+        };
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nexperimental_bearer_token = \"fixture-secret\"\n",
+        )
+        .unwrap();
+        crate::active_groups::write_record_at(
+            &home,
+            &crate::active_groups::record_for(
+                "codex",
+                "Group A",
+                expected_config_digest("codex", &plan).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let effective = crate::active_groups::detect_effective_selection_at(
+            &home,
+            "codex",
+            Some(&["Group A".to_owned()]),
+        );
+        assert_eq!(effective.status, crate::active_groups::ActiveGroupState::Unknown);
+        assert_eq!(effective.model, None);
+        let legacy = crate::active_groups::detect_active_group_at(
+            &home,
+            "codex",
+            Some(&["Group A".to_owned()]),
+        );
+        assert_eq!(legacy.status, crate::active_groups::ActiveGroupState::Active);
+
+        let confirmed_home = detection_home("effective_selection_reports_model");
+        let confirmed_plan = ApplyPlan {
+            base_url: "https://gateway.example/v1".to_owned(),
+            api_key: "fixture-secret".to_owned(),
+            model_group: Some("Group A".to_owned()),
+            model: Some("model-a".to_owned()),
+            codex_mixed: true,
+        };
+        codex_detection_config(
+            &confirmed_home,
+            "https://gateway.example/v1",
+            "model-a",
+            &confirmed_plan.api_key,
+        );
+        write_codex_detection_record(&confirmed_home, &confirmed_plan);
+        let confirmed = crate::active_groups::detect_effective_selection_at(
+            &confirmed_home,
+            "codex",
+            Some(&["Group A".to_owned()]),
+        );
+        assert_eq!(confirmed.status, crate::active_groups::ActiveGroupState::Active);
+        assert_eq!(confirmed.group.as_deref(), Some("Group A"));
+        assert_eq!(confirmed.model.as_deref(), Some("model-a"));
     }
 
     #[test]

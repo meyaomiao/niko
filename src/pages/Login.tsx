@@ -1144,7 +1144,7 @@ export default function Login() {
           className="nk-btn-ghost mt-5 w-full text-sm"
         >
           <BookOpenIcon />
-          查看本地会话
+          查看 ChatGPT 会话
         </button>
           </div>
         </section>
