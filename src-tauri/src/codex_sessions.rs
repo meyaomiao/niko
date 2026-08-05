@@ -406,7 +406,8 @@ pub fn scan_codex_sessions(request: &ScanRequest) -> Result<ScanReport, ScanErro
     let (config, sqlite_homes) = inspect_config(request, &mut diagnostics);
     let mut rollouts = scan_rollouts(&request.codex_home, &mut diagnostics);
     rollouts.sort_by(|left, right| left.path.cmp(&right.path));
-    let session_index = inspect_session_index(&request.codex_home, &mut diagnostics);
+    let (session_index, session_names) =
+        inspect_session_index(&request.codex_home, &mut diagnostics);
 
     let database_paths =
         discover_sqlite_databases(&request.codex_home, &sqlite_homes, &mut diagnostics);
@@ -417,6 +418,7 @@ pub fn scan_codex_sessions(request: &ScanRequest) -> Result<ScanReport, ScanErro
 
     let threads = build_thread_inventory(
         &request.codex_home,
+        &session_names,
         &rollouts,
         &sqlite_databases,
         &mut diagnostics,
@@ -834,7 +836,7 @@ fn plain_rollout_path(path: &Path) -> PathBuf {
 fn inspect_session_index(
     codex_home: &Path,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<SessionIndexArtifact> {
+) -> (Option<SessionIndexArtifact>, BTreeMap<String, String>) {
     let path = codex_home.join("session_index.jsonl");
     let metadata = match fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => metadata,
@@ -844,16 +846,18 @@ fn inspect_session_index(
                 "session_index.jsonl is not a regular file",
                 Some(path),
             ));
-            return None;
+            return (None, BTreeMap::new());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, BTreeMap::new());
+        }
         Err(_) => {
             diagnostics.push(Diagnostic::blocker(
                 "session_index_unreadable",
                 "session_index.jsonl metadata could not be read",
                 Some(path),
             ));
-            return None;
+            return (None, BTreeMap::new());
         }
     };
     let file = match File::open(&path) {
@@ -864,11 +868,12 @@ fn inspect_session_index(
                 "session_index.jsonl could not be opened",
                 Some(path),
             ));
-            return None;
+            return (None, BTreeMap::new());
         }
     };
 
     let mut thread_ids = Vec::new();
+    let mut thread_names = BTreeMap::new();
     for (line_number, line) in BufReader::new(file).lines().enumerate() {
         let line = match line {
             Ok(line) => line,
@@ -884,18 +889,29 @@ fn inspect_session_index(
         if line.trim().is_empty() {
             continue;
         }
-        let thread_id = serde_json::from_str::<JsonValue>(&line)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("id")
-                    .and_then(JsonValue::as_str)
-                    .map(str::to_owned)
-            })
+        let value = serde_json::from_str::<JsonValue>(&line).ok();
+        let thread_id = value
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
         match thread_id {
-            Some(thread_id) => thread_ids.push(thread_id),
+            Some(thread_id) => {
+                thread_ids.push(thread_id.clone());
+                let thread_name = value.as_ref().and_then(|value| {
+                    ["thread_name", "name", "title"]
+                        .iter()
+                        .find_map(|key| value.get(*key).and_then(JsonValue::as_str))
+                });
+                if let Some(thread_name) =
+                    normalize_optional_text(thread_name.map(str::to_owned))
+                {
+                    // The index is append-only; the newest entry is the current display name.
+                    thread_names.insert(thread_id, thread_name);
+                }
+            }
             None => diagnostics.push(Diagnostic::blocker(
                 "session_index_entry_invalid",
                 format!("session index line {} lacks a valid id", line_number + 1),
@@ -906,12 +922,15 @@ fn inspect_session_index(
     let entry_count = thread_ids.len();
     thread_ids.sort();
     thread_ids.dedup();
-    Some(SessionIndexArtifact {
-        path,
-        byte_size: metadata.len(),
-        entry_count,
-        thread_ids,
-    })
+    (
+        Some(SessionIndexArtifact {
+            path,
+            byte_size: metadata.len(),
+            entry_count,
+            thread_ids,
+        }),
+        thread_names,
+    )
 }
 
 fn discover_sqlite_databases(
@@ -1608,6 +1627,7 @@ struct ThreadBuilder {
 
 fn build_thread_inventory(
     codex_home: &Path,
+    session_names: &BTreeMap<String, String>,
     rollouts: &[RolloutArtifact],
     databases: &[SqliteArtifact],
     diagnostics: &mut Vec<Diagnostic>,
@@ -1674,6 +1694,12 @@ fn build_thread_inventory(
                     .unwrap_or("database"),
                 schema_version(database)
             ));
+        }
+    }
+
+    for (thread_id, name) in session_names {
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.title = Some(name.clone());
         }
     }
 
