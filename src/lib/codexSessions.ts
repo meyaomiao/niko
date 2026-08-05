@@ -2,6 +2,7 @@ export const SAFE_ERROR_VERSION = 1 as const;
 export const SESSION_PAGE_SIZE = 50;
 export const SESSION_QUERY_LIMIT = 80;
 export const UNNAMED_SESSION_TITLE = "未命名会话";
+export const CODEX_SESSION_SYNC_PROGRESS_EVENT = "codex-session-sync-progress";
 
 const FALLBACK_MESSAGE = "操作没有完成，请重试。";
 const SAFE_ERRORS: Record<string, ReadonlyArray<{
@@ -65,8 +66,45 @@ export interface CodexSessionMutationOutcome {
   changed_artifacts: number;
 }
 
+export type CodexSessionSyncPhase =
+  | "preparing"
+  | "backing_up"
+  | "staging"
+  | "committing"
+  | "validating"
+  | "completed";
+
+export interface CodexSessionSyncProgress {
+  phase: CodexSessionSyncPhase;
+  percent: number;
+  processed: number;
+  total: number;
+  target_provider: "custom" | "openai";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function normalizeCodexSessionSyncProgress(value: unknown): CodexSessionSyncProgress | null {
+  if (!isRecord(value)) return null;
+  const phase = value.phase;
+  const targetProvider = value.target_provider;
+  const numericValues = [value.percent, value.processed, value.total];
+  if (
+    !["preparing", "backing_up", "staging", "committing", "validating", "completed"].includes(String(phase))
+    || (targetProvider !== "custom" && targetProvider !== "openai")
+    || numericValues.some((item) => typeof item !== "number" || !Number.isInteger(item) || item < 0)
+    || Number(value.percent) > 100
+    || Number(value.processed) > Number(value.total)
+  ) return null;
+  return {
+    phase: phase as CodexSessionSyncPhase,
+    percent: Number(value.percent),
+    processed: Number(value.processed),
+    total: Number(value.total),
+    target_provider: targetProvider,
+  };
 }
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

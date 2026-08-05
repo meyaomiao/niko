@@ -106,6 +106,23 @@ pub enum MigrationProviderTarget {
     OpenAi,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationProgressPhase {
+    Preparing,
+    BackingUp,
+    Staging,
+    Committing,
+    Validating,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MigrationProgress {
+    pub phase: MigrationProgressPhase,
+    pub completed: usize,
+    pub total: usize,
+}
+
 impl MigrationProviderTarget {
     fn fixture_target(self) -> FixtureProviderTarget {
         match self {
@@ -428,7 +445,26 @@ pub fn migrate_codex_sessions_transactional(
     request: &MigrationRequest,
     target: MigrationProviderTarget,
 ) -> Result<MigrationReport, MigrationError> {
-    migrate_codex_sessions_transactional_with_faults(request, target, &NoMigrationFaults)
+    let mut noop = |_progress: MigrationProgress| {};
+    migrate_codex_sessions_transactional_with_faults_and_progress(
+        request,
+        target,
+        &NoMigrationFaults,
+        &mut noop,
+    )
+}
+
+pub fn migrate_codex_sessions_transactional_with_progress(
+    request: &MigrationRequest,
+    target: MigrationProviderTarget,
+    progress: &mut dyn FnMut(MigrationProgress),
+) -> Result<MigrationReport, MigrationError> {
+    migrate_codex_sessions_transactional_with_faults_and_progress(
+        request,
+        target,
+        &NoMigrationFaults,
+        progress,
+    )
 }
 
 pub fn migrate_codex_sessions_transactional_with_faults(
@@ -436,6 +472,26 @@ pub fn migrate_codex_sessions_transactional_with_faults(
     target: MigrationProviderTarget,
     faults: &dyn MigrationFaultInjector,
 ) -> Result<MigrationReport, MigrationError> {
+    let mut noop = |_progress: MigrationProgress| {};
+    migrate_codex_sessions_transactional_with_faults_and_progress(
+        request,
+        target,
+        faults,
+        &mut noop,
+    )
+}
+
+pub fn migrate_codex_sessions_transactional_with_faults_and_progress(
+    request: &MigrationRequest,
+    target: MigrationProviderTarget,
+    faults: &dyn MigrationFaultInjector,
+    progress: &mut dyn FnMut(MigrationProgress),
+) -> Result<MigrationReport, MigrationError> {
+    progress(MigrationProgress {
+        phase: MigrationProgressPhase::Preparing,
+        completed: 0,
+        total: 0,
+    });
     let roots = approve_roots(&request.scan)?;
     let has_pending = read_journals(&roots)?
         .iter()
@@ -459,6 +515,11 @@ pub fn migrate_codex_sessions_transactional_with_faults(
         .filter(|entry| entry.journal.mutable)
         .count();
     if changed_artifacts == 0 {
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Completed,
+            completed: 0,
+            total: 0,
+        });
         return Ok(MigrationReport {
             migration_id: None,
             outcome: MigrationOutcome::AlreadyCurrent,
@@ -472,7 +533,12 @@ pub fn migrate_codex_sessions_transactional_with_faults(
     clear_verified_stale_lock(&plan.roots, &journals)?;
 
     preflight(request, &plan, faults)?;
-    execute_plan(request, plan, changed_artifacts, faults)
+    progress(MigrationProgress {
+        phase: MigrationProgressPhase::Preparing,
+        completed: 0,
+        total: changed_artifacts,
+    });
+    execute_plan(request, plan, changed_artifacts, faults, progress)
 }
 
 pub fn preflight_codex_session_migration(
@@ -1805,6 +1871,7 @@ fn execute_plan(
     mut plan: MigrationPlan,
     changed_artifacts: usize,
     faults: &dyn MigrationFaultInjector,
+    progress: &mut dyn FnMut(MigrationProgress),
 ) -> Result<MigrationReport, MigrationError> {
     let migration_id = new_migration_id();
     create_operation_directories(&plan.roots, &migration_id)?;
@@ -1853,16 +1920,56 @@ fn execute_plan(
         inject(faults, FaultPoint::PlannedPersisted, None)?;
         provider_lock.verify()?;
         commit_barrier(request, &plan)?;
-        snapshot_all(request, &mut plan, &mut journal, faults)?;
-        stage_all(&mut plan, &mut journal, faults)?;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::BackingUp,
+            completed: 0,
+            total: changed_artifacts,
+        });
+        snapshot_all(
+            request,
+            &mut plan,
+            &mut journal,
+            faults,
+            progress,
+            changed_artifacts,
+        )?;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Staging,
+            completed: 0,
+            total: changed_artifacts,
+        });
+        stage_all(
+            &mut plan,
+            &mut journal,
+            faults,
+            progress,
+            changed_artifacts,
+        )?;
         provider_lock.verify()?;
         commit_barrier(request, &plan)?;
         transition_journal(&plan.roots, &mut journal, MigrationState::Committing)?;
         inject(faults, FaultPoint::CommittingPersisted, None)?;
-        commit_all(&plan.roots, &plan.entries, &mut journal, faults)?;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Committing,
+            completed: 0,
+            total: changed_artifacts,
+        });
+        commit_all(
+            &plan.roots,
+            &plan.entries,
+            &mut journal,
+            faults,
+            progress,
+            changed_artifacts,
+        )?;
         transition_journal(&plan.roots, &mut journal, MigrationState::Validating)?;
         inject(faults, FaultPoint::ValidatingPersisted, None)?;
         inject(faults, FaultPoint::Validation, None)?;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Validating,
+            completed: changed_artifacts,
+            total: changed_artifacts,
+        });
         validate_new_state(request, &plan.roots, &journal)?;
         journal.restart_allowed = true;
         transition_journal(&plan.roots, &mut journal, MigrationState::Committed)?;
@@ -1881,6 +1988,11 @@ fn execute_plan(
             inject(faults, FaultPoint::ReleaseCommittedLocks, None)?;
             let _ = provider_lock.release();
             let _ = lock.release();
+            progress(MigrationProgress {
+                phase: MigrationProgressPhase::Completed,
+                completed: changed_artifacts,
+                total: changed_artifacts,
+            });
             Ok(MigrationReport {
                 migration_id: Some(migration_id),
                 outcome: MigrationOutcome::Committed,
@@ -1940,7 +2052,10 @@ fn snapshot_all(
     plan: &mut MigrationPlan,
     journal: &mut MigrationJournal,
     faults: &dyn MigrationFaultInjector,
+    progress: &mut dyn FnMut(MigrationProgress),
+    progress_total: usize,
 ) -> Result<(), MigrationError> {
+    let mut progress_completed = 0;
     for (index, entry) in plan.entries.iter_mut().enumerate() {
         let backup = backup_path(&plan.roots, &journal.migration_id, &entry.journal)?;
         let backup_hash = if entry.journal.existed {
@@ -1985,6 +2100,14 @@ fn snapshot_all(
         entry.journal.backup_hash = backup_hash.clone();
         journal.entries[index].backup_hash = backup_hash;
         persist_journal(&plan.roots, journal)?;
+        if entry.journal.mutable {
+            progress_completed += 1;
+            progress(MigrationProgress {
+                phase: MigrationProgressPhase::BackingUp,
+                completed: progress_completed,
+                total: progress_total,
+            });
+        }
     }
     transition_journal(&plan.roots, journal, MigrationState::Snapshotted)?;
     inject(faults, FaultPoint::SnapshottedPersisted, None)
@@ -1994,7 +2117,10 @@ fn stage_all(
     plan: &mut MigrationPlan,
     journal: &mut MigrationJournal,
     faults: &dyn MigrationFaultInjector,
+    progress: &mut dyn FnMut(MigrationProgress),
+    progress_total: usize,
 ) -> Result<(), MigrationError> {
+    let mut progress_completed = 0;
     for (index, entry) in plan.entries.iter_mut().enumerate() {
         if !entry.journal.mutable {
             continue;
@@ -2049,6 +2175,12 @@ fn stage_all(
         entry.journal.staged_hash = Some(staged_hash.clone());
         journal.entries[index].staged_hash = Some(staged_hash);
         persist_journal(&plan.roots, journal)?;
+        progress_completed += 1;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Staging,
+            completed: progress_completed,
+            total: progress_total,
+        });
     }
     transition_journal(&plan.roots, journal, MigrationState::Staged)?;
     inject(faults, FaultPoint::StagedPersisted, None)
@@ -2059,7 +2191,10 @@ fn commit_all(
     entries: &[PlannedEntry],
     journal: &mut MigrationJournal,
     faults: &dyn MigrationFaultInjector,
+    progress: &mut dyn FnMut(MigrationProgress),
+    progress_total: usize,
 ) -> Result<(), MigrationError> {
+    let mut progress_completed = 0;
     for (index, entry) in entries.iter().enumerate() {
         if !entry.journal.mutable {
             continue;
@@ -2072,6 +2207,12 @@ fn commit_all(
         )?;
         journal.entries[index].applied = true;
         persist_journal(roots, journal)?;
+        progress_completed += 1;
+        progress(MigrationProgress {
+            phase: MigrationProgressPhase::Committing,
+            completed: progress_completed,
+            total: progress_total,
+        });
     }
     Ok(())
 }

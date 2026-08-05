@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
 import {
@@ -12,19 +13,38 @@ import {
   acceptsResponse,
   beginRequest,
   boundSessionQuery,
+  CODEX_SESSION_SYNC_PROGRESS_EVENT,
   codexNormalizationLabel,
   codexProviderLabel,
   initialRequestGuard,
   mountRequests,
   normalizeCodexSessionPage,
+  normalizeCodexSessionSyncProgress,
   safeFailure,
   SESSION_PAGE_SIZE,
   SESSION_QUERY_LIMIT,
+  type CodexSessionSyncProgress,
   type CodexSessionMutationOutcome,
   type CodexSessionPage,
   type CodexSessionThread,
   unmountRequests,
 } from "../lib/codexSessions";
+
+type SyncTarget = "custom" | "openai";
+
+const SYNC_TARGET_LABELS: Record<SyncTarget, string> = {
+  custom: "Niko 模型服务",
+  openai: "ChatGPT 官方模型服务",
+};
+
+const SYNC_PHASE_LABELS: Record<CodexSessionSyncProgress["phase"], string> = {
+  preparing: "准备同步",
+  backing_up: "备份会话数据",
+  staging: "写入同步副本",
+  committing: "提交同步结果",
+  validating: "校验会话记录",
+  completed: "同步完成",
+};
 
 function formatSessionTime(value?: string | null): string {
   if (!value) return "时间未知";
@@ -38,14 +58,17 @@ export default function CodexSessions() {
   const guard = useRef(initialRequestGuard());
   const pageRef = useRef<CodexSessionPage | null>(null);
   const queryRef = useRef("");
+  const targetRef = useRef<SyncTarget>("custom");
   const [page, setPageState] = useState<CodexSessionPage | null>(null);
   const [query, setQueryState] = useState("");
+  const [targetProvider, setTargetProvider] = useState<SyncTarget>("custom");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [migrating, setMigrating] = useState(false);
   const [closing, setClosing] = useState(false);
   const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
+  const [syncProgress, setSyncProgress] = useState<CodexSessionSyncProgress | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const setPage = (value: CodexSessionPage | null) => {
@@ -64,6 +87,19 @@ export default function CodexSessions() {
     setMigrationMessage(null);
   };
 
+  const setSyncTarget = (value: SyncTarget) => {
+    const request = beginRequest(guard.current, "scan");
+    guard.current = request.state;
+    targetRef.current = value;
+    setTargetProvider(value);
+    setPage(null);
+    setSelectedIds(new Set());
+    setLoading(true);
+    setError(null);
+    setMigrationMessage(null);
+    setSyncProgress(null);
+  };
+
   const load = async (requestedPage: number) => {
     const request = beginRequest(guard.current, "scan");
     guard.current = request.state;
@@ -74,6 +110,7 @@ export default function CodexSessions() {
         query: boundSessionQuery(queryRef.current),
         page: requestedPage,
         page_size: SESSION_PAGE_SIZE,
+        targetProvider: targetRef.current,
       });
       if (!acceptsResponse(guard.current, "scan", request.generation)) return;
       const result = normalizeCodexSessionPage(rawResult);
@@ -96,6 +133,15 @@ export default function CodexSessions() {
     void load(1);
   };
 
+  const refreshSessions = () => {
+    if (loading || migrating || opening !== null || closing) return;
+    setSelectedIds(new Set());
+    setError(null);
+    setMigrationMessage(null);
+    setSyncProgress(null);
+    void load(pageRef.current?.page ?? 1);
+  };
+
   const closeChatGptAndScan = async () => {
     if (closing || loading || migrating || opening !== null) return;
     const request = beginRequest(guard.current, "action");
@@ -112,6 +158,7 @@ export default function CodexSessions() {
       await load(1);
     } catch (rejection) {
       if (acceptsResponse(guard.current, "action", request.generation)) {
+        setSyncProgress(null);
         setError(safeFailure(rejection).message);
       }
     } finally {
@@ -124,7 +171,25 @@ export default function CodexSessions() {
   useEffect(() => {
     const timer = window.setTimeout(() => void load(1), 150);
     return () => window.clearTimeout(timer);
-  }, [query]);
+  }, [query, targetProvider]);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | null = null;
+    void listen<unknown>(CODEX_SESSION_SYNC_PROGRESS_EVENT, (event) => {
+      const progress = normalizeCodexSessionSyncProgress(event.payload);
+      if (active && progress && progress.target_provider === targetRef.current) {
+        setSyncProgress(progress);
+      }
+    }).then((cleanup) => {
+      if (active) unlisten = cleanup;
+      else cleanup();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     guard.current = mountRequests(guard.current);
@@ -143,6 +208,7 @@ export default function CodexSessions() {
       await invoke("open_codex_thread", { threadId: thread.thread_id });
     } catch (rejection) {
       if (acceptsResponse(guard.current, "action", request.generation)) {
+        setSyncProgress(null);
         setError(safeFailure(rejection).message);
       }
     } finally {
@@ -152,13 +218,14 @@ export default function CodexSessions() {
     }
   };
 
-  const migrateToCustom = async (threadIds?: string[]) => {
+  const migrateSessions = async (threadIds?: string[]) => {
     const selected = threadIds && threadIds.length > 0 ? Array.from(new Set(threadIds)) : null;
     if (migrating || opening !== null || page?.status === "blocked") return;
     if (selected ? selected.length === 0 : page?.status !== "needs_check") return;
+    const targetLabel = SYNC_TARGET_LABELS[targetProvider];
     const prompt = selected
-      ? `将把选中的 ${selected.length} 个会话迁移到 Niko 模型服务，并自动备份后原子更新。是否继续？`
-      : "将把所有待迁移的 ChatGPT 会话统一迁移到 Niko 模型服务，并自动备份后原子更新。是否继续？";
+      ? `将把选中的 ${selected.length} 个会话同步到${targetLabel}，并自动备份后原子更新。是否继续？`
+      : `将把所有待同步的 ChatGPT 会话统一同步到${targetLabel}，并自动备份后原子更新。是否继续？`;
     if (!window.confirm(prompt)) {
       return;
     }
@@ -167,12 +234,19 @@ export default function CodexSessions() {
     setMigrating(true);
     setError(null);
     setMigrationMessage(null);
+    setSyncProgress({
+      phase: "preparing",
+      percent: 5,
+      processed: 0,
+      total: 0,
+      target_provider: targetProvider,
+    });
     try {
       const result = await invoke<CodexSessionMutationOutcome>(
         selected ? "normalize_codex_session_storage_selected" : "normalize_codex_session_storage",
         selected
-          ? { targetProvider: "custom", threadIds: selected }
-          : { targetProvider: "custom" },
+          ? { targetProvider, threadIds: selected }
+          : { targetProvider },
       );
       if (!acceptsResponse(guard.current, "action", request.generation)) return;
       setMigrationMessage(result.message);
@@ -220,11 +294,11 @@ export default function CodexSessions() {
           <h1 className="nk-title">ChatGPT 会话</h1>
         </div>
         <button
-          onClick={() => void load(pageRef.current?.page ?? 1)}
-          disabled={loading}
+          onClick={refreshSessions}
+          disabled={loading || migrating || opening !== null || closing}
           className="nk-btn-ghost px-2.5"
-          aria-label="重新检查会话"
-          title="重新检查"
+          aria-label="刷新会话"
+          title="刷新会话"
         >
           <RefreshCwIcon className={loading ? "animate-spin motion-reduce:animate-none" : ""} />
         </button>
@@ -250,8 +324,56 @@ export default function CodexSessions() {
               placeholder="搜索会话"
               aria-label="搜索会话"
             />
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+              <label className="min-w-0 flex-1 text-xs text-[var(--nk-muted)]">
+                <span className="mb-1 block">同步目标</span>
+                <select
+                  value={targetProvider}
+                  onChange={(event) => setSyncTarget(event.target.value as SyncTarget)}
+                  disabled={loading || migrating || opening !== null || closing}
+                  className="nk-select w-full"
+                  aria-label="同步目标"
+                >
+                  <option value="custom">Niko 模型服务（custom）</option>
+                  <option value="openai">ChatGPT 官方模型服务（openai）</option>
+                </select>
+              </label>
+              <button
+                onClick={refreshSessions}
+                disabled={loading || migrating || opening !== null || closing}
+                className="nk-btn-secondary shrink-0 whitespace-nowrap px-2.5"
+              >
+                <RefreshCwIcon className={loading ? "animate-spin motion-reduce:animate-none" : ""} />
+                {loading ? "刷新中…" : "刷新会话"}
+              </button>
+            </div>
             {error && <p className="nk-alert-danger mt-3" role="alert">{error}</p>}
             {migrationMessage && <p className="nk-alert-success mt-3" role="status">{migrationMessage}</p>}
+            {syncProgress && (
+              <div className="nk-inset mt-3 p-3" role="status" aria-live="polite">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-medium">{SYNC_PHASE_LABELS[syncProgress.phase]}</span>
+                  <span className="text-[var(--nk-muted)]">{syncProgress.percent}%</span>
+                </div>
+                <div
+                  className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--nk-line)]"
+                  role="progressbar"
+                  aria-label="会话同步进度"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={syncProgress.percent}
+                >
+                  <div
+                    className="h-full rounded-full bg-[var(--nk-accent)] transition-[width] duration-200"
+                    style={{ width: `${syncProgress.percent}%` }}
+                  />
+                </div>
+                <p className="mt-1.5 text-[11px] text-[var(--nk-muted)]">
+                  目标：{SYNC_TARGET_LABELS[syncProgress.target_provider]}
+                  {syncProgress.total > 0 && ` · 已处理 ${syncProgress.processed}/${syncProgress.total} 个文件`}
+                </p>
+              </div>
+            )}
             <div className="nk-inset mt-4 p-3 text-xs text-[var(--nk-muted)]">
               <p className="font-medium text-[var(--nk-ink)]">会话管理范围</p>
               <p className="mt-1">仅支持 ChatGPT 桌面端会话的检查、迁移和恢复；Claude 桌面端不支持这些操作。</p>
@@ -303,7 +425,7 @@ export default function CodexSessions() {
                     disabled={selectableItems.length === 0 || migrating || opening !== null}
                     className="nk-btn-secondary whitespace-nowrap px-2.5"
                   >
-                    {allSelectableSelected ? "取消全选" : "全选待修复"}
+                    {allSelectableSelected ? "取消全选" : "全选待同步"}
                   </button>
                   <button
                     onClick={() => setSelectedIds(new Set())}
@@ -316,19 +438,19 @@ export default function CodexSessions() {
                 <div className="flex w-full flex-wrap gap-1.5 sm:w-auto sm:justify-end">
                   {selectedIds.size > 0 && (
                     <button
-                      onClick={() => void migrateToCustom(Array.from(selectedIds))}
+                      onClick={() => void migrateSessions(Array.from(selectedIds))}
                       disabled={migrating || opening !== null || page.status === "blocked"}
                       className="nk-btn-primary whitespace-nowrap px-2.5"
                     >
-                      {migrating ? "修复中…" : `修复选中 (${selectedIds.size})`}
+                      {migrating ? "同步中…" : `同步选中 (${selectedIds.size})`}
                     </button>
                   )}
                   <button
-                    onClick={() => void migrateToCustom()}
+                    onClick={() => void migrateSessions()}
                     disabled={page.status !== "needs_check" || migrating || opening !== null}
                     className="nk-btn-secondary whitespace-nowrap px-2.5"
                   >
-                    {migrating ? "修复中…" : "修复全部待迁移会话"}
+                    {migrating ? "同步中…" : "同步全部待处理会话"}
                   </button>
                 </div>
               </div>
@@ -387,7 +509,7 @@ export default function CodexSessions() {
                         {thread.archived
                             ? "已归档"
                             : thread.needs_migration
-                            ? "待迁移到 Niko 模型服务"
+                            ? `待同步到${SYNC_TARGET_LABELS[targetProvider]}`
                             : thread.can_continue
                               ? "可续接"
                               : "本地检查发现阻塞"}

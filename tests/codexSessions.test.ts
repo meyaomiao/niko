@@ -8,6 +8,7 @@ import {
   initialRequestGuard,
   mountRequests,
   normalizeCodexSessionPage,
+  normalizeCodexSessionSyncProgress,
   parseSafeCommandError,
   safeFailure,
   unmountRequests,
@@ -73,6 +74,39 @@ test("safe mutation errors remain compact and safe to render", () => {
   const failure = safeFailure({ version: 1, code: "change_failed", message: "操作未完成，原有内容保持可用。", retryable: false });
   assert.equal(failure.message, "操作未完成，原有内容保持可用。");
   assert.doesNotMatch(JSON.stringify(failure), /config\.toml|auth\.json|token|SQLite/i);
+});
+
+test("session sync progress accepts only bounded phase payloads", () => {
+  assert.deepEqual(
+    normalizeCodexSessionSyncProgress({
+      phase: "staging",
+      percent: 48,
+      processed: 12,
+      total: 25,
+      target_provider: "custom",
+    }),
+    {
+      phase: "staging",
+      percent: 48,
+      processed: 12,
+      total: 25,
+      target_provider: "custom",
+    },
+  );
+  assert.equal(normalizeCodexSessionSyncProgress({
+    phase: "staging",
+    percent: 101,
+    processed: 12,
+    total: 25,
+    target_provider: "custom",
+  }), null);
+  assert.equal(normalizeCodexSessionSyncProgress({
+    phase: "staging",
+    percent: 48,
+    processed: 26,
+    total: 25,
+    target_provider: "custom",
+  }), null);
 });
 
 test("session title display prefers the database title and never promotes an id", () => {
