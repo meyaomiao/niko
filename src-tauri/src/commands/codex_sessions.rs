@@ -103,7 +103,7 @@ fn report_status(report: &ScanReport) -> &'static str {
     }
 }
 
-fn safe_session_text(value: Option<&str>, max_chars: usize) -> Option<String> {
+fn compact_session_text(value: Option<&str>) -> Option<String> {
     let mut compact = String::new();
     let mut spaced = false;
     for character in value?.trim().chars() {
@@ -118,19 +118,19 @@ fn safe_session_text(value: Option<&str>, max_chars: usize) -> Option<String> {
         compact.push(character);
     }
     let compact = compact.trim();
-    if compact.is_empty() || compact.chars().count() > max_chars {
-        return None;
-    }
-    let lower = compact.to_ascii_lowercase();
-    if compact.contains('/')
-        || compact.contains('\\')
+    (!compact.is_empty()).then(|| compact.to_owned())
+}
+
+fn contains_sensitive_session_text(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.contains('/')
+        || value.contains('\\')
         || lower.contains("://")
         || lower.contains("auth.json")
         || lower.contains("config.toml")
         || lower.contains("sqlite")
         || lower.contains("journal")
         || lower.contains("wal")
-        || lower.contains("token")
         || lower.contains("api_key")
         || lower.contains("sk-")
         || lower.contains("bearer ")
@@ -138,17 +138,26 @@ fn safe_session_text(value: Option<&str>, max_chars: usize) -> Option<String> {
         || lower.contains("traceback")
         || lower.contains("panic")
         || lower.contains("exception")
-        || lower.contains("error")
-        || compact.contains("错误")
-        || compact.contains("失败")
-    {
+}
+
+fn safe_session_text(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let compact = compact_session_text(value)?;
+    if compact.chars().count() > max_chars || contains_sensitive_session_text(&compact) {
         return None;
     }
-    Some(compact.to_owned())
+    Some(compact)
 }
 
 fn safe_session_title(value: Option<&str>) -> Option<String> {
-    safe_session_text(value, 120)
+    let compact = compact_session_text(value)?;
+    if contains_sensitive_session_text(&compact) {
+        return None;
+    }
+    let mut title = compact.chars().take(119).collect::<String>();
+    if compact.chars().count() > 119 {
+        title.push('…');
+    }
+    Some(title)
 }
 
 fn safe_session_summary(value: Option<&str>) -> Option<String> {
@@ -826,6 +835,14 @@ mod tests {
             storage_versions: Vec::new(),
         };
         assert_eq!(display_session_title(&thread), "数据库会话标题");
+
+        thread.title = Some("一个很长的会话标题 ".repeat(20));
+        let long_title = display_session_title(&thread);
+        assert!(long_title.ends_with('…'));
+        assert!(long_title.chars().count() <= 120);
+
+        thread.title = Some("修复 error token 预算".into());
+        assert_eq!(display_session_title(&thread), "修复 error token 预算");
 
         thread.title = None;
         assert_eq!(display_session_title(&thread), "安全摘要");

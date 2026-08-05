@@ -298,7 +298,7 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
     top_state
         .execute(
             "UPDATE threads
-             SET title = 'A real title', preview = 'A preview', first_user_message = 'First user message',
+             SET name = 'A named title', title = 'A real title', preview = 'A preview', first_user_message = 'First user message',
                  updated_at_ms = 1760000000123
              WHERE id = 'thread-a'",
             [],
@@ -427,7 +427,7 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
         .iter()
         .find(|thread| thread.thread_id == "thread-a")
         .unwrap();
-    assert_eq!(thread_a.title.as_deref(), Some("A real title"));
+    assert_eq!(thread_a.title.as_deref(), Some("A named title"));
     assert_eq!(thread_a.summary.as_deref(), Some("A preview"));
     assert_eq!(thread_a.updated_at_ms, Some(1760000000123));
     let thread_b = report
@@ -435,6 +435,7 @@ fn inventories_isolated_active_archive_compressed_multi_sqlite_and_history() {
         .iter()
         .find(|thread| thread.thread_id == "thread-b")
         .unwrap();
+    assert_eq!(thread_b.title.as_deref(), Some("fixture"));
     assert_eq!(thread_b.summary.as_deref(), Some("First user fallback"));
     assert_eq!(thread_b.updated_at_ms, Some(1760000000000));
     assert!(report

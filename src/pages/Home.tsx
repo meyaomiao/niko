@@ -954,7 +954,7 @@ export default function Home() {
           <div className="flex min-h-0 flex-col md:overflow-hidden">
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
-            <section className={`${CARD} flex min-h-[20rem] flex-none flex-col sm:min-h-[22rem]`}>
+            <section className={`${CARD} flex min-h-[20rem] flex-1 flex-col sm:min-h-[22rem] md:min-h-0`}>
               <div className="mb-1.5 flex shrink-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className={TITLE}>{targetLabel ? `为 ${targetLabel} 选择模型` : "选择模型"}</h2>
                 {currentGroup && (
@@ -1060,7 +1060,7 @@ export default function Home() {
                       className={`w-44 ${INPUT}`}
                     />
                   </div>
-                  <div className="nk-model-scroll mt-2">
+                  <div className="nk-model-scroll mt-2 md:flex-1 md:max-h-none">
                     {models.length === 0 && (
                       <p className="nk-empty">
                         {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前没有可用模型。"}
@@ -1121,7 +1121,7 @@ export default function Home() {
                         </p>
                       )}
                     </div>
-                    <div className="nk-group-list mt-1.5 pr-1">
+                    <div className="nk-group-list mt-1.5 pr-1 md:max-h-[9rem]">
                       {modelGroups.length === 0 && <p className="nk-empty">先选择模型</p>}
                       {modelGroups.map((g) => (
                         <button

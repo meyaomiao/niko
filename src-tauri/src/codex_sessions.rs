@@ -1414,6 +1414,10 @@ fn read_state_rows(
     connection: &Connection,
     thread_columns: &BTreeSet<String>,
 ) -> rusqlite::Result<Vec<StateThreadRow>> {
+    let name = thread_columns
+        .contains("name")
+        .then_some("name")
+        .unwrap_or("NULL");
     let title = thread_columns
         .contains("title")
         .then_some("title")
@@ -1436,7 +1440,8 @@ fn read_state_rows(
         .unwrap_or("NULL");
     let sql = format!(
         "SELECT id, rollout_path, model_provider, cwd, archived, \
-                {title} AS title, {preview} AS preview, {first_user_message} AS first_user_message, \
+                {name} AS name, {title} AS title, {preview} AS preview, \
+                {first_user_message} AS first_user_message, \
                 CAST({updated_at_ms} AS INTEGER) AS updated_at_ms, \
                 CAST({updated_at} AS INTEGER) AS updated_at \
          FROM threads ORDER BY id"
@@ -1444,14 +1449,15 @@ fn read_state_rows(
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
         .query_map([], |row| {
-            let title = normalize_optional_text(row.get(5)?);
-            let preview = normalize_optional_text(row.get(6)?);
-            let first_user_message = normalize_optional_text(row.get(7)?);
+            let name = normalize_optional_text(row.get(5)?);
+            let title = normalize_optional_text(row.get(6)?);
+            let preview = normalize_optional_text(row.get(7)?);
+            let first_user_message = normalize_optional_text(row.get(8)?);
             let updated_at_ms = row
-                .get::<_, Option<i64>>(8)?
+                .get::<_, Option<i64>>(9)?
                 .map(timestamp_to_millis)
                 .or_else(|| {
-                    row.get::<_, Option<i64>>(9)
+                    row.get::<_, Option<i64>>(10)
                         .ok()
                         .flatten()
                         .map(timestamp_to_millis)
@@ -1462,7 +1468,7 @@ fn read_state_rows(
                 provider: row.get(2)?,
                 workspace: PathBuf::from(row.get::<_, String>(3)?),
                 archived: row.get::<_, i64>(4)? != 0,
-                title,
+                title: name.or(title),
                 summary: preview.or(first_user_message),
                 updated_at_ms,
             })
