@@ -78,6 +78,7 @@ test("safe mutation errors remain compact and safe to render", () => {
 test("session title display prefers the database title and never promotes an id", () => {
   const id = "019fb1b4-f24c-7ec3-a736-c68cf9a0ae11";
   assert.equal(displaySessionTitle("数据库标题", "安全摘要", id), "数据库标题");
+  assert.equal(displaySessionTitle("修复 error token 预算", null, id), "修复 error token 预算");
   assert.equal(displaySessionTitle(null, "安全摘要", id), "安全摘要");
   assert.equal(displaySessionTitle(`会话 ${id.slice(0, 8)}`, null, id), UNNAMED_SESSION_TITLE);
   assert.equal(displaySessionTitle(null, "/Users/a/.codex/config.toml", id), UNNAMED_SESSION_TITLE);

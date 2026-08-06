@@ -66,9 +66,6 @@ pub trait Target: Send + Sync {
 const CODEX_PROVIDER: &str = "custom";
 const LEGACY_CODEX_PROVIDER: &str = "momotoken";
 
-/// 纯 API 模式固定使用 Codex 当前支持的最高推理档。
-const CODEX_MAX_REASONING_EFFORT: &str = "ultra";
-
 /// 其他 Codex 切换工具写在 config.toml 顶层、会覆盖本次配置效果的键。
 /// - `model_context_window` / `model_auto_compact_token_limit`：压低桌面端上下文与自动压缩阈值
 /// - `service_tier`：OpenAI 官方专属参数，透传给第三方上游会报错
@@ -98,12 +95,9 @@ fn codex_provider_is_consistent(provider: &toml::Table) -> bool {
             == Some(true)
 }
 
-fn codex_reasoning_effort_is_consistent(doc: &toml::Table, mixed: bool) -> bool {
-    mixed
-        || doc
-            .get("model_reasoning_effort")
-            .and_then(|value| value.as_str())
-            == Some(CODEX_MAX_REASONING_EFFORT)
+fn codex_reasoning_effort_is_consistent(doc: &toml::Table) -> bool {
+    doc.get("model_reasoning_effort")
+        .is_none_or(|value| value.as_str().is_some())
 }
 
 fn codex_mixed_auth_is_consistent(auth: &Value) -> bool {
@@ -193,16 +187,6 @@ fn merge_toml_codex_provider(
         if doc.get("model") != Some(&new_model) {
             doc.insert("model".to_owned(), new_model);
             changed.push("model".to_owned());
-        }
-    }
-
-    // 纯 API 模式不依赖 ChatGPT 账号权益，直接为所选 API 模型开启最高推理档。
-    // 混用模式不强制改写，保留用户现有偏好。
-    if mixed_api_key.is_none() {
-        let max_reasoning = toml::Value::String(CODEX_MAX_REASONING_EFFORT.to_owned());
-        if doc.get("model_reasoning_effort") != Some(&max_reasoning) {
-            doc.insert("model_reasoning_effort".to_owned(), max_reasoning);
-            changed.push("model_reasoning_effort".to_owned());
         }
     }
 
@@ -1193,8 +1177,7 @@ fn observe_codex_config(home: &Path) -> TargetConfigObservation {
             (key.to_owned(), "auth_json")
         }
     };
-    let mixed = auth_source == "provider_bearer";
-    if !codex_reasoning_effort_is_consistent(&doc, mixed)
+    if !codex_reasoning_effort_is_consistent(&doc)
         || !codex_conflicting_root_keys(&doc).is_empty()
     {
         return TargetConfigObservation::Ambiguous;
@@ -1460,12 +1443,7 @@ fn remove_toml_codex_provider(path: &Path) -> Result<Vec<String>, String> {
         if doc.remove("model").is_some() {
             changed.push("-model".to_owned());
         }
-        if doc.get("model_reasoning_effort").and_then(|v| v.as_str())
-            == Some(CODEX_MAX_REASONING_EFFORT)
-        {
-            doc.remove("model_reasoning_effort");
-            changed.push("-model_reasoning_effort".to_owned());
-        }
+        // 推理档可能由用户设置，也可能来自旧版 Niko；两者无法可靠区分，恢复时保留。
     }
 
     if !changed.is_empty() {
@@ -1608,7 +1586,7 @@ pub(crate) fn check_drift_at(
                         mismatched.push("config.toml:model".to_owned());
                     }
                 }
-                if !codex_reasoning_effort_is_consistent(&doc, plan.codex_mixed) {
+                if !codex_reasoning_effort_is_consistent(&doc) {
                     mismatched.push("config.toml:model_reasoning_effort".to_owned());
                 }
                 // 别家工具留下的顶层键仍在，说明配置被它们的设置压制
@@ -1722,10 +1700,8 @@ mod tests {
         );
         assert_eq!(doc.get("model_provider").and_then(|v| v.as_str()), Some("custom"));
         assert_eq!(doc.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4-6"));
-        assert_eq!(
-            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
-            Some(CODEX_MAX_REASONING_EFFORT)
-        );
+        assert!(doc.get("model_reasoning_effort").is_none());
+        assert!(!changed.contains(&"model_reasoning_effort".to_owned()));
 
         let providers = doc.get("model_providers").unwrap().as_table().unwrap();
         assert!(providers.contains_key("custom"), "用户已有 provider 必须保留");
@@ -1747,9 +1723,9 @@ mod tests {
         );
     }
 
-    /// 纯 API 模式清掉其他切换器的冲突键，并把旧推理档纠正为最高档
+    /// 纯 API 模式清掉其他切换器的冲突键，并保留用户已有推理档
     #[test]
-    fn codex_pure_api_clears_conflicts_and_uses_max_reasoning() {
+    fn codex_pure_api_clears_conflicts_and_preserves_reasoning() {
         let p = tmp_path("config.toml");
         fs::write(
             &p,
@@ -1763,10 +1739,7 @@ mod tests {
         for key in CODEX_CONFLICTING_ROOT_KEYS {
             assert!(doc.get(*key).is_none(), "{key} 必须被清除");
         }
-        assert_eq!(
-            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
-            Some(CODEX_MAX_REASONING_EFFORT)
-        );
+        assert_eq!(doc.get("model_reasoning_effort").and_then(|v| v.as_str()), Some("high"));
     }
 
     /// config.toml 语法错误时必须报错，绝不能用空表覆写用户整份配置
@@ -1889,29 +1862,33 @@ mod tests {
         assert!(ours.get("experimental_bearer_token").is_none());
         assert!(ours.get("env_key").is_none());
         assert_eq!(ours.get("requires_openai_auth").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
-            Some(CODEX_MAX_REASONING_EFFORT)
-        );
+        assert_eq!(doc.get("model_reasoning_effort").and_then(|v| v.as_str()), Some("high"));
     }
 
-    /// 恢复官方配置时清掉 Niko 在纯 API 模式写入的最高推理档。
+    /// 恢复官方配置时保留用户或历史版本留下的推理档。
     #[test]
-    fn codex_restore_removes_niko_max_reasoning() {
+    fn codex_restore_preserves_existing_reasoning() {
         let cfg = tmp_path("config.toml");
-        fs::write(&cfg, "approval_policy = \"on-request\"\n").unwrap();
+        fs::write(
+            &cfg,
+            "approval_policy = \"on-request\"\nmodel_reasoning_effort = \"ultra\"\n",
+        )
+        .unwrap();
         merge_toml_codex_provider(&cfg, "https://momotoken.win/v1", Some("gpt-5.6-sol"), None)
             .unwrap();
 
         let changed = remove_toml_codex_provider(&cfg).unwrap();
-        assert!(changed.contains(&"-model_reasoning_effort".to_owned()));
+        assert!(!changed.contains(&"-model_reasoning_effort".to_owned()));
 
         let doc: toml::Table = fs::read_to_string(&cfg).unwrap().parse().unwrap();
         assert_eq!(
             doc.get("approval_policy").and_then(|v| v.as_str()),
             Some("on-request")
         );
-        assert!(doc.get("model_reasoning_effort").is_none());
+        assert_eq!(
+            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
+            Some("ultra")
+        );
         assert!(doc.get("model_provider").is_none());
         assert!(doc.get("model").is_none());
     }
@@ -2096,14 +2073,17 @@ mod tests {
         base_url: &str,
         model: &str,
         key: &str,
-        reasoning_effort: &str,
+        reasoning_effort: Option<&str>,
     ) {
         let dir = home.join(".codex");
         fs::create_dir_all(&dir).unwrap();
+        let reasoning = reasoning_effort
+            .map(|effort| format!("model_reasoning_effort = {effort:?}\n"))
+            .unwrap_or_default();
         fs::write(
             dir.join("config.toml"),
             format!(
-                "model_provider = \"custom\"\nmodel = \"{model}\"\nmodel_reasoning_effort = \"{reasoning_effort}\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+                "model_provider = \"custom\"\nmodel = \"{model}\"\n{reasoning}\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
             ),
         )
         .unwrap();
@@ -2280,14 +2260,22 @@ mod tests {
             model: Some("model-a".to_owned()),
             codex_mixed: false,
         };
-        for effort in ["low", "high"] {
-            let home = detection_home(&format!("active_group_codex_reasoning_{effort}"));
+        for (label, effort) in [
+            ("absent", None),
+            ("low", Some("low")),
+            ("medium", Some("medium")),
+            ("high", Some("high")),
+            ("xhigh", Some("xhigh")),
+            ("max", Some("max")),
+            ("ultra", Some("ultra")),
+        ] {
+            let home = detection_home(&format!("active_group_codex_reasoning_{label}"));
             codex_pure_detection_config(
                 &home,
                 "https://gateway.example/v1",
                 "model-a",
                 &pure_plan.api_key,
-                CODEX_MAX_REASONING_EFFORT,
+                effort,
             );
             write_codex_detection_record(&home, &pure_plan);
             let active = crate::active_groups::detect_active_group_at(
@@ -2299,23 +2287,8 @@ mod tests {
                 active.status,
                 crate::active_groups::ActiveGroupState::Active
             );
-
-            let config_path = home.join(".codex/config.toml");
-            let mut doc: toml::Table = fs::read_to_string(&config_path).unwrap().parse().unwrap();
-            doc.insert(
-                "model_reasoning_effort".to_owned(),
-                toml::Value::String(effort.to_owned()),
-            );
-            fs::write(&config_path, toml::to_string_pretty(&doc).unwrap()).unwrap();
-            let changed = crate::active_groups::detect_active_group_at(
-                &home,
-                "codex",
-                Some(groups.as_slice()),
-            );
-            assert_eq!(
-                changed.status,
-                crate::active_groups::ActiveGroupState::Changed
-            );
+            let drift = check_drift_at(&home, "codex", &pure_plan).unwrap();
+            assert!(!drift.drifted, "{label}: {:?}", drift.mismatched_keys);
         }
 
         for key in CODEX_CONFLICTING_ROOT_KEYS {
@@ -2325,7 +2298,7 @@ mod tests {
                 "https://gateway.example/v1",
                 "model-a",
                 &pure_plan.api_key,
-                CODEX_MAX_REASONING_EFFORT,
+                Some("ultra"),
             );
             write_codex_detection_record(&home, &pure_plan);
             let active = crate::active_groups::detect_active_group_at(

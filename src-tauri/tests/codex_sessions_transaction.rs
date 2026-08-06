@@ -688,7 +688,7 @@ fn provider_route_auth_and_sessions_commit_and_restore_together() {
     assert_eq!(auth["OPENAI_API_KEY"], api_key);
     assert_eq!(auth["auth_mode"], "apikey");
     assert_eq!(auth["token"], AUTH_SENTINEL);
-    let config = fs::read_to_string(&fixture.config_path)
+    let mut config = fs::read_to_string(&fixture.config_path)
         .unwrap()
         .parse::<toml::Table>()
         .unwrap();
@@ -698,6 +698,12 @@ fn provider_route_auth_and_sessions_commit_and_restore_together() {
         Some("https://relay.fixture.invalid/v1")
     );
     assert_eq!(config["model"].as_str(), Some("gpt-fixture"));
+    assert!(config.get("model_reasoning_effort").is_none());
+    config.insert(
+        "model_reasoning_effort".to_owned(),
+        toml::Value::String("high".to_owned()),
+    );
+    fs::write(&fixture.config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
     let journal = serde_json::to_string(&latest_journal(&fixture)).unwrap();
     assert!(!journal.contains(api_key));
     assert!(!journal.contains(AUTH_SENTINEL));
@@ -718,6 +724,10 @@ fn provider_route_auth_and_sessions_commit_and_restore_together() {
         .unwrap();
     assert!(config.get("model_provider").is_none());
     assert!(config.get("model").is_none());
+    assert_eq!(
+        config.get("model_reasoning_effort").and_then(toml::Value::as_str),
+        Some("high")
+    );
     assert!(config
         .get("model_providers")
         .and_then(toml::Value::as_table)
