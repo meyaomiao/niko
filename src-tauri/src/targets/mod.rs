@@ -730,21 +730,41 @@ fn claude_3p_config_dir() -> Option<PathBuf> {
 }
 
 /// 写入 Niko 的托管网关条目并设为生效项。其他工具（CC Switch 等）的条目保留不动。
-fn claude_managed_apply(dir: &Path, base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+fn claude_managed_apply(
+    dir: &Path,
+    base_url: &str,
+    api_key: &str,
+    model: Option<&str>,
+) -> Result<Vec<String>, String> {
     let entry_path = dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"));
     let _ = save_backup("claude-desktop", &entry_path);
-    let mut changed: Vec<String> = merge_json_keys(
-        &entry_path,
-        &[
-            ("inferenceProvider", Value::String("gateway".to_owned())),
-            ("inferenceGatewayBaseUrl", Value::String(base_url.to_owned())),
-            ("inferenceGatewayApiKey", Value::String(api_key.to_owned())),
-            ("inferenceGatewayAuthScheme", Value::String("bearer".to_owned())),
-        ],
-    )?
-    .into_iter()
-    .map(|k| format!("configLibrary/{CLAUDE_3P_ENTRY_ID}.json:{k}"))
-    .collect();
+    let mut updates = vec![
+        ("inferenceProvider", Value::String("gateway".to_owned())),
+        ("inferenceGatewayBaseUrl", Value::String(base_url.to_owned())),
+        ("inferenceGatewayApiKey", Value::String(api_key.to_owned())),
+        ("inferenceGatewayAuthScheme", Value::String("bearer".to_owned())),
+    ];
+    let selected_model = model.map(str::trim).filter(|model| !model.is_empty());
+    if let Some(model) = selected_model {
+        // Without an explicit list Claude Desktop falls back to the first model
+        // returned by /v1/models, which can silently select Opus instead of the
+        // model chosen in Niko.
+        updates.push((
+            "inferenceModels",
+            Value::Array(vec![Value::String(model.to_owned())]),
+        ));
+    }
+    let mut changed: Vec<String> = merge_json_keys(&entry_path, &updates)?
+        .into_iter()
+        .map(|k| format!("configLibrary/{CLAUDE_3P_ENTRY_ID}.json:{k}"))
+        .collect();
+    if selected_model.is_none() {
+        changed.extend(
+            remove_json_keys(&entry_path, &["inferenceModels"])?
+                .into_iter()
+                .map(|k| format!("configLibrary/{CLAUDE_3P_ENTRY_ID}.json:{k}")),
+        );
+    }
 
     let meta_path = dir.join("_meta.json");
     let _ = save_backup("claude-desktop", &meta_path);
@@ -922,6 +942,7 @@ impl Target for ClaudeDesktopTarget {
                 &dir,
                 &claude_base_url(&plan.base_url),
                 &plan.api_key,
+                plan.model.as_deref(),
             )?);
         }
 
@@ -2005,7 +2026,7 @@ mod tests {
         .unwrap();
 
         let changed =
-            claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+            claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None).unwrap();
         assert!(!changed.is_empty());
 
         let meta: Value =
@@ -2021,9 +2042,36 @@ mod tests {
         assert_eq!(effective, ("https://momotoken.win".to_owned(), "sk-niko".to_owned()));
 
         // 幂等：再次启用不产生变更
-        assert!(claude_managed_apply(&dir, "https://momotoken.win", "sk-niko")
+        assert!(claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn claude_managed_apply_pins_selected_model_for_3p() {
+        let dir = tmp_dir("claude_3p_model");
+
+        let changed = claude_managed_apply(
+            &dir,
+            "https://momotoken.win",
+            "sk-niko",
+            Some("claude-sonnet-5"),
+        )
+        .unwrap();
+        assert!(changed.iter().any(|key| key.ends_with(":inferenceModels")));
+
+        let entry: Value = serde_json::from_str(
+            &fs::read_to_string(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(entry["inferenceModels"], serde_json::json!(["claude-sonnet-5"]));
+
+        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None).unwrap();
+        let entry: Value = serde_json::from_str(
+            &fs::read_to_string(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(entry.get("inferenceModels").is_none());
     }
 
     /// 恢复官方默认要摘掉我们的条目，别家条目与其配置文件必须留着
@@ -2036,7 +2084,7 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("cc-switch-id.json"), r#"{"inferenceProvider":"gateway"}"#).unwrap();
-        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None).unwrap();
 
         let changed = claude_managed_restore(&dir).unwrap();
         assert!(!changed.is_empty());
@@ -2056,7 +2104,7 @@ mod tests {
     #[test]
     fn claude_managed_effective_follows_applied_id() {
         let dir = tmp_dir("claude_3p_effective");
-        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko").unwrap();
+        claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None).unwrap();
         fs::write(
             dir.join("cc-switch-id.json"),
             r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://deepkey.top","inferenceGatewayApiKey":"sk-other"}"#,
@@ -2505,7 +2553,7 @@ mod tests {
             model: Some("model-a".to_owned()),
             codex_mixed: false,
         };
-        claude_managed_apply(&dir, "https://gateway.example", key).unwrap();
+        claude_managed_apply(&dir, "https://gateway.example", key, None).unwrap();
         let record = crate::active_groups::record_for(
             "claude-desktop",
             "Group A",
