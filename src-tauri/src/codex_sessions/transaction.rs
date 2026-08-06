@@ -925,12 +925,6 @@ fn stage_codex_config(
             if let Some(model) = &input.model {
                 config.insert("model".into(), toml::Value::String(model.clone()));
             }
-            if !input.mixed {
-                config.insert(
-                    "model_reasoning_effort".into(),
-                    toml::Value::String("ultra".into()),
-                );
-            }
             for key in [
                 "model_context_window",
                 "model_auto_compact_token_limit",
@@ -955,13 +949,7 @@ fn stage_codex_config(
             if owns {
                 config.remove("model_provider");
                 config.remove("model");
-                if config
-                    .get("model_reasoning_effort")
-                    .and_then(toml::Value::as_str)
-                    == Some("ultra")
-                {
-                    config.remove("model_reasoning_effort");
-                }
+                // 推理档可能由用户设置，也可能来自旧版 Niko；两者无法可靠区分，恢复时保留。
             }
         }
     }

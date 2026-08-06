@@ -86,10 +86,6 @@ function cleanDisplayText(value: unknown, maxLength: number): string | null {
     || lower.includes("stack trace")
     || lower.includes("traceback")
     || lower.includes("panic")
-    || lower.includes("exception")
-    || lower.includes("error")
-    || text.includes("错误")
-    || text.includes("失败")
   ) return null;
   return text;
 }
