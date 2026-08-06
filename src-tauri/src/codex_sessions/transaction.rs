@@ -607,7 +607,7 @@ fn build_migration_plan(
             None,
         )
     })?;
-    reject_blocked_scan(&report)?;
+    reject_blocked_scan_for_threads(&report, request.thread_ids.as_ref())?;
 
     if let Some(thread_ids) = &request.thread_ids {
         if thread_ids.is_empty()
@@ -1178,15 +1178,35 @@ fn validate_root_marker(root: &Path) -> Result<(), MigrationError> {
     Ok(())
 }
 
-fn reject_blocked_scan(report: &ScanReport) -> Result<(), MigrationError> {
-    if !report.is_blocked() {
+fn diagnostic_applies_to_threads(
+    diagnostic: &super::Diagnostic,
+    selected: Option<&BTreeSet<String>>,
+) -> bool {
+    diagnostic.level == super::DiagnosticLevel::Blocker
+        && selected.is_none_or(|thread_ids| {
+            diagnostic
+                .thread_id
+                .as_ref()
+                .is_none_or(|thread_id| thread_ids.contains(thread_id))
+        })
+}
+
+fn reject_blocked_scan_for_threads(
+    report: &ScanReport,
+    selected: Option<&BTreeSet<String>>,
+) -> Result<(), MigrationError> {
+    if !report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic_applies_to_threads(diagnostic, selected))
+    {
         return Ok(());
     }
-    diagnose_scan_access_error(report)?;
+    diagnose_scan_access_error(report, selected)?;
     let codes = report
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.level == super::DiagnosticLevel::Blocker)
+        .filter(|diagnostic| diagnostic_applies_to_threads(diagnostic, selected))
         .map(|diagnostic| diagnostic.code)
         .collect::<BTreeSet<_>>();
     let (kind, code, message) = if codes.contains("sqlite_schema_unknown") {
@@ -1214,8 +1234,15 @@ fn reject_blocked_scan(report: &ScanReport) -> Result<(), MigrationError> {
     Err(migration_error(kind, code, message, None))
 }
 
-fn diagnose_scan_access_error(report: &ScanReport) -> Result<(), MigrationError> {
-    for diagnostic in &report.diagnostics {
+fn diagnose_scan_access_error(
+    report: &ScanReport,
+    selected: Option<&BTreeSet<String>>,
+) -> Result<(), MigrationError> {
+    for diagnostic in report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic_applies_to_threads(diagnostic, selected))
+    {
         let Some(path) = diagnostic.path.as_deref() else {
             continue;
         };
@@ -2912,7 +2939,8 @@ fn validate_new_state(
             None,
         )
     })?;
-    reject_blocked_scan(&report).map_err(|_| {
+    let selected = journal.thread_ids.as_ref();
+    reject_blocked_scan_for_threads(&report, selected).map_err(|_| {
         migration_error(
             MigrationErrorKind::ValidationFailed,
             "migration_validation_blocked",
@@ -2920,7 +2948,6 @@ fn validate_new_state(
             None,
         )
     })?;
-    let selected = journal.thread_ids.as_ref();
     let selected_rollout_mismatch = report.rollouts.iter().any(|rollout| {
         selected.map_or(
             rollout.provider != journal.target_provider,
@@ -2993,7 +3020,8 @@ fn validate_old_state(
             None,
         )
     })?;
-    reject_blocked_scan(&report).map_err(|_| {
+    let selected = journal.thread_ids.as_ref();
+    reject_blocked_scan_for_threads(&report, selected).map_err(|_| {
         migration_error(
             MigrationErrorKind::ValidationFailed,
             "migration_rollback_validation_blocked",

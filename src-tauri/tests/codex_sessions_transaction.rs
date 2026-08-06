@@ -668,6 +668,44 @@ fn selected_migration_leaves_unselected_threads_unchanged() {
 }
 
 #[test]
+fn selected_migration_can_skip_an_unselected_thread_blocker() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    Connection::open(&fixture.databases[1])
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2",
+            params![CUSTOM_PROVIDER, THREAD_B],
+        )
+        .unwrap();
+    fixture.request.thread_ids = Some(BTreeSet::from([THREAD_A.to_owned()]));
+
+    let before = scan_codex_sessions(&fixture.request.scan).unwrap();
+    assert!(before.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "thread_provider_mismatch"
+            && diagnostic.thread_id.as_deref() == Some(THREAD_B)
+    }));
+
+    let report =
+        migrate_codex_sessions_transactional(&fixture.request, MigrationProviderTarget::Custom)
+            .unwrap();
+    assert_eq!(report.outcome, MigrationOutcome::Committed);
+
+    let after = scan_codex_sessions(&fixture.request.scan).unwrap();
+    let selected = after
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == THREAD_A)
+        .unwrap();
+    let blocked = after
+        .threads
+        .iter()
+        .find(|thread| thread.thread_id == THREAD_B)
+        .unwrap();
+    assert_eq!(selected.providers, vec![CUSTOM_PROVIDER.to_owned()]);
+    assert_eq!(blocked.providers, vec![CUSTOM_PROVIDER.to_owned(), OFFICIAL_PROVIDER.to_owned()]);
+}
+
+#[test]
 fn provider_route_auth_and_sessions_commit_and_restore_together() {
     let mut fixture = create_fixture(OFFICIAL_PROVIDER);
     let api_key = "fixture-secret-must-not-enter-journal";

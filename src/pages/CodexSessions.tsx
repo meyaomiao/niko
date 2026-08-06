@@ -384,16 +384,19 @@ export default function CodexSessions() {
             <section className="nk-alert-danger" aria-label="会话检查状态">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="font-medium">会话检查暂时无法确认</p>
-                <span>{globalBlockers.length} 项</span>
+                <span className="text-[11px]">{globalBlockers.length} 项扫描阻塞</span>
               </div>
-              <div className="mt-2 space-y-2">
-                {globalBlockers.map((blocker, index) => (
-                  <div key={`${blocker.reason}-${index}`}>
-                    <p>{blocker.reason}</p>
-                    <p className="mt-0.5 opacity-80">下一步：{blocker.next_step}</p>
-                  </div>
-                ))}
-              </div>
+              <details className="mt-1.5">
+                <summary className="cursor-pointer text-[11px]">查看阻塞原因</summary>
+                <div className="mt-1.5 space-y-1.5">
+                  {globalBlockers.map((blocker, index) => (
+                    <div key={`${blocker.reason}-${index}`}>
+                      <p>{blocker.reason}</p>
+                      <p className="mt-0.5 opacity-80">下一步：{blocker.next_step}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button
                   onClick={() => void closeChatGptAndScan()}
@@ -422,7 +425,7 @@ export default function CodexSessions() {
                   <span>已选 {selectedIds.size} 个</span>
                   <button
                     onClick={togglePageSelection}
-                    disabled={selectableItems.length === 0 || migrating || opening !== null}
+                    disabled={selectableItems.length === 0 || migrating || opening !== null || page.status === "blocked"}
                     className="nk-btn-secondary whitespace-nowrap px-2.5"
                   >
                     {allSelectableSelected ? "取消全选" : "全选待同步"}

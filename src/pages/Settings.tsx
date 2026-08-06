@@ -330,10 +330,10 @@ export default function Settings() {
               <span className="nk-pill shrink-0">
                 {codexInventory
                   ? codexInventory.status === "healthy"
-                    ? "会话可续接"
-                    : codexInventory.status === "needs_check"
-                      ? "有会话待处理"
-                      : "有会话存在本地结构阻塞"
+                      ? "会话可续接"
+                      : codexInventory.status === "needs_check"
+                        ? "有会话待处理"
+                        : "会话检查暂时无法确认"
                   : "检查中"}
               </span>
             </div>

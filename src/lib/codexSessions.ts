@@ -268,7 +268,7 @@ export function acceptsResponse(
 export function codexNormalizationLabel(status: string): string {
   if (status === "healthy") return "本地检查通过，会话可续接";
   if (status === "needs_check") return "有会话待处理";
-  if (status === "blocked") return "有会话存在本地结构阻塞";
+  if (status === "blocked") return "会话检查暂时无法确认";
   return "状态待检查";
 }
 
