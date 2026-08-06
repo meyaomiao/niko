@@ -702,7 +702,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
+      <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         {/* 双列：左侧账户与应用，右侧模型选择，避免宽窗口下大量留白 */}
         <div className="mx-auto grid min-h-full max-w-[120rem] grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(19rem,32%)_minmax(0,1fr)]">
           <div className="flex min-h-0 flex-col gap-3 pr-0.5 md:overflow-y-auto">
