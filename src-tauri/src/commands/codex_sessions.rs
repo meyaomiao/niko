@@ -1,9 +1,10 @@
 use crate::codex_sessions::{
-    codex_migration_ids, migrate_codex_sessions_transactional, preflight_codex_session_migration,
-    recover_codex_migration_since, recover_codex_session_migrations, scan_codex_sessions,
-    CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationErrorKind, MigrationOptions,
-    MigrationOutcome, MigrationProviderTarget, MigrationRequest, NormalizationStatus, ScanReport,
-    ScanRequest, ThreadInventory, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
+    codex_migration_ids, migrate_codex_sessions_transactional_with_progress,
+    preflight_codex_session_migration, recover_codex_migration_since, recover_codex_session_migrations,
+    scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationErrorKind,
+    MigrationOptions, MigrationOutcome, MigrationProgress, MigrationProgressPhase,
+    MigrationProviderTarget, MigrationRequest, ScanReport, ScanRequest,
+    ThreadInventory, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
 };
 use crate::commands::safe_error::SafeCommandError;
 use serde::Serialize;
@@ -13,9 +14,11 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use tauri::Emitter;
 
 const QUERY_MAX: usize = 80;
 const PAGE_MAX: usize = 50;
+pub const CODEX_SESSION_SYNC_PROGRESS_EVENT: &str = "codex-session-sync-progress";
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct CodexSessionBlocker {
@@ -60,6 +63,15 @@ pub struct CodexSessionMutationOutcome {
     pub changed_artifacts: usize,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct CodexSessionSyncProgress {
+    pub phase: &'static str,
+    pub percent: u8,
+    pub processed: usize,
+    pub total: usize,
+    pub target_provider: &'static str,
+}
+
 pub(crate) fn mutation_outcome(
     status: &'static str,
     message: impl Into<String>,
@@ -75,6 +87,55 @@ pub(crate) fn mutation_outcome(
         failed: 0,
         changed_artifacts,
     }
+}
+
+fn progress_phase_name(phase: MigrationProgressPhase) -> &'static str {
+    match phase {
+        MigrationProgressPhase::Preparing => "preparing",
+        MigrationProgressPhase::BackingUp => "backing_up",
+        MigrationProgressPhase::Staging => "staging",
+        MigrationProgressPhase::Committing => "committing",
+        MigrationProgressPhase::Validating => "validating",
+        MigrationProgressPhase::Completed => "completed",
+    }
+}
+
+fn progress_percent(progress: MigrationProgress) -> u8 {
+    let ratio = if progress.total == 0 {
+        0
+    } else {
+        progress.completed.min(progress.total) * 100 / progress.total
+    };
+    match progress.phase {
+        MigrationProgressPhase::Preparing => 5,
+        MigrationProgressPhase::BackingUp => 10 + (ratio * 20 / 100) as u8,
+        MigrationProgressPhase::Staging => 30 + (ratio * 30 / 100) as u8,
+        MigrationProgressPhase::Committing => 60 + (ratio * 30 / 100) as u8,
+        MigrationProgressPhase::Validating => 95,
+        MigrationProgressPhase::Completed => 100,
+    }
+}
+
+fn emit_sync_progress(
+    app: &tauri::AppHandle,
+    target_provider: &str,
+    progress: MigrationProgress,
+) {
+    let target_provider = if target_provider == "openai" || target_provider == "official" {
+        "openai"
+    } else {
+        "custom"
+    };
+    let _ = app.emit(
+        CODEX_SESSION_SYNC_PROGRESS_EVENT,
+        CodexSessionSyncProgress {
+            phase: progress_phase_name(progress.phase),
+            percent: progress_percent(progress),
+            processed: progress.completed,
+            total: progress.total,
+            target_provider,
+        },
+    );
 }
 
 fn home_dir() -> PathBuf {
@@ -93,13 +154,29 @@ fn is_uuid_like(value: &str) -> bool {
         })
 }
 
-fn report_status(report: &ScanReport) -> &'static str {
-    if report.is_blocked() {
+fn has_global_blocker(report: &ScanReport) -> bool {
+    report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.level == DiagnosticLevel::Blocker && diagnostic.thread_id.is_none()
+    })
+}
+
+fn report_status_for_target(report: &ScanReport, target: MigrationProviderTarget) -> &'static str {
+    if has_global_blocker(report) {
         "blocked"
-    } else if report.normalization.status == NormalizationStatus::WouldNormalize {
-        "needs_check"
     } else {
-        "healthy"
+        let target_provider = migration_target_provider(target);
+        let needs_config = report.config.active_provider.as_deref() != Some(target_provider);
+        let needs_thread = report
+            .threads
+            .iter()
+            .any(|thread| thread_needs_migration_to(report, thread, target_provider));
+        if needs_thread || (needs_config && !report.is_blocked()) {
+            "needs_check"
+        } else if report.is_blocked() {
+            "blocked"
+        } else {
+            "healthy"
+        }
     }
 }
 
@@ -286,27 +363,32 @@ fn thread_needs_migration_to(
             || thread.providers.first().map(String::as_str) != Some(target_provider))
 }
 
-fn thread_needs_migration(report: &ScanReport, thread: &ThreadInventory) -> bool {
-    thread_needs_migration_to(report, thread, "custom")
+fn migration_target_provider(target: MigrationProviderTarget) -> &'static str {
+    match target {
+        MigrationProviderTarget::Custom => "custom",
+        MigrationProviderTarget::OpenAi => "openai",
+    }
 }
 
 fn migration_requested(report: &ScanReport, target: MigrationProviderTarget) -> usize {
-    let target_provider = match target {
-        MigrationProviderTarget::Custom => "custom",
-        MigrationProviderTarget::OpenAi => "openai",
-    };
+    migration_thread_ids(report, target).len()
+}
+
+fn migration_thread_ids(
+    report: &ScanReport,
+    target: MigrationProviderTarget,
+) -> BTreeSet<String> {
+    let target_provider = migration_target_provider(target);
     report
         .threads
         .iter()
         .filter(|thread| thread_needs_migration_to(report, thread, target_provider))
-        .count()
+        .map(|thread| thread.thread_id.clone())
+        .collect()
 }
 
 fn migration_provider_count(report: &ScanReport, target: MigrationProviderTarget) -> usize {
-    let target_provider = match target {
-        MigrationProviderTarget::Custom => "custom",
-        MigrationProviderTarget::OpenAi => "openai",
-    };
+    let target_provider = migration_target_provider(target);
     report
         .threads
         .iter()
@@ -317,11 +399,28 @@ fn migration_provider_count(report: &ScanReport, target: MigrationProviderTarget
         .count()
 }
 
+#[cfg(test)]
 fn page_from_report(
     report: &ScanReport,
     query: &str,
     page: usize,
     page_size: usize,
+) -> Result<CodexSessionPage, SafeCommandError> {
+    page_from_report_for_target(
+        report,
+        query,
+        page,
+        page_size,
+        MigrationProviderTarget::Custom,
+    )
+}
+
+fn page_from_report_for_target(
+    report: &ScanReport,
+    query: &str,
+    page: usize,
+    page_size: usize,
+    target: MigrationProviderTarget,
 ) -> Result<CodexSessionPage, SafeCommandError> {
     if page == 0 {
         return Err(SafeCommandError::invalid_request());
@@ -368,7 +467,11 @@ fn page_from_report(
                 provider: (thread.providers.len() == 1)
                     .then(|| session_provider_label(&thread.providers[0]).to_owned()),
                 can_continue: thread_is_healthy(report, thread),
-                needs_migration: thread_needs_migration(report, thread),
+                needs_migration: thread_needs_migration_to(
+                    report,
+                    thread,
+                    migration_target_provider(target),
+                ),
                 blockers: blockers_for_thread(report, thread),
             }
         })
@@ -383,7 +486,7 @@ fn page_from_report(
         }))
         .collect();
     Ok(CodexSessionPage {
-        status: report_status(report),
+        status: report_status_for_target(report, target),
         items,
         blockers,
         page,
@@ -398,6 +501,7 @@ pub async fn scan_codex_session_inventory(
     query: Option<String>,
     page: Option<usize>,
     page_size: Option<usize>,
+    target_provider: Option<String>,
 ) -> Result<CodexSessionPage, SafeCommandError> {
     let query = query.unwrap_or_default();
     if query.chars().count() > QUERY_MAX {
@@ -408,6 +512,7 @@ pub async fn scan_codex_session_inventory(
         return Err(SafeCommandError::invalid_request());
     }
     let page_size = page_size.unwrap_or(PAGE_MAX).clamp(1, PAGE_MAX);
+    let target = normalize_target(target_provider.as_deref().unwrap_or("custom"))?;
     let root = codex_home();
     if !root.exists() {
         if page > 1 {
@@ -428,7 +533,7 @@ pub async fn scan_codex_session_inventory(
     }
     let report = scan_codex_sessions(&ScanRequest::new(root))
         .map_err(|_| SafeCommandError::read_failed())?;
-    page_from_report(&report, &query, page, page_size)
+    page_from_report_for_target(&report, &query, page, page_size, target)
 }
 
 fn normalize_target(target: &str) -> Result<MigrationProviderTarget, SafeCommandError> {
@@ -458,6 +563,15 @@ fn mutation_request(codex: Option<CodexMigrationInput>) -> MigrationRequest {
             space_reserve_bytes: 1024 * 1024,
         },
     }
+}
+
+fn mutation_request_with_threads(
+    codex: Option<CodexMigrationInput>,
+    thread_ids: BTreeSet<String>,
+) -> MigrationRequest {
+    let mut request = mutation_request(codex);
+    request.thread_ids = Some(thread_ids);
+    request
 }
 
 fn authorize_codex_root(root: &PathBuf) -> Result<(), SafeCommandError> {
@@ -503,30 +617,67 @@ fn map_migration_error(kind: MigrationErrorKind, retryable: bool) -> SafeCommand
 pub(crate) fn normalize_codex_session_storage_inner(
     target_provider: String,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    normalize_codex_session_storage_with_input(target_provider, None)
+    let mut noop = |_progress: MigrationProgress| {};
+    normalize_codex_session_storage_with_input_and_progress(
+        target_provider,
+        None,
+        &mut noop,
+        false,
+    )
+}
+
+pub(crate) fn normalize_codex_session_storage_with_progress(
+    target_provider: String,
+    progress: &mut dyn FnMut(MigrationProgress),
+) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
+    normalize_codex_session_storage_with_input_and_progress(target_provider, None, progress, true)
 }
 
 pub(crate) fn normalize_codex_session_storage_with_input(
     target_provider: String,
     codex: Option<CodexMigrationInput>,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
+    let mut noop = |_progress: MigrationProgress| {};
+    normalize_codex_session_storage_with_input_and_progress(target_provider, codex, &mut noop, false)
+}
+
+pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
+    target_provider: String,
+    codex: Option<CodexMigrationInput>,
+    progress: &mut dyn FnMut(MigrationProgress),
+    allow_thread_blockers: bool,
+) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let target = normalize_target(&target_provider)?;
     let root = codex_home();
     if !root.exists() {
         if codex.is_none() {
+            progress(MigrationProgress {
+                phase: MigrationProgressPhase::Completed,
+                completed: 0,
+                total: 0,
+            });
             return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
         }
         fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
     }
     let scan = scan_codex_sessions(&ScanRequest::new(&root))
         .map_err(|_| SafeCommandError::read_failed())?;
-    if scan.is_blocked() {
+    let pending_thread_ids = migration_thread_ids(&scan, target);
+    if has_global_blocker(&scan)
+        || (!allow_thread_blockers && scan.is_blocked())
+        || (allow_thread_blockers && scan.is_blocked() && pending_thread_ids.is_empty())
+    {
         return Err(SafeCommandError::change_failed(false));
     }
     let requested = migration_requested(&scan, target);
     let planned_migrated = migration_provider_count(&scan, target);
     authorize_codex_root(&root)?;
-    match migrate_codex_sessions_transactional(&mutation_request(codex), target) {
+    let request = if allow_thread_blockers && !pending_thread_ids.is_empty() {
+        mutation_request_with_threads(codex, pending_thread_ids)
+    } else {
+        mutation_request(codex)
+    };
+    match migrate_codex_sessions_transactional_with_progress(&request, target, progress) {
         Ok(report) => {
             let migrated = (report.changed_artifacts > 0)
                 .then_some(planned_migrated)
@@ -573,9 +724,10 @@ fn normalize_selected_thread_ids(
     Ok(selected)
 }
 
-pub(crate) fn normalize_codex_session_storage_selected_inner(
+pub(crate) fn normalize_codex_session_storage_selected_with_progress(
     target_provider: String,
     thread_ids: Vec<String>,
+    progress: &mut dyn FnMut(MigrationProgress),
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let target = normalize_target(&target_provider)?;
     let selected = normalize_selected_thread_ids(thread_ids)?;
@@ -585,17 +737,16 @@ pub(crate) fn normalize_codex_session_storage_selected_inner(
     }
     let scan = scan_codex_sessions(&ScanRequest::new(&root))
         .map_err(|_| SafeCommandError::read_failed())?;
-    if scan.is_blocked() {
+    if has_global_blocker(&scan) {
         return Err(SafeCommandError::change_failed(false));
     }
-    if target != MigrationProviderTarget::Custom
-        || selected.iter().any(|thread_id| {
-            scan.threads
-                .iter()
-                .find(|thread| thread.thread_id == *thread_id)
-                .is_none_or(|thread| !thread_needs_migration(&scan, thread))
-        })
-    {
+    let target_name = migration_target_provider(target);
+    if selected.iter().any(|thread_id| {
+        scan.threads
+            .iter()
+            .find(|thread| thread.thread_id == *thread_id)
+            .is_none_or(|thread| !thread_needs_migration_to(&scan, thread, target_name))
+    }) {
         return Err(SafeCommandError::change_failed(false));
     }
     let requested = selected.len();
@@ -604,14 +755,14 @@ pub(crate) fn normalize_codex_session_storage_selected_inner(
         .filter(|thread_id| {
             scan.threads.iter().any(|thread| {
                 thread.thread_id == **thread_id
-                    && thread.providers.first().map(String::as_str) != Some("custom")
+                    && thread.providers.first().map(String::as_str) != Some(target_name)
             })
         })
         .count();
     authorize_codex_root(&root)?;
     let mut request = mutation_request(None);
     request.thread_ids = Some(selected);
-    match migrate_codex_sessions_transactional(&request, target) {
+    match migrate_codex_sessions_transactional_with_progress(&request, target, progress) {
         Ok(report) => {
             let migrated = (report.changed_artifacts > 0)
                 .then_some(planned_migrated)
@@ -619,8 +770,13 @@ pub(crate) fn normalize_codex_session_storage_selected_inner(
             let message = if report.changed_artifacts == 0 {
                 "选中的会话无需调整。".to_owned()
             } else {
+                let target_label = if target == MigrationProviderTarget::OpenAi {
+                    "官方模型服务"
+                } else {
+                    "Niko 模型服务"
+                };
                 format!(
-                    "已修复选中的会话：处理 {requested} 个，迁移 {migrated} 个，更新 {} 个文件。",
+                    "已同步选中的会话到 {target_label}：处理 {requested} 个，迁移 {migrated} 个，更新 {} 个文件。",
                     report.changed_artifacts
                 )
             };
@@ -688,19 +844,43 @@ pub(crate) fn prepare_codex_session_restart(
 
 #[tauri::command]
 pub async fn normalize_codex_session_storage(
+    app: tauri::AppHandle,
     target_provider: String,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
-    normalize_codex_session_storage_inner(target_provider)
+    let event_target = target_provider.clone();
+    emit_sync_progress(
+        &app,
+        &event_target,
+        MigrationProgress {
+            phase: MigrationProgressPhase::Preparing,
+            completed: 0,
+            total: 0,
+        },
+    );
+    let mut progress = |value: MigrationProgress| emit_sync_progress(&app, &event_target, value);
+    normalize_codex_session_storage_with_progress(target_provider, &mut progress)
 }
 
 #[tauri::command]
 pub async fn normalize_codex_session_storage_selected(
+    app: tauri::AppHandle,
     target_provider: String,
     thread_ids: Vec<String>,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
-    normalize_codex_session_storage_selected_inner(target_provider, thread_ids)
+    let event_target = target_provider.clone();
+    emit_sync_progress(
+        &app,
+        &event_target,
+        MigrationProgress {
+            phase: MigrationProgressPhase::Preparing,
+            completed: 0,
+            total: 0,
+        },
+    );
+    let mut progress = |value: MigrationProgress| emit_sync_progress(&app, &event_target, value);
+    normalize_codex_session_storage_selected_with_progress(target_provider, thread_ids, &mut progress)
 }
 
 fn open_url(url: &str) -> Result<(), ()> {
@@ -761,7 +941,7 @@ fn open_codex_thread_checked(thread_id: &str) -> Result<(), SafeCommandError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::codex_sessions::Diagnostic;
+    use crate::codex_sessions::{Diagnostic, NormalizationStatus};
     use super::*;
 
     #[test]
@@ -988,6 +1168,57 @@ mod tests {
         official_report.threads[PAGE_MAX].providers = vec!["openai".into()];
         let official_page = page_from_report(&official_report, "", 1, PAGE_MAX).unwrap();
         assert!(official_page.items.iter().any(|item| item.needs_migration));
+        let official_target_page = page_from_report_for_target(
+            &official_report,
+            "",
+            1,
+            PAGE_MAX,
+            MigrationProviderTarget::OpenAi,
+        )
+        .unwrap();
+        assert_eq!(official_target_page.status, "needs_check");
+        assert!(official_target_page.items.iter().all(|item| item.needs_migration));
+
+        let blocked_id = official_report.threads[PAGE_MAX - 1].thread_id.clone();
+        let mut partially_blocked_report = official_report.clone();
+        partially_blocked_report.diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Blocker,
+            code: "thread_provider_mismatch",
+            message: "thread-local provider mismatch".into(),
+            path: None,
+            thread_id: Some(blocked_id.clone()),
+        });
+        let partially_blocked_page = page_from_report_for_target(
+            &partially_blocked_report,
+            "",
+            1,
+            PAGE_MAX,
+            MigrationProviderTarget::OpenAi,
+        )
+        .unwrap();
+        assert_eq!(partially_blocked_page.status, "needs_check");
+        assert!(partially_blocked_page.items.iter().any(|item| {
+            item.thread_id == blocked_id && !item.needs_migration
+        }));
+        assert!(partially_blocked_page.items.iter().any(|item| item.needs_migration));
+
+        let mut globally_blocked_report = official_report.clone();
+        globally_blocked_report.diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Blocker,
+            code: "config_toml_invalid",
+            message: "global configuration blocker".into(),
+            path: None,
+            thread_id: None,
+        });
+        let globally_blocked_page = page_from_report_for_target(
+            &globally_blocked_report,
+            "",
+            1,
+            PAGE_MAX,
+            MigrationProviderTarget::OpenAi,
+        )
+        .unwrap();
+        assert_eq!(globally_blocked_page.status, "blocked");
 
         let mut empty_report = report;
         empty_report.threads.clear();
