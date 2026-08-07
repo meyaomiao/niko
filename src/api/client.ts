@@ -3,6 +3,7 @@
 import { APP_VERSION } from "../lib/version";
 
 const BASE_URL = "https://momotoken.win";
+const API_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface SiteConfig {
   system_name: string;
@@ -121,14 +122,26 @@ export interface BootstrapData {
 async function post<T>(path: string, body: unknown, token?: string): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${BASE_URL}/api${path}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  const json = await res.json() as { success: boolean; message?: string; data?: T };
-  if (!json.success) throw new Error(json.message ?? "请求失败");
-  return (json.data ?? json) as T;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${BASE_URL}/api${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const json = await res.json() as { success: boolean; message?: string; data?: T };
+    if (!json.success) throw new Error(json.message ?? "请求失败");
+    return (json.data ?? json) as T;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("模型服务请求超时，请检查网络或服务状态后重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /** 登录请求：需要在失败分支识别 E_DEVICE_LIMIT 并取出回带的设备列表 */

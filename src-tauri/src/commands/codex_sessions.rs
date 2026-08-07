@@ -1,6 +1,4 @@
-use crate::codex_sessions::{
-    codex_migration_ids, migrate_codex_sessions_transactional_with_progress,
-    preflight_codex_session_migration, recover_codex_migration_since, recover_codex_session_migrations,
+use crate::codex_sessions::{ migrate_codex_sessions_transactional_with_progress, recover_codex_migration_since, recover_codex_session_migrations,
     scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationErrorKind,
     MigrationOptions, MigrationOutcome, MigrationProgress, MigrationProgressPhase,
     MigrationProviderTarget, MigrationRequest, ScanReport, ScanRequest,
@@ -574,10 +572,6 @@ fn normalize_target(target: &str) -> Result<MigrationProviderTarget, SafeCommand
     }
 }
 
-fn restart_needs_normalization(active_provider: Option<&str>) -> bool {
-    active_provider != Some("openai")
-}
-
 fn mutation_request(codex: Option<CodexMigrationInput>) -> MigrationRequest {
     MigrationRequest {
         scan: ScanRequest::new(codex_home()),
@@ -604,12 +598,6 @@ fn mutation_request_with_threads(
     request
 }
 
-fn mutation_request_configuration(codex: Option<CodexMigrationInput>) -> MigrationRequest {
-    let mut request = mutation_request(codex);
-    // An empty selection means that only config.toml/auth.json may be changed.
-    request.thread_ids = Some(BTreeSet::new());
-    request
-}
 
 fn authorize_codex_root(root: &PathBuf) -> Result<(), SafeCommandError> {
     let marker = root.join(MIGRATION_ROOT_MARKER);
@@ -651,52 +639,12 @@ fn map_migration_error(kind: MigrationErrorKind, retryable: bool) -> SafeCommand
     }
 }
 
-pub(crate) fn normalize_codex_session_storage_inner(
-    target_provider: String,
-) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    let mut noop = |_progress: MigrationProgress| {};
-    normalize_codex_session_storage_with_input_and_progress(
-        target_provider,
-        None,
-        &mut noop,
-        true,
-    )
-}
 
 pub(crate) fn normalize_codex_session_storage_with_progress(
     target_provider: String,
     progress: &mut dyn FnMut(MigrationProgress),
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
     normalize_codex_session_storage_with_input_and_progress(target_provider, None, progress, true)
-}
-
-pub(crate) fn apply_codex_configuration(
-    target_provider: String,
-    codex: Option<CodexMigrationInput>,
-) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    let target = normalize_target(&target_provider)?;
-    let root = codex_home();
-    if !root.exists() {
-        fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
-    }
-    authorize_codex_root(&root)?;
-    let request = mutation_request_configuration(codex);
-    let mut noop = |_progress: MigrationProgress| {};
-    migrate_codex_sessions_transactional_with_progress(&request, target, &mut noop)
-        .map(|report| {
-            if report.changed_artifacts == 0 {
-                mutation_outcome("unchanged", "模型配置无需调整。", 0, 0, 0)
-            } else {
-                mutation_outcome(
-                    "applied",
-                    "模型配置已写入。",
-                    0,
-                    0,
-                    report.changed_artifacts,
-                )
-            }
-        })
-        .map_err(|error| map_migration_error(error.kind, error.retryable))
 }
 
 pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
@@ -873,21 +821,6 @@ pub(crate) fn normalize_codex_session_storage_selected_with_progress(
     }
 }
 
-pub(crate) fn preflight_codex_configuration(
-    target_provider: String,
-    codex: Option<CodexMigrationInput>,
-) -> Result<Vec<String>, SafeCommandError> {
-    let target = normalize_target(&target_provider)?;
-    let root = codex_home();
-    if !root.exists() {
-        fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
-    }
-    authorize_codex_root(&root)?;
-    let request = mutation_request_configuration(codex);
-    preflight_codex_session_migration(&request, target)
-        .map_err(|error| map_migration_error(error.kind, error.retryable))?;
-    codex_migration_ids(&request).map_err(|error| map_migration_error(error.kind, error.retryable))
-}
 
 pub(crate) fn recover_codex_session_storage_since(
     known_ids: &[String],
@@ -907,30 +840,12 @@ pub(crate) fn recover_codex_session_storage() -> Result<(), SafeCommandError> {
         .map_err(|error| map_migration_error(error.kind, error.retryable))
 }
 
-pub(crate) fn prepare_codex_session_restart(
-) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
-    let root = codex_home();
-    if !root.exists() {
-        return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
-    }
-    let report = scan_codex_sessions(&ScanRequest::new(root))
-        .map_err(|_| SafeCommandError::read_failed())?;
-    if report.is_blocked() {
-        return Err(SafeCommandError::change_failed(false));
-    }
-    if !restart_needs_normalization(report.config.active_provider.as_deref()) {
-        return Ok(mutation_outcome("unchanged", "当前状态无需调整。", 0, 0, 0));
-    }
-    normalize_codex_session_storage_inner("custom".to_owned())
-}
-
 #[tauri::command]
 pub async fn normalize_codex_session_storage(
     app: tauri::AppHandle,
     target_provider: String,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
+    let _guard = crate::commands::targets::lock_and_recover_provider_transaction_for_sessions()?;
     let event_target = target_provider.clone();
     emit_sync_progress(
         &app,
@@ -951,7 +866,7 @@ pub async fn normalize_codex_session_storage_selected(
     target_provider: String,
     thread_ids: Vec<String>,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
-    let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
+    let _guard = crate::commands::targets::lock_and_recover_provider_transaction_for_sessions()?;
     let event_target = target_provider.clone();
     emit_sync_progress(
         &app,
@@ -1039,13 +954,6 @@ mod tests {
         assert_eq!(normalize_selected_thread_ids(vec![id.clone(), id]).unwrap().len(), 1);
         assert!(normalize_selected_thread_ids(vec!["not-a-uuid".to_owned()]).is_err());
         assert!(normalize_selected_thread_ids(Vec::new()).is_err());
-    }
-
-    #[test]
-    fn restart_keeps_official_route_unchanged() {
-        assert!(!restart_needs_normalization(Some("openai")));
-        assert!(restart_needs_normalization(Some("custom")));
-        assert!(restart_needs_normalization(Some("momotoken")));
     }
 
     #[test]

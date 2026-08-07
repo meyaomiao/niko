@@ -5,13 +5,8 @@ use crate::active_groups::{
 };
 use crate::codex_sessions::{
     atomic_replace_file as atomic_replace_codex_file, sync_parent as sync_codex_parent,
-    CodexMigrationInput,
 };
-use crate::commands::codex_sessions::{
-    apply_codex_configuration, normalize_codex_session_storage_inner,
-    normalize_codex_session_storage_with_progress,
-    preflight_codex_configuration, recover_codex_session_storage_since,
-};
+use crate::commands::codex_sessions::recover_codex_session_storage_since;
 use crate::commands::safe_error::SafeCommandError;
 use crate::targets::{all_targets, preflight_target_apply, transaction_paths, ApplyPlan};
 use serde::{de::Deserializer, Deserialize, Serialize};
@@ -502,6 +497,11 @@ fn recover_provider_transaction_at(
     validate_provider_transaction_manifest(&manifest, paths)?;
     match manifest.phase {
         ProviderTransactionPhase::Committed => finish_provider_transaction_at(root),
+        ProviderTransactionPhase::CodexStarted if manifest.known_codex_transactions.is_empty() => {
+            // 配置专用事务不再创建 Codex 会话迁移子事务；恢复旧记录时，
+            // 只回滚外层状态，不能重新触发全量会话恢复。
+            restore_provider_transaction_at(root, paths, &manifest)
+        }
         ProviderTransactionPhase::CodexStarted => {
             if recover_codex(&manifest.known_codex_transactions)? == Some(true) {
                 finish_provider_transaction_at(root)
@@ -517,7 +517,22 @@ fn recover_provider_transaction_at(
     }
 }
 
-fn recover_provider_transaction() -> Result<(), SafeCommandError> {
+fn recover_provider_transaction_without_sessions() -> Result<(), SafeCommandError> {
+    let root = provider_transaction_root();
+    if !root.exists() {
+        return Ok(());
+    }
+    let bytes =
+        fs::read(root.join("manifest.json")).map_err(|_| SafeCommandError::change_failed(false))?;
+    let manifest: ProviderTransactionManifest =
+        serde_json::from_slice(&bytes).map_err(|_| SafeCommandError::change_failed(false))?;
+    validate_provider_transaction_shape(&manifest)?;
+    let paths = manifest_transaction_paths(&manifest)?;
+    validate_provider_transaction_manifest(&manifest, &paths)?;
+    recover_provider_transaction_at(&root, &paths, |_known| Err(SafeCommandError::busy()))
+}
+
+fn recover_provider_transaction_with_sessions() -> Result<(), SafeCommandError> {
     let root = provider_transaction_root();
     if !root.exists() {
         return Ok(());
@@ -537,7 +552,16 @@ pub(crate) fn lock_and_recover_provider_transaction(
     let guard = PROVIDER_TRANSACTION_LOCK
         .try_lock()
         .map_err(|_| SafeCommandError::busy())?;
-    recover_provider_transaction()?;
+    recover_provider_transaction_without_sessions()?;
+    Ok(guard)
+}
+
+pub(crate) fn lock_and_recover_provider_transaction_for_sessions(
+) -> Result<MutexGuard<'static, ()>, SafeCommandError> {
+    let guard = PROVIDER_TRANSACTION_LOCK
+        .try_lock()
+        .map_err(|_| SafeCommandError::busy())?;
+    recover_provider_transaction_with_sessions()?;
     Ok(guard)
 }
 
@@ -605,18 +629,6 @@ fn write_active_records(
         write_record_at(&home, record).map_err(|_| SafeCommandError::change_failed(false))?;
     }
     Ok(())
-}
-
-fn synchronize_codex_sessions_best_effort(known_transactions: &[String]) -> Option<String> {
-    let mut noop = |_progress: crate::codex_sessions::MigrationProgress| {};
-    match normalize_codex_session_storage_with_progress("custom".to_owned(), &mut noop) {
-        Ok(outcome) if outcome.failed > 0 => Some(outcome.message),
-        Ok(_) => None,
-        Err(_) => {
-            let _ = recover_codex_session_storage_since(known_transactions);
-            Some("模型配置已生效，会话同步暂未完成，请到会话管理中单独处理。".to_owned())
-        }
-    }
 }
 
 fn clear_active_records(target_ids: &[String]) -> Result<(), SafeCommandError> {
@@ -747,14 +759,8 @@ pub async fn apply_target(req: ApplyRequest) -> Result<ApplyResult, SafeCommandE
         .ok_or_else(SafeCommandError::invalid_request)?;
     let target_ids = vec![req.target_id.clone()];
     let records = records_for_plan(&target_ids, &plan)?;
-    let codex_input = CodexMigrationInput {
-        base_url: Some(plan.base_url.clone()),
-        api_key: Some(plan.api_key.clone()),
-        model: plan.model.clone(),
-        mixed: plan.codex_mixed,
-    };
     let known_codex_transactions = if req.target_id == "codex" {
-        preflight_codex_configuration("custom".to_owned(), Some(codex_input.clone()))?
+        Vec::new()
     } else {
         preflight_target_apply(&req.target_id)
             .map_err(|_| SafeCommandError::change_failed(false))?;
@@ -781,33 +787,19 @@ pub async fn apply_target(req: ApplyRequest) -> Result<ApplyResult, SafeCommandE
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
-        let config_outcome = match apply_codex_configuration(
-            "custom".to_owned(),
-            Some(codex_input),
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
-                    Ok(Some(true)) => {
-                        crate::commands::codex_sessions::mutation_outcome(
-                            "applied",
-                            "已完成检查，可以继续使用。",
-                            0,
-                            0,
-                            0,
-                        )
-                    }
-                    Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
-                    Err(recovery_error) => return Err(recovery_error),
-                }
+        let summary = match target.apply(&plan) {
+            Ok(summary) => summary,
+            Err(_) => {
+                return Err(rollback_provider_transaction(
+                    &manifest,
+                    SafeCommandError::change_failed(true),
+                ))
             }
         };
-        let warning = synchronize_codex_sessions_best_effort(&manifest.known_codex_transactions);
-        let changed = if config_outcome.status == "unchanged" && warning.is_none() {
-            Vec::new()
-        } else {
-            vec!["codex".to_owned()]
-        };
+        let warning = Some(
+            "模型配置已生效；历史会话同步请在会话管理页面单独执行。".to_owned(),
+        );
+        let changed = summary.changed_keys;
         commit_provider_transaction(&mut manifest)?;
         ApplyResult { changed, warning }
     } else {
@@ -873,14 +865,8 @@ pub async fn apply_all_targets(
         target_ids.push("claude-desktop".to_owned());
     }
     let records = records_for_plan(&target_ids, &plan)?;
-    let codex_input = CodexMigrationInput {
-        base_url: Some(plan.base_url.clone()),
-        api_key: Some(plan.api_key.clone()),
-        model: plan.model.clone(),
-        mixed: plan.codex_mixed,
-    };
     let known_codex_transactions = if codex.is_some() {
-        preflight_codex_configuration("custom".to_owned(), Some(codex_input.clone()))?
+        Vec::new()
     } else {
         Vec::new()
     };
@@ -924,40 +910,27 @@ pub async fn apply_all_targets(
         None
     };
 
-    let codex_result = if codex.is_some() {
+    let codex_result = if let Some(codex) = codex {
         manifest.phase = ProviderTransactionPhase::CodexStarted;
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
-        let config_outcome = match apply_codex_configuration(
-            "custom".to_owned(),
-            Some(codex_input),
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
-                    Ok(Some(true)) => crate::commands::codex_sessions::mutation_outcome(
-                        "applied",
-                        "已完成配置写入，可以继续使用。",
-                        0,
-                        0,
-                        0,
-                    ),
-                    Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
-                    Err(recovery_error) => return Err(recovery_error),
-                }
+        let summary = match codex.apply(&plan) {
+            Ok(summary) => summary,
+            Err(_) => {
+                return Err(rollback_provider_transaction(
+                    &manifest,
+                    SafeCommandError::change_failed(true),
+                ))
             }
         };
-        let warning = synchronize_codex_sessions_best_effort(&manifest.known_codex_transactions);
-        let changed = if config_outcome.status == "unchanged" && warning.is_none() {
-            Vec::<String>::new()
-        } else {
-            vec!["codex".to_owned()]
-        };
+        let warning = Some(
+            "模型配置已生效；历史会话同步请在会话管理页面单独执行。".to_owned(),
+        );
         Some(serde_json::json!({
             "id": "codex",
             "ok": true,
-            "changed": changed,
+            "changed": summary.changed_keys,
             "warning": warning,
         }))
     } else {
@@ -1156,17 +1129,15 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
         .find(|target| target.id() == target_id)
         .ok_or_else(SafeCommandError::invalid_request)?;
     let target_ids = vec![target_id.clone()];
-    let known_codex_transactions = if target_id == "codex" {
-        preflight_codex_configuration("openai".to_owned(), None)?
-    } else {
-        preflight_target_apply(&target_id).map_err(|_| SafeCommandError::change_failed(false))?;
-        Vec::new()
-    };
+    if target_id != "codex" {
+        preflight_target_apply(&target_id)
+            .map_err(|_| SafeCommandError::change_failed(false))?;
+    }
     let paths = provider_transaction_paths_for_targets(&target_ids)?;
     let mut manifest = begin_provider_transaction_at_with_targets(
         &provider_transaction_root(),
         &paths,
-        known_codex_transactions,
+        Vec::new(),
         Some(target_ids.clone()),
     )?;
     if let Err(error) = clear_active_records(&target_ids) {
@@ -1176,43 +1147,12 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
     if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
         return Err(rollback_provider_transaction(&manifest, error));
     }
-
     if target_id == "codex" {
         manifest.phase = ProviderTransactionPhase::CodexStarted;
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
-        let outcome = match normalize_codex_session_storage_inner("openai".to_owned()) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                match recover_codex_session_storage_since(&manifest.known_codex_transactions) {
-                    Ok(Some(true)) => {
-                        crate::commands::codex_sessions::mutation_outcome(
-                            "applied",
-                            "已恢复到官方，可以继续使用。",
-                            0,
-                            0,
-                            0,
-                        )
-                    }
-                    Ok(_) => return Err(rollback_provider_transaction(&manifest, error)),
-                    Err(recovery_error) => return Err(recovery_error),
-                }
-            }
-        };
-        commit_provider_transaction(&mut manifest)?;
-        let changed = if outcome.status == "unchanged" {
-            Vec::new()
-        } else {
-            vec!["codex".to_owned()]
-        };
-        crate::logx::append(
-            "restore_target_defaults",
-            &format!("{target_id} changed={changed:?}"),
-        );
-        return Ok(changed);
     }
-
     let summary = match crate::targets::restore_defaults(&target_id) {
         Ok(summary) => summary,
         Err(_) => {
@@ -1222,9 +1162,11 @@ pub async fn restore_target_defaults(target_id: String) -> Result<Vec<String>, S
             ))
         }
     };
-    manifest.phase = ProviderTransactionPhase::ClaudeApplied;
-    if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
-        return Err(rollback_provider_transaction(&manifest, error));
+    if target_id != "codex" {
+        manifest.phase = ProviderTransactionPhase::ClaudeApplied;
+        if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
+            return Err(rollback_provider_transaction(&manifest, error));
+        }
     }
     commit_provider_transaction(&mut manifest)?;
     crate::logx::append(

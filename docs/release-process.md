@@ -128,3 +128,15 @@ xcrun stapler validate \
 - [ ] updater 签名文件和 SHA256 完整
 - [ ] `latest.json` 同时包含两个平台且 URL 可访问
 - [ ] Draft Release 附件检查无误后才正式发布
+
+## 5. 更新官网首页
+
+官网首页的版本号、Release tag 和下载文件名由 `src-tauri/tauri.conf.json` 的版本自动生成。每次正式 Release 创建并验证完成后，在本机执行：
+
+```bash
+cd website
+npm run check
+npm run deploy
+```
+
+部署前应确认 `npm run check` 已将首页下载链接更新到本次 Release；部署后访问 `https://niko-ai.cc/`，确认首页版本号、macOS/Windows 下载链接和 Release Notes 链接均指向当前版本。不得只更新 GitHub Release 而跳过官网部署。

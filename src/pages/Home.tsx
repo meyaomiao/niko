@@ -41,6 +41,16 @@ import {
 import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
 
 const RELAY_BASE_URL = "https://momotoken.win/v1";
+const DESKTOP_APPLY_TIMEOUT_MS = 30_000;
+
+function withDesktopApplyTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error("桌面应用配置写入超时，请重试；会话同步需要在会话管理页面单独执行"));
+    }, DESKTOP_APPLY_TIMEOUT_MS);
+    promise.then(resolve, reject).finally(() => clearTimeout(timeoutId));
+  });
+}
 /// 记住上次配置的应用，多应用用户不必每次重选
 const TARGET_STORAGE_KEY = "niko_last_target";
 /// 应用选择里代表「全部已安装应用」的哨兵值
@@ -487,22 +497,34 @@ export default function Home() {
     setNotice(null);
     setResults({});
     try {
-      const res = await api.provision(auth.accessToken, group);
-      saveAuth({ ...auth, apiKey: res.api_key });
+      setNotice({ ok: true, text: "正在申请模型密钥…" });
+      let apiKey = auth.apiKey;
+      let reusedSavedApiKey = false;
+      try {
+        const res = await api.provision(auth.accessToken, group);
+        apiKey = res.api_key;
+        saveAuth({ ...auth, apiKey, apiKeyGroup: group });
+      } catch (error) {
+        if (!apiKey || auth.apiKeyGroup !== group) throw error;
+        reusedSavedApiKey = true;
+        setNotice({ ok: true, text: "模型服务暂时无法刷新密钥，使用当前已保存密钥写入配置…" });
+      }
+      if (!apiKey) throw new Error("没有可用的模型密钥，请待模型服务恢复后重试");
+      if (!reusedSavedApiKey) setNotice({ ok: true, text: "模型密钥已取得，正在写入桌面配置…" });
 
       if (targetId === ALL_TARGETS) {
-        const applied = await invoke<
+        const applied = await withDesktopApplyTimeout(invoke<
           Array<{ id: string; ok: boolean; changed?: string[]; error?: string; warning?: string }>
         >(
           "apply_all_targets",
           {
             baseUrl: RELAY_BASE_URL,
-            apiKey: res.api_key,
+            apiKey,
             modelGroup: group,
             model: model || null,
             codexMixed: codexMixed,
           }
-        );
+        ));
         const map: Record<string, ApplyResult> = {};
         applied.forEach((r) => {
           map[r.id] = {
@@ -533,16 +555,16 @@ export default function Home() {
               }
         );
       } else {
-        const applied = await invoke<{ changed: string[]; warning?: string }>("apply_target", {
+        const applied = await withDesktopApplyTimeout(invoke<{ changed: string[]; warning?: string }>("apply_target", {
           req: {
             target_id: targetId,
             base_url: RELAY_BASE_URL,
-            api_key: res.api_key,
+            api_key: apiKey,
             model_group: group || null,
             model: model || null,
             codex_mixed: codexMixed,
           },
-        });
+        }));
         setResults({ [targetId]: { ok: true, changed: applied.changed, warning: applied.warning } });
         setNotice({
           ok: true,

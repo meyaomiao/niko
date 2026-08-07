@@ -715,6 +715,7 @@ export default function Login() {
         balanceUpdatedAt: balance?.updatedAt,
         defaultGroup: bootstrap.user.group,
         apiKey: provision.api_key,
+        apiKeyGroup: bootstrap.user.group,
         remember: rememberSession,
       });
       navigate("/home");

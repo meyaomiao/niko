@@ -8,6 +8,8 @@ export interface AuthState {
   /** 账户默认推荐分组；不代表任一目标应用当前生效的分组。 */
   defaultGroup: string;
   apiKey: string;
+  /** 分组申请得到的 apiKey 所属分组；与账户默认推荐分组分开保存。 */
+  apiKeyGroup?: string;
   remember: boolean;
 }
 

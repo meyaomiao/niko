@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
@@ -9,6 +9,17 @@ const repository = resolve(website, "..");
 const brand = join(repository, "brand/niko-logo-kit-c");
 const source = join(website, "src");
 const output = join(website, "dist");
+const appConfig = JSON.parse(readFileSync(join(repository, "src-tauri/tauri.conf.json"), "utf8"));
+const version = appConfig.version;
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  throw new Error(`Invalid Niko app version: ${version}`);
+}
+const releaseTag = `niko-v${version}`;
+const releaseAssets = {
+  macDmg: `Niko_${version}_universal.dmg`,
+  windowsExe: `Niko_${version}_x64-setup.exe`,
+  windowsMsi: `Niko_${version}_x64_en-US.msi`
+};
 
 rmSync(output, { recursive: true, force: true });
 cpSync(source, output, { recursive: true });
@@ -73,22 +84,33 @@ for (const filename of [
   }
 }
 
-const html = readFileSync(join(output, "index.html"), "utf8");
+const indexPath = join(output, "index.html");
+const html = readFileSync(indexPath, "utf8")
+  .replaceAll("__NIKO_VERSION__", version)
+  .replaceAll("__NIKO_RELEASE_TAG__", releaseTag)
+  .replaceAll("__NIKO_MAC_DMG__", releaseAssets.macDmg)
+  .replaceAll("__NIKO_WINDOWS_EXE__", releaseAssets.windowsExe)
+  .replaceAll("__NIKO_WINDOWS_MSI__", releaseAssets.windowsMsi);
+writeFileSync(indexPath, html);
 for (const required of [
   'src="/assets/niko-wordmark.svg"',
   'href="/login/"',
   'href="/account/"',
   "https://niko-ai.cc/",
   "github.com/meyaomiao/niko/releases",
-  "Niko_0.1.3_universal.dmg",
-  "Niko_0.1.3_x64-setup.exe",
+  releaseAssets.macDmg,
+  releaseAssets.windowsExe,
   'data-hero-download="macos"',
   'data-hero-download="windows"',
-  '"softwareVersion": "0.1.3"'
+  `"softwareVersion": "${version}"`
 ]) {
   if (!html.includes(required)) {
     throw new Error(`Website is missing required content: ${required}`);
   }
+}
+
+if (html.includes("__NIKO_") || html.includes("0.1.3")) {
+  throw new Error("Website contains unreplaced or stale release placeholders");
 }
 
 console.log("Built Niko website in website/dist");

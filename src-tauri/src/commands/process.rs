@@ -116,17 +116,8 @@ pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCom
         }
     }
 
-    restart_after_close(
-        || {
-            if target_id == "codex" {
-                crate::commands::codex_sessions::prepare_codex_session_restart().map(|_| ())
-            } else {
-                Ok(())
-            }
-        },
-        || launch_app(&path).map_err(|_| ()),
-        was_running,
-    )
+    // 重启只负责重启目标应用；会话同步由会话管理页显式执行，不能阻塞启动。
+    restart_after_close(|| Ok(()), || launch_app(&path).map_err(|_| ()), was_running)
 }
 
 /// 请求目标应用正常退出，不改动应用配置或会话内容。
