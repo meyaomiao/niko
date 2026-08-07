@@ -60,6 +60,7 @@ interface ApplyResult {
   ok: boolean;
   changed?: string[];
   error?: string;
+  warning?: string;
 }
 
 function formatTime(ts: number): string {
@@ -490,7 +491,9 @@ export default function Home() {
       saveAuth({ ...auth, apiKey: res.api_key });
 
       if (targetId === ALL_TARGETS) {
-        const applied = await invoke<Array<{ id: string; ok: boolean; changed?: string[]; error?: string }>>(
+        const applied = await invoke<
+          Array<{ id: string; ok: boolean; changed?: string[]; error?: string; warning?: string }>
+        >(
           "apply_all_targets",
           {
             baseUrl: RELAY_BASE_URL,
@@ -502,13 +505,21 @@ export default function Home() {
         );
         const map: Record<string, ApplyResult> = {};
         applied.forEach((r) => {
-          map[r.id] = { ok: r.ok, changed: r.changed, error: r.error ? friendlyDesktopError(r.error) : undefined };
+          map[r.id] = {
+            ok: r.ok,
+            changed: r.changed,
+            error: r.error ? friendlyDesktopError(r.error) : undefined,
+            warning: r.warning,
+          };
         });
         setResults(map);
         const okCount = applied.filter((r) => r.ok).length;
         const errors = applied
           .filter((result) => !result.ok && result.error)
           .map((result) => friendlyDesktopError(result.error));
+        const warnings = applied
+          .filter((result) => result.ok && result.warning)
+          .map((result) => result.warning);
         setNotice(
           applied.length === 0
             ? { ok: false, text: "没有找到已安装的应用，请先安装 ChatGPT 或 Claude。" }
@@ -516,11 +527,13 @@ export default function Home() {
                 ok: okCount === applied.length,
                 text: errors.length > 0
                   ? `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}；${errors.join("；")}`
-                  : `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}`,
+                  : warnings.length > 0
+                    ? `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}；${warnings.join("；")}`
+                    : `已为 ${okCount}/${applied.length} 个应用接入 ${model || group}`,
               }
         );
       } else {
-        const changed = await invoke<string[]>("apply_target", {
+        const applied = await invoke<{ changed: string[]; warning?: string }>("apply_target", {
           req: {
             target_id: targetId,
             base_url: RELAY_BASE_URL,
@@ -530,8 +543,13 @@ export default function Home() {
             codex_mixed: codexMixed,
           },
         });
-        setResults({ [targetId]: { ok: true, changed } });
-        setNotice({ ok: true, text: `已为 ${targetLabel} 接入 ${model || group}` });
+        setResults({ [targetId]: { ok: true, changed: applied.changed, warning: applied.warning } });
+        setNotice({
+          ok: true,
+          text: applied.warning
+            ? `已为 ${targetLabel} 接入 ${model || group}；${applied.warning}`
+            : `已为 ${targetLabel} 接入 ${model || group}`,
+        });
       }
       localStorage.setItem(TARGET_STORAGE_KEY, targetId);
       setDetectNonce((value) => value + 1);

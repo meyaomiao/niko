@@ -610,11 +610,15 @@ fn build_migration_plan(
     reject_blocked_scan_for_threads(&report, request.thread_ids.as_ref())?;
 
     if let Some(thread_ids) = &request.thread_ids {
-        if thread_ids.is_empty()
-            || thread_ids
+        // An empty selection is a configuration-only transaction. It still
+        // validates global storage and the config/auth write, but deliberately
+        // leaves every thread artifact untouched.
+        if thread_ids.iter().any(|thread_id| {
+            !report
+                .threads
                 .iter()
-                .any(|thread_id| !report.threads.iter().any(|thread| thread.thread_id == *thread_id))
-        {
+                .any(|thread| thread.thread_id == *thread_id)
+        }) {
             return Err(migration_error(
                 MigrationErrorKind::InvalidRequest,
                 "migration_thread_selection_invalid",
@@ -968,7 +972,14 @@ fn stage_codex_config(
                         None,
                     )
                 })?;
-            provider.insert("name".into(), toml::Value::String("custom".into()));
+            let provider_name = provider
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or("custom")
+                .to_owned();
+            provider.insert("name".into(), toml::Value::String(provider_name));
             if let Some(base_url) = &input.base_url {
                 provider.insert("base_url".into(), toml::Value::String(base_url.clone()));
             }

@@ -79,12 +79,30 @@ pub(crate) fn mutation_outcome(
     migrated: usize,
     changed_artifacts: usize,
 ) -> CodexSessionMutationOutcome {
+    mutation_outcome_with_failed(
+        status,
+        message,
+        requested,
+        migrated,
+        0,
+        changed_artifacts,
+    )
+}
+
+fn mutation_outcome_with_failed(
+    status: &'static str,
+    message: impl Into<String>,
+    requested: usize,
+    migrated: usize,
+    failed: usize,
+    changed_artifacts: usize,
+) -> CodexSessionMutationOutcome {
     CodexSessionMutationOutcome {
         status,
         message: message.into(),
         requested,
         migrated,
-        failed: 0,
+        failed,
         changed_artifacts,
     }
 }
@@ -158,6 +176,18 @@ fn has_global_blocker(report: &ScanReport) -> bool {
     report.diagnostics.iter().any(|diagnostic| {
         diagnostic.level == DiagnosticLevel::Blocker && diagnostic.thread_id.is_none()
     })
+}
+
+fn thread_blocker_count(report: &ScanReport) -> usize {
+    report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.level == DiagnosticLevel::Blocker && diagnostic.thread_id.is_some()
+        })
+        .filter_map(|diagnostic| diagnostic.thread_id.as_ref())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn report_status_for_target(report: &ScanReport, target: MigrationProviderTarget) -> &'static str {
@@ -574,6 +604,13 @@ fn mutation_request_with_threads(
     request
 }
 
+fn mutation_request_configuration(codex: Option<CodexMigrationInput>) -> MigrationRequest {
+    let mut request = mutation_request(codex);
+    // An empty selection means that only config.toml/auth.json may be changed.
+    request.thread_ids = Some(BTreeSet::new());
+    request
+}
+
 fn authorize_codex_root(root: &PathBuf) -> Result<(), SafeCommandError> {
     let marker = root.join(MIGRATION_ROOT_MARKER);
     match fs::symlink_metadata(&marker) {
@@ -622,7 +659,7 @@ pub(crate) fn normalize_codex_session_storage_inner(
         target_provider,
         None,
         &mut noop,
-        false,
+        true,
     )
 }
 
@@ -633,12 +670,33 @@ pub(crate) fn normalize_codex_session_storage_with_progress(
     normalize_codex_session_storage_with_input_and_progress(target_provider, None, progress, true)
 }
 
-pub(crate) fn normalize_codex_session_storage_with_input(
+pub(crate) fn apply_codex_configuration(
     target_provider: String,
     codex: Option<CodexMigrationInput>,
 ) -> Result<CodexSessionMutationOutcome, SafeCommandError> {
+    let target = normalize_target(&target_provider)?;
+    let root = codex_home();
+    if !root.exists() {
+        fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    authorize_codex_root(&root)?;
+    let request = mutation_request_configuration(codex);
     let mut noop = |_progress: MigrationProgress| {};
-    normalize_codex_session_storage_with_input_and_progress(target_provider, codex, &mut noop, false)
+    migrate_codex_sessions_transactional_with_progress(&request, target, &mut noop)
+        .map(|report| {
+            if report.changed_artifacts == 0 {
+                mutation_outcome("unchanged", "模型配置无需调整。", 0, 0, 0)
+            } else {
+                mutation_outcome(
+                    "applied",
+                    "模型配置已写入。",
+                    0,
+                    0,
+                    report.changed_artifacts,
+                )
+            }
+        })
+        .map_err(|error| map_migration_error(error.kind, error.retryable))
 }
 
 pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
@@ -663,14 +721,29 @@ pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
     let scan = scan_codex_sessions(&ScanRequest::new(&root))
         .map_err(|_| SafeCommandError::read_failed())?;
     let pending_thread_ids = migration_thread_ids(&scan, target);
-    if has_global_blocker(&scan)
-        || (!allow_thread_blockers && scan.is_blocked())
-        || (allow_thread_blockers && scan.is_blocked() && pending_thread_ids.is_empty())
-    {
+    let skipped_threads = thread_blocker_count(&scan);
+    if has_global_blocker(&scan) || (!allow_thread_blockers && scan.is_blocked()) {
         return Err(SafeCommandError::change_failed(false));
     }
     let requested = migration_requested(&scan, target);
     let planned_migrated = migration_provider_count(&scan, target);
+    if allow_thread_blockers && pending_thread_ids.is_empty() {
+        let message = if skipped_threads == 0 {
+            "当前状态无需调整。".to_owned()
+        } else {
+            format!(
+                "当前配置无需调整，已跳过 {skipped_threads} 个结构异常会话；模型配置仍可正常使用。"
+            )
+        };
+        return Ok(mutation_outcome_with_failed(
+            "unchanged",
+            message,
+            0,
+            0,
+            skipped_threads,
+            0,
+        ));
+    }
     authorize_codex_root(&root)?;
     let request = if allow_thread_blockers && !pending_thread_ids.is_empty() {
         mutation_request_with_threads(codex, pending_thread_ids)
@@ -695,11 +768,19 @@ pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
                     report.changed_artifacts
                 )
             };
-            Ok(mutation_outcome(
+            let message = if skipped_threads == 0 {
+                message
+            } else {
+                format!(
+                    "{message} 跳过 {skipped_threads} 个结构异常会话，已保留原状。"
+                )
+            };
+            Ok(mutation_outcome_with_failed(
                 if report.changed_artifacts == 0 { "unchanged" } else { "applied" },
                 message,
                 requested,
                 migrated,
+                skipped_threads,
                 report.changed_artifacts,
             ))
         }
@@ -792,16 +873,18 @@ pub(crate) fn normalize_codex_session_storage_selected_with_progress(
     }
 }
 
-pub(crate) fn preflight_codex_session_storage(
-    codex: CodexMigrationInput,
+pub(crate) fn preflight_codex_configuration(
+    target_provider: String,
+    codex: Option<CodexMigrationInput>,
 ) -> Result<Vec<String>, SafeCommandError> {
+    let target = normalize_target(&target_provider)?;
     let root = codex_home();
     if !root.exists() {
         fs::create_dir_all(&root).map_err(|_| SafeCommandError::change_failed(false))?;
     }
     authorize_codex_root(&root)?;
-    let request = mutation_request(Some(codex));
-    preflight_codex_session_migration(&request, MigrationProviderTarget::Custom)
+    let request = mutation_request_configuration(codex);
+    preflight_codex_session_migration(&request, target)
         .map_err(|error| map_migration_error(error.kind, error.retryable))?;
     codex_migration_ids(&request).map_err(|error| map_migration_error(error.kind, error.retryable))
 }
