@@ -86,7 +86,10 @@ fn codex_conflicting_root_keys(doc: &toml::Table) -> Vec<&'static str> {
 }
 
 fn codex_provider_is_consistent(provider: &toml::Table) -> bool {
-    provider.get("name").and_then(toml::Value::as_str) == Some(CODEX_PROVIDER)
+    provider
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|name| !name.trim().is_empty())
         && provider.get("env_key").is_none()
         && provider.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
         && provider
@@ -152,8 +155,17 @@ fn merge_toml_codex_provider(
         .ok_or("model_providers 字段不是 table")?;
 
     // wire_api 必须是 responses：新版 Codex 已拒绝 "chat"
+    let provider_name = providers
+        .get(CODEX_PROVIDER)
+        .and_then(toml::Value::as_table)
+        .and_then(|provider| provider.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(CODEX_PROVIDER)
+        .to_owned();
     let mut provider = toml::Table::new();
-    provider.insert("name".to_owned(), toml::Value::String(CODEX_PROVIDER.to_owned()));
+    provider.insert("name".to_owned(), toml::Value::String(provider_name));
     provider.insert("base_url".to_owned(), toml::Value::String(base_url.to_owned()));
     provider.insert("wire_api".to_owned(), toml::Value::String("responses".to_owned()));
     provider.insert("requires_openai_auth".to_owned(), toml::Value::Boolean(true));
@@ -1741,6 +1753,25 @@ mod tests {
             merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("claude-sonnet-4-6"), None)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn codex_toml_preserves_external_custom_provider_name() {
+        let p = tmp_path("config.toml");
+        fs::write(
+            &p,
+            "[model_providers.custom]\nname = \"CodexPlusPlus\"\nbase_url = \"https://old.example/v1\"\n",
+        )
+        .unwrap();
+
+        merge_toml_codex_provider(&p, "https://momotoken.win/v1", Some("gpt-5.6"), None)
+            .unwrap();
+
+        let doc: toml::Table = fs::read_to_string(&p).unwrap().parse().unwrap();
+        assert_eq!(
+            doc["model_providers"]["custom"]["name"].as_str(),
+            Some("CodexPlusPlus")
         );
     }
 

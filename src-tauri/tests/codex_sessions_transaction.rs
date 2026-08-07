@@ -706,6 +706,48 @@ fn selected_migration_can_skip_an_unselected_thread_blocker() {
 }
 
 #[test]
+fn configuration_only_migration_ignores_thread_blockers_and_leaves_threads_untouched() {
+    let mut fixture = create_fixture(OFFICIAL_PROVIDER);
+    Connection::open(&fixture.databases[1])
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2",
+            params![CUSTOM_PROVIDER, THREAD_B],
+        )
+        .unwrap();
+    fixture.request.thread_ids = Some(BTreeSet::new());
+    fixture.request.codex = Some(CodexMigrationInput {
+        base_url: Some("https://relay.fixture.invalid/v1".to_owned()),
+        api_key: Some("configuration-only-secret".to_owned()),
+        model: Some("gpt-fixture".to_owned()),
+        mixed: false,
+    });
+
+    let before = semantic_snapshot(&fixture);
+    let report = migrate_codex_sessions_transactional(
+        &fixture.request,
+        MigrationProviderTarget::Custom,
+    )
+    .unwrap();
+    assert_eq!(report.outcome, MigrationOutcome::Committed);
+    assert_eq!(report.changed_artifacts, 2, "只应更新 auth.json 和 config.toml");
+
+    let after = semantic_snapshot(&fixture);
+    assert_ne!(after.config, before.config);
+    assert_ne!(after.auth, before.auth);
+    assert_eq!(after.rollouts, before.rollouts);
+    assert_eq!(after.index, before.index);
+    assert_eq!(after.databases, before.databases);
+
+    let scan = scan_codex_sessions(&fixture.request.scan).unwrap();
+    assert_eq!(scan.config.active_provider.as_deref(), Some(CUSTOM_PROVIDER));
+    assert!(scan.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "thread_provider_mismatch"
+            && diagnostic.thread_id.as_deref() == Some(THREAD_B)
+    }));
+}
+
+#[test]
 fn provider_route_auth_and_sessions_commit_and_restore_together() {
     let mut fixture = create_fixture(OFFICIAL_PROVIDER);
     let api_key = "fixture-secret-must-not-enter-journal";
