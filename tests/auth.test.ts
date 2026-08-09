@@ -40,12 +40,12 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "sessionStorage", { value: new MemoryStorage(), configurable: true });
 });
 
-test("persists remembered authentication across app sessions", () => {
+test("keeps remembered authentication out of persistent Web storage", () => {
   saveAuth(auth);
 
   assert.deepEqual(loadAuth(), auth);
-  assert.equal(sessionStorage.getItem("niko_auth"), null);
-  assert.ok(localStorage.getItem("niko_auth"));
+  assert.ok(sessionStorage.getItem("niko_auth"));
+  assert.equal(localStorage.getItem("niko_auth"), null);
 });
 
 test("keeps unremembered authentication in the current session only", () => {
@@ -66,10 +66,11 @@ test("does not auto-login legacy authentication without an explicit remember cho
   localStorage.setItem("niko_auth", JSON.stringify({ ...auth, remember: undefined }));
 
   assert.equal(loadAuth(), null);
+  assert.equal(localStorage.getItem("niko_auth"), null);
 });
 
-test("migrates the old group field into an account-only default recommendation", () => {
-  localStorage.setItem(
+test("migrates the old group field within the current session", () => {
+  sessionStorage.setItem(
     "niko_auth",
     JSON.stringify({ ...auth, defaultGroup: undefined, group: "legacy-default" }),
   );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
+import { api } from "../api/client";
 import { useNavigate } from "react-router-dom";
 import { BRAND } from "../lib/brand";
 import Logo from "../components/Logo";
@@ -279,7 +280,19 @@ export default function Settings() {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (auth?.accessToken) {
+      try {
+        await api.logout(auth.accessToken);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      await invoke("clear_remembered_login");
+    } catch {
+      /* ignore */
+    }
     clearAuth();
     navigate("/login", { replace: true });
   };

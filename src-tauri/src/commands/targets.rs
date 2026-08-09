@@ -227,6 +227,7 @@ fn persist_provider_manifest(
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|_| SafeCommandError::change_failed(false))?;
+    drop(file);
     durable_replace(&temporary, &path)
 }
 
@@ -1804,6 +1805,30 @@ mod tests {
             );
             assert!(!root.exists());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persist_provider_manifest_replaces_manifest_after_closing_temporary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("transaction");
+        fs::create_dir(&root).unwrap();
+        let mut manifest = ProviderTransactionManifest {
+            version: PROVIDER_TRANSACTION_VERSION,
+            phase: ProviderTransactionPhase::Prepared,
+            existed: vec![false],
+            known_codex_transactions: Vec::new(),
+            target_ids: Some(vec!["codex".to_owned()]),
+        };
+
+        persist_provider_manifest(&root, &manifest).unwrap();
+        manifest.phase = ProviderTransactionPhase::Committed;
+        persist_provider_manifest(&root, &manifest).unwrap();
+
+        let stored: ProviderTransactionManifest =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        assert!(matches!(stored.phase, ProviderTransactionPhase::Committed));
+        assert!(!root.join("manifest.tmp").exists());
     }
 
     #[cfg(windows)]

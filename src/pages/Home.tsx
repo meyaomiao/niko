@@ -503,7 +503,7 @@ export default function Home() {
       try {
         const res = await api.provision(auth.accessToken, group);
         apiKey = res.api_key;
-        saveAuth({ ...auth, apiKey, apiKeyGroup: group });
+        saveAuth({ ...auth, apiKey, apiKeyGroup: res.group });
       } catch (error) {
         if (!apiKey || auth.apiKeyGroup !== group) throw error;
         reusedSavedApiKey = true;
@@ -674,6 +674,11 @@ export default function Home() {
       } catch {
         /* ignore */
       }
+    }
+    try {
+      await invoke("clear_remembered_login");
+    } catch {
+      /* ignore */
     }
     handleSessionExpired();
   };

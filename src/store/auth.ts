@@ -37,8 +37,10 @@ export function loadAuth(): AuthState | null {
   const session = loadStoredAuth(sessionStorage);
   if (session) return session;
 
-  const persisted = loadStoredAuth(localStorage);
-  return persisted?.remember ? persisted : null;
+  // Older versions persisted the session token and relay key in localStorage.
+  // Remove that record rather than carrying sensitive credentials forward.
+  localStorage.removeItem(KEY);
+  return null;
 }
 
 export function shouldPersistAuthSession(
@@ -50,13 +52,8 @@ export function shouldPersistAuthSession(
 
 export function saveAuth(state: AuthState) {
   const value = JSON.stringify(state);
-  if (state.remember) {
-    localStorage.setItem(KEY, value);
-    sessionStorage.removeItem(KEY);
-  } else {
-    sessionStorage.setItem(KEY, value);
-    localStorage.removeItem(KEY);
-  }
+  sessionStorage.setItem(KEY, value);
+  localStorage.removeItem(KEY);
 }
 
 export function clearAuth() {
