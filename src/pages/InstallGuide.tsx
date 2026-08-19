@@ -1,5 +1,5 @@
 // Niko 自身的安装说明：macOS / Windows 双平台图文引导
-// 两个平台都未购买签名证书，首次安装会被系统拦一次，这里说明如何放行
+// macOS 发布包已签名并公证，正常安装不会被拦；Windows 安装包尚未签名，需要说明如何越过 SmartScreen
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -41,12 +41,13 @@ export default function InstallGuide() {
         <div className="mx-auto max-w-3xl space-y-3">
           <div className={CARD}>
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              为什么系统会拦一下？
+              两个平台的安装体验不一样
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              本应用目前没有购买代码签名证书，macOS 的 Gatekeeper 和 Windows 的
-              SmartScreen 都会对未知发布者的安装包弹一次提示。这是系统的标准行为，不代表程序有安全风险。
-              所有版本都在 GitHub Actions 公开构建，可用 SHA256 校验和自行核验下载文件。
+              macOS 安装包已使用 Developer ID 证书签名并通过 Apple 公证，正常下载安装不会被
+              Gatekeeper 拦下。Windows 安装包目前还没有代码签名，首次运行会弹一次 SmartScreen
+              提示，这是系统对未知发布者的标准行为，不代表程序有安全风险。
+              每个版本都随 Release 附带 SHA256 校验和文件，可以自行核验下载到的安装包。
             </p>
           </div>
 
@@ -71,46 +72,50 @@ export default function InstallGuide() {
               <ol className="space-y-5">
                 <Step num={1} title="下载并打开 dmg">
                   <p className={SUBTLE}>
-                    下载 <code className={CODE}>Niko_x.y.z_aarch64.dmg</code>（Apple 芯片）或{" "}
-                    <code className={CODE}>x64.dmg</code>（Intel 芯片），双击打开后把{" "}
+                    下载 <code className={CODE}>{`Niko_${BRAND.version}_universal.dmg`}</code>
+                    ，同一个安装包同时支持 Apple 芯片和 Intel 芯片，不需要区分机型。双击打开后把{" "}
                     <code className={CODE}>{BRAND.name}.app</code> 拖进「应用程序」文件夹。
                   </p>
                 </Step>
 
-                <Step num={2} title="首次启动会提示无法验证开发者">
-                  <Note title="提示">
-                    弹窗文字通常是「无法打开“{BRAND.name}”，因为 Apple 无法检查其是否包含恶意软件」，
-                    此时只有「移到废纸篓」和「好」两个按钮，直接双击是打不开的。
-                  </Note>
-                </Step>
-
-                <Step num={3} title="用右键菜单打开">
+                <Step num={2} title="直接双击启动">
                   <p className={SUBTLE}>
-                    在「应用程序」里
-                    <span className={STRONG}>按住 Control 点击</span>
-                    （或右键）应用图标，选择
-                    <span className={STRONG}>打开</span>，
-                    在新弹窗里再点一次「打开」即可。这一步只需做一次，之后正常双击启动。
+                    安装包已签名并公证，第一次打开时系统只会确认一次「从互联网下载」，点
+                    <span className={STRONG}>打开</span>
+                    即可，不需要右键打开或到系统设置里放行。
                   </p>
                 </Step>
 
-                <Step num={4} title="如果右键也没有打开选项">
+                <Step num={3} title="想核验安装包（可选）">
                   <p className={SUBTLE}>
-                    打开
+                    从同一个 Release 下载 <code className={CODE}>SHA256SUMS.txt</code>
+                    ，和 dmg 放在同一个目录里，在「终端」执行{" "}
+                    <code className={CODE}>shasum -a 256 -c SHA256SUMS.txt</code>
+                    ，看到 dmg 那一行显示 OK 即说明文件完整。
+                  </p>
+                </Step>
+
+                <Step num={4} title="如果仍然提示无法验证开发者">
+                  <Note title="提示">
+                    这通常说明下载没有完成或文件被改动过，建议先从 GitHub Releases
+                    重新下载一次。确认来源无误又需要放行时，打开
                     <span className={STRONG}>系统设置 › 隐私与安全性</span>
-                    ，向下滚动到「安全性」区域，会看到「已阻止使用“{BRAND.name}”」，点右侧的
+                    ，在「安全性」区域点「已阻止使用“{BRAND.name}”」右侧的
                     <span className={STRONG}>仍要打开</span>
                     并输入密码确认。
-                  </p>
+                  </Note>
                 </Step>
               </ol>
             ) : (
               <ol className="space-y-5">
                 <Step num={1} title="下载安装包">
                   <p className={SUBTLE}>
-                    从 GitHub Releases 下载最新的 <code className={CODE}>*.msi</code> 或{" "}
-                    <code className={CODE}>*_setup.exe</code>。下载前可对照页面公示的 SHA256
-                    校验和核验文件完整性。
+                    从 GitHub Releases 下载{" "}
+                    <code className={CODE}>{`Niko_${BRAND.version}_x64-setup.exe`}</code> 或{" "}
+                    <code className={CODE}>{`Niko_${BRAND.version}_x64_en-US.msi`}</code>
+                    ，两者装出来的是同一个应用，任选其一。需要核验时，同时下载{" "}
+                    <code className={CODE}>SHA256SUMS_win.txt</code>，在 PowerShell 执行{" "}
+                    <code className={CODE}>Get-FileHash 安装包名</code> 并与文件中的哈希比对。
                   </p>
                 </Step>
 
