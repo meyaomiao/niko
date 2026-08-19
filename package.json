@@ -12,6 +12,8 @@
     "test:model-selection": "node --experimental-strip-types --test tests/modelSelection.test.ts",
     "test:registration": "node --experimental-strip-types --test tests/registration.test.ts",
     "test:sessions": "node --experimental-strip-types --test tests/codexSessions.test.ts",
+    "test:release-audit": "node --experimental-strip-types --test tests/releaseAudit.test.ts",
+    "verify:release": "node scripts/verify-release.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
