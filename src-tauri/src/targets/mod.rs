@@ -1239,6 +1239,100 @@ impl Target for GrokTarget {
     }
 }
 
+/// Antigravity CLI 的 settings.json 键与所需环境变量
+const AGY_MODEL_PROVIDER: &str = "gemini";
+const AGY_ENV_KEY: &str = "GEMINI_API_KEY";
+const AGY_ENV_BASE_URL: &str = "GOOGLE_GEMINI_BASE_URL";
+
+fn agy_settings_path() -> PathBuf {
+    home_dir().join(".gemini").join("antigravity-cli").join("settings.json")
+}
+
+/// Antigravity CLI 的自定义端点是 Gemini 协议，客户端自己拼 /v1beta/...，
+/// 所以 base_url 必须去掉 openai 风格的 /v1 尾缀。
+fn agy_gemini_base_url(base_url: &str) -> String {
+    claude_base_url(base_url)
+}
+
+/// 写 antigravity-cli/settings.json（modelProvider=gemini 跳过 Google 登录）
+fn agy_settings_apply() -> Result<Vec<String>, String> {
+    let path = agy_settings_path();
+    let _ = save_backup("antigravity", &path);
+    merge_json_keys(
+        &path,
+        &[("modelProvider", Value::String(AGY_MODEL_PROVIDER.to_owned()))],
+    )
+}
+
+/// 设置用户级环境变量。agy 只读进程环境（已实测不读 ~/.gemini/.env）：
+/// Windows 用 setx 持久化到注册表用户环境；macOS 用 launchctl setenv
+/// 覆盖当前 GUI 会话（重启后需在登录项里重跑，或由用户 shell 自行导出）。
+#[cfg(not(test))]
+fn agy_env_persist(vars: &[(&str, String)]) -> Result<Vec<String>, String> {
+    let mut changed = Vec::new();
+    for (name, value) in vars {
+        let output = if cfg!(target_os = "windows") {
+            std::process::Command::new("setx").arg(name).arg(value).output()
+        } else {
+            std::process::Command::new("launchctl").arg("setenv").arg(name).arg(value).output()
+        };
+        match output {
+            Ok(status) if status.status.success() => {
+                changed.push(format!("env:{name}"));
+            }
+            _ => return Err(format!("写入环境变量 {name} 失败，请手动设置后重试")),
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+fn agy_env_persist(_vars: &[(&str, String)]) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
+fn agy_apply(plan: &ApplyPlan) -> Result<Vec<String>, String> {
+    let mut changed = agy_settings_apply()?;
+    changed.append(&mut agy_env_persist(&[
+        (AGY_ENV_KEY, plan.api_key.clone()),
+        (AGY_ENV_BASE_URL, agy_gemini_base_url(&plan.base_url)),
+    ])?);
+    Ok(changed)
+}
+
+/// Antigravity CLI（`agy`）。settings.json 切到 API-key 模式，凭证走用户环境变量。
+/// 仅支持 Gemini 协议（Gemini 系模型）；桌面版 IDE 无 BYOK 不在接入范围。
+pub struct AntigravityTarget;
+
+impl Target for AntigravityTarget {
+    fn id(&self) -> &'static str { "antigravity" }
+    fn display_name(&self) -> &'static str { "Antigravity CLI" }
+
+    fn is_installed(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        let candidates = vec![
+            home_dir().join(".local").join("bin").join("agy.exe"),
+            home_dir().join("AppData").join("Local").join("agy").join("bin").join("agy.exe"),
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let candidates = vec![
+            home_dir().join(".local").join("bin").join("agy"),
+            PathBuf::from("/usr/local/bin/agy"),
+            PathBuf::from("/opt/homebrew/bin/agy"),
+        ];
+        find_cli_executable("agy", &candidates).is_some()
+    }
+
+    fn icon_data_uri(&self) -> Option<String> {
+        None
+    }
+
+    fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
+        let changed = agy_apply(plan)?;
+        Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
+    }
+}
+
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
@@ -1247,6 +1341,7 @@ pub fn all_targets() -> Vec<Box<dyn Target>> {
         Box::new(ClaudeDesktopTarget),
         Box::new(ClaudeCliTarget),
         Box::new(GrokTarget),
+        Box::new(AntigravityTarget),
     ]
 }
 
@@ -1263,6 +1358,7 @@ pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
             Ok(paths)
         }
         "grok" => Ok(vec![grok_config_path()]),
+        "antigravity" => Ok(vec![agy_settings_path()]),
         other => Err(format!("unknown transaction target: {other}")),
     }
 }
@@ -1376,6 +1472,21 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
             claude_settings_effective(&h, target_id)
         }
         "grok" => grok_effective(),
+        "antigravity" => {
+            // 真正生效的凭证在用户环境变量里（agy 只读进程环境）
+            let base_url = std::env::var(AGY_ENV_BASE_URL).map_err(|_| {
+                "未找到 GOOGLE_GEMINI_BASE_URL 环境变量，请启用后重开终端再试".to_owned()
+            })?;
+            let api_key = std::env::var(AGY_ENV_KEY)
+                .map_err(|_| "未找到 GEMINI_API_KEY 环境变量，请启用后重开终端再试".to_owned())?;
+            Ok(EffectiveConfig {
+                target_id: target_id.to_owned(),
+                endpoint: format!("{}/v1beta/models", base_url.trim_end_matches('/')),
+                api_key,
+                model: None,
+                auth_style: "google:gemini".to_owned(),
+            })
+        }
         other => Err(format!("未知目标: {other}")),
     }
 }
@@ -1709,6 +1820,35 @@ fn observe_grok_config(home: &Path) -> TargetConfigObservation {
     )
 }
 
+/// Antigravity 配置观测：modelProvider=gemini 且环境变量可读才算 Matchable
+fn observe_agy_config(home: &Path) -> TargetConfigObservation {
+    let raw = match read_regular_text(&agy_settings_path_for(home)) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return TargetConfigObservation::Other,
+        Err(()) => return TargetConfigObservation::Unreadable,
+    };
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(_) => return TargetConfigObservation::Unreadable,
+    };
+    if value.get("modelProvider").and_then(Value::as_str) != Some(AGY_MODEL_PROVIDER) {
+        return TargetConfigObservation::Other;
+    }
+    let (Ok(base), Ok(key)) = (
+        std::env::var(AGY_ENV_BASE_URL),
+        std::env::var(AGY_ENV_KEY),
+    ) else {
+        // 设置已写入但 Niko 进程里看不到用户环境变量（需重开终端），无法确认
+        return TargetConfigObservation::Other;
+    };
+    let endpoint = format!("{}/v1beta/models", base.trim_end_matches('/'));
+    matchable_target_config("antigravity", &endpoint, "google:gemini", None, &key)
+}
+
+fn agy_settings_path_for(home: &Path) -> PathBuf {
+    home.join(".gemini").join("antigravity-cli").join("settings.json")
+}
+
 pub(crate) fn observe_active_config_at(
     target_id: &str,
     home: &Path,
@@ -1718,6 +1858,7 @@ pub(crate) fn observe_active_config_at(
         "claude-desktop" => observe_claude_config(home),
         "claude-cli" => observe_claude_settings(home, target_id),
         "grok" => observe_grok_config(home),
+        "antigravity" => observe_agy_config(home),
         _ => TargetConfigObservation::Unreadable,
     }
 }
@@ -1776,6 +1917,19 @@ pub(crate) fn expected_config_digest_at(
                 &endpoint,
                 "openai",
                 plan.model.as_deref(),
+                &plan.api_key,
+            ))
+        }
+        "antigravity" => {
+            let endpoint = format!(
+                "{}/v1beta/models",
+                agy_gemini_base_url(&plan.base_url).trim_end_matches('/')
+            );
+            Ok(crate::active_groups::config_digest(
+                "antigravity",
+                &endpoint,
+                "google:gemini",
+                None,
                 &plan.api_key,
             ))
         }
@@ -1879,6 +2033,16 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
         }
         "grok" => {
             changed.append(&mut grok_restore()?);
+        }
+        "antigravity" => {
+            // 只还原 settings.json；环境变量不主动清除——无法区分是 Niko 还是
+            // 用户自己设置的，清错会破坏用户其他 Gemini 工作流
+            let path = agy_settings_path();
+            let _ = save_backup(target_id, &path);
+            changed.append(&mut remove_json_keys(
+                &path,
+                &["modelProvider"],
+            )?);
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -2055,6 +2219,20 @@ pub(crate) fn check_drift_at(
         }
         "grok" => {
             mismatched.append(&mut grok_drift(h, plan));
+        }
+        "antigravity" => {
+            let path = agy_settings_path_for(h);
+            if path.exists() {
+                let raw = fs::read_to_string(&path).unwrap_or_default();
+                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                if v.get("modelProvider").and_then(Value::as_str) != Some(AGY_MODEL_PROVIDER) {
+                    mismatched.push("settings.json:modelProvider".to_owned());
+                }
+            } else {
+                mismatched.push("settings.json:missing".to_owned());
+            }
+            // 环境变量不进漂移检测：Niko 进程内读不到用户 shell 的最新值，
+            // 误报比漏报更伤体验；以 effective_config 的连通性测试为准
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -2575,6 +2753,42 @@ mod tests {
             "用户自己的 default 必须保留"
         );
         assert!(doc.get("model").and_then(|t| t.get(GROK_MODEL_KEY)).is_none());
+    }
+
+    /// Antigravity：写 antigravity-cli/settings.json 的 modelProvider（测试环境跳过
+    /// 环境变量写入），幂等，漂移与还原只围绕这个文件。
+    #[test]
+    fn antigravity_settings_apply_drift_restore() {
+        let home = tmp_dir("agy_apply");
+        fs::create_dir_all(home.join(".gemini").join("antigravity-cli")).unwrap();
+        let plan = claude_plan();
+        let _home = set_test_home(&home);
+
+        let summary = AntigravityTarget.apply(&plan).unwrap();
+        assert_eq!(summary.target_id, "antigravity");
+        let path = home.join(".gemini").join("antigravity-cli").join("settings.json");
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v.get("modelProvider").and_then(Value::as_str), Some("gemini"));
+
+        // 幂等
+        let again = AntigravityTarget.apply(&plan).unwrap();
+        assert!(again.changed_keys.is_empty());
+
+        // 无漂移；删掉文件后漂移可检出
+        let drift = check_drift_at(&home, "antigravity", &plan).unwrap();
+        assert!(!drift.drifted, "unexpected drift: {:?}", drift.mismatched_keys);
+        fs::remove_file(&path).unwrap();
+        let drift = check_drift_at(&home, "antigravity", &plan).unwrap();
+        assert!(drift.drifted);
+        assert!(drift.mismatched_keys.contains(&"settings.json:missing".to_owned()));
+    }
+
+    /// /v1 尾缀剥除同样适用于 agy 的 Gemini 端点（客户端自己拼 /v1beta/...）
+    #[test]
+    fn agy_base_url_strips_v1_suffix() {
+        assert_eq!(agy_gemini_base_url("https://momotoken.win/v1"), "https://momotoken.win");
+        assert_eq!(agy_gemini_base_url("https://momotoken.win"), "https://momotoken.win");
+        assert_eq!(agy_gemini_base_url("https://momotoken.win/v1/"), "https://momotoken.win");
     }
 
     /// 3p 模式下桌面端按托管配置注入环境变量，优先级高于 settings.json，

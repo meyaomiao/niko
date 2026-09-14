@@ -916,6 +916,13 @@ export default function Home() {
                             </p>
                           </div>
                         )}
+                        {t.id === "antigravity" && active && t.installed && (
+                          <div className="nk-inset mt-1.5 p-2">
+                            <p className={SUBTLE}>
+                              仅支持 Gemini 系模型；环境变量写入后需重开终端生效，桌面版 IDE 无法接入
+                            </p>
+                          </div>
+                        )}
                         {/* Codex 独有：有 ChatGPT 订阅时保留官方登录态，密钥走 provider 段 */}
                         {t.id === "codex" && active && t.installed && (
                           <div className="nk-inset mt-1.5 p-2">

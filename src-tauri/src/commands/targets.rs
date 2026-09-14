@@ -316,7 +316,7 @@ fn provider_transaction_paths_for_targets(
     let mut paths = Vec::new();
     for target_id in target_ids {
         if target_id != "codex" {
-            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli" | "grok") {
+            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli" | "grok" | "antigravity") {
                 return Err(SafeCommandError::invalid_request());
             }
             paths.extend(
@@ -354,7 +354,8 @@ fn validate_provider_transaction_shape(
     }
 
     // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单
-    const CANONICAL_ORDER: &[&str] = &["codex", "claude-desktop", "claude-cli", "grok"];
+    const CANONICAL_ORDER: &[&str] =
+        &["codex", "claude-desktop", "claude-cli", "grok", "antigravity"];
     let valid_target_order = !target_ids.is_empty()
         && target_ids.iter().all(|id| CANONICAL_ORDER.contains(&id.as_str()))
         && {
@@ -867,7 +868,15 @@ pub async fn apply_all_targets(
     let grok = targets
         .iter()
         .find(|target| target.id() == "grok" && target.is_installed());
-    if codex.is_none() && claude.is_none() && claude_cli.is_none() && grok.is_none() {
+    let antigravity = targets
+        .iter()
+        .find(|target| target.id() == "antigravity" && target.is_installed());
+    if codex.is_none()
+        && claude.is_none()
+        && claude_cli.is_none()
+        && grok.is_none()
+        && antigravity.is_none()
+    {
         return Ok(Vec::new());
     }
 
@@ -883,6 +892,9 @@ pub async fn apply_all_targets(
     }
     if grok.is_some() {
         target_ids.push("grok".to_owned());
+    }
+    if antigravity.is_some() {
+        target_ids.push("antigravity".to_owned());
     }
     let records = records_for_plan(&target_ids, &plan)?;
     let known_codex_transactions = if codex.is_some() {
@@ -900,6 +912,10 @@ pub async fn apply_all_targets(
     }
     if grok.is_some() {
         preflight_target_apply("grok").map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    if antigravity.is_some() {
+        preflight_target_apply("antigravity")
+            .map_err(|_| SafeCommandError::change_failed(false))?;
     }
 
     let paths = provider_transaction_paths_for_targets(&target_ids)?;
@@ -919,7 +935,7 @@ pub async fn apply_all_targets(
     }
 
     let mut claude_summaries: Vec<_> = Vec::new();
-    for extra_target in [claude, claude_cli, grok].into_iter().flatten() {
+    for extra_target in [claude, claude_cli, grok, antigravity].into_iter().flatten() {
         let summary = match extra_target.apply(&plan) {
             Ok(summary) => summary,
             Err(_) => {

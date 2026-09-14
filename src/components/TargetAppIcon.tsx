@@ -28,6 +28,10 @@ const TARGET_FALLBACKS: Record<string, { icon?: string; label: string; className
     label: "𝕏",
     className: "bg-black/5 text-gray-900 dark:bg-white/10 dark:text-gray-100",
   },
+  antigravity: {
+    label: "✦",
+    className: "bg-[var(--nk-info-soft)] text-[var(--nk-info)]",
+  },
 };
 
 export default function TargetAppIcon({

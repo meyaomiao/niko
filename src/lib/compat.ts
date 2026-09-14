@@ -33,6 +33,7 @@ const MATRIX: Record<string, Record<Family, CompatLevel>> = {
   "claude-desktop": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
   "claude-cli": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
   "grok": { claude: "good", gpt: "good", gemini: "limited", other: "good" },
+  "antigravity": { claude: "limited", gpt: "limited", gemini: "native", other: "limited" },
 };
 
 const NOTES: Record<string, Record<Family, string>> = {
@@ -59,6 +60,12 @@ const NOTES: Record<string, Record<Family, string>> = {
     gpt: "通过服务适配接入，对话与工具调用正常",
     gemini: "通过服务适配接入，图片理解等能力有差异",
     other: "Grok 系模型可直接使用，原生能力全部可用",
+  },
+  "antigravity": {
+    claude: "Antigravity CLI 仅支持 Gemini 协议，Claude 系模型不可用",
+    gpt: "Antigravity CLI 仅支持 Gemini 协议，GPT 系模型不可用",
+    gemini: "Gemini 系模型原生可用",
+    other: "暂未在该应用验证，部分能力可能不可用",
   },
 };
 
@@ -92,4 +99,5 @@ export const NATIVE_VENDOR: Record<string, string> = {
   "claude-desktop": "Anthropic",
   "claude-cli": "Anthropic",
   "grok": "xAI",
+  "antigravity": "Google",
 };
