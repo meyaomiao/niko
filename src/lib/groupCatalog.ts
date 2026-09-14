@@ -57,7 +57,7 @@ export function groupsForModel(
   const item = pricing?.find((entry) => entry.model_name === model);
   const names = item?.enable_groups?.length
     ? item.enable_groups
-    : accountGroups.filter((g) => g.models.includes(model)).map((g) => g.name);
+    : accountGroups.filter((g) => (g.models ?? []).includes(model)).map((g) => g.name);
 
   return names
     .map((name) => {

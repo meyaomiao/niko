@@ -8,6 +8,7 @@ import Models from "./pages/Models";
 import Settings from "./pages/Settings";
 import ForceUpgrade from "./pages/ForceUpgrade";
 import InstallGuide from "./pages/InstallGuide";
+import ErrorBoundary from "./components/ErrorBoundary";
 import CodexSessions from "./pages/CodexSessions";
 import { loadAuth, saveAuth } from "./store/auth";
 import { api } from "./api/client";
@@ -101,6 +102,7 @@ export default function App() {
         path="/*"
         element={
           <RequireAuth>
+            <ErrorBoundary>
             <VersionGate>
               <Routes>
                 <Route path="/home" element={<Home />} />
@@ -112,6 +114,7 @@ export default function App() {
                 <Route path="*" element={<Navigate to="/home" replace />} />
               </Routes>
             </VersionGate>
+            </ErrorBoundary>
           </RequireAuth>
         }
       />
