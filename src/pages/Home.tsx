@@ -893,7 +893,7 @@ export default function Home() {
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col gap-4">
           {/* 上方摘要：用户状态 + 本机应用 + 登录设备，三卡一行不换行 */}
-          <div className="grid shrink-0 grid-cols-1 gap-3 md:grid-cols-[19rem_minmax(0,1fr)_15rem]">
+          <div className="grid shrink-0 grid-cols-1 items-start gap-3 md:grid-cols-[19rem_minmax(0,1fr)_15rem]">
             {/* 余额 */}
             <section className={CARD_TIGHT}>
               <div className="flex items-start justify-between gap-2">
@@ -971,119 +971,129 @@ export default function Home() {
                 </div>
               ) : (
                 <>
-                  <div className="space-y-2">
+                  {/* 目标用横向胶囊排一行，详细说明只给当前选中项，避免撑高顶栏 */}
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {targets.map((t) => {
-                      const result = results[t.id];
                       const active = t.id === targetId;
                       return (
-                        <div key={t.id}>
                         <button
+                          key={t.id}
                           onClick={() => pickTarget(t.id)}
                           disabled={!t.installed}
-                          className={`nk-row w-full text-left ${
+                          title={t.installed ? t.name : `${t.name}（未安装）`}
+                          className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] transition ${
                             active
-                              ? "nk-row-selected"
+                              ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
                               : t.installed
-                                ? ""
-                                : "opacity-60"
+                                ? "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                                : "cursor-not-allowed border-dashed [border-color:var(--nk-line)] text-gray-400 opacity-60 dark:text-gray-500"
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <TargetAppIcon
-                                targetId={t.id}
-                                name={t.name}
-                                icon={t.icon}
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                                  {t.name}
-                                </p>
-                                <p className={SUBTLE}>{t.installed ? "已安装" : "还没有安装"}</p>
-                              </div>
-                            </div>
-                            {active && <span className="shrink-0 text-xs">✓</span>}
-                          </div>
-                          {result && (
-                            /* 改动项是一串很长的配置路径，全列会把卡片撑爆，这里只给条数，明细放 title */
-                            <p
-                              title={result.ok ? "设置已更新" : undefined}
-                              className={`mt-1.5 truncate text-xs ${
-                                result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
-                              }`}
-                            >
-                              {result.ok
-                                ? result.changed && result.changed.length > 0
-                                  ? `✓ 已更新 ${result.changed.length} 项设置`
-                                  : "✓ 设置已是最新"
-                                : `✗ ${result.error}`}
-                            </p>
-                          )}
+                          <TargetAppIcon targetId={t.id} name={t.name} icon={t.icon} />
+                          <span className="max-w-[7.5rem] truncate">{t.name}</span>
+                          {active && <span aria-hidden="true">✓</span>}
                         </button>
-                        {/* Claude 的作用范围说明单独成子卡片：常驻在选项里会把卡片撑高，
-                            且未选中时并不需要这条信息。 */}
-                        {t.id === "claude-desktop" && active && t.installed && (
-                          <div className="nk-inset mt-1.5 p-2">
-                            <p className={SUBTLE}>
-                              仅作用于内置 Claude Code 面板，桌面端普通对话仍使用 Anthropic 账号
-                            </p>
-                          </div>
-                        )}
-                        {t.id === "antigravity" && active && t.installed && (
-                          <div className="nk-inset mt-1.5 p-2">
-                            <p className={SUBTLE}>
-                              仅支持 Gemini 系模型；环境变量写入后需重开终端生效，桌面版 IDE 无法接入
-                            </p>
-                          </div>
-                        )}
-                        {/* Codex 独有：有 ChatGPT 订阅时保留官方登录态，密钥走 provider 段 */}
-                        {t.id === "codex" && active && t.installed && (
-                          <div className="nk-inset mt-1.5 p-2">
-                            <div className="grid grid-cols-2 gap-1.5">
-                              {[
-                                { mixed: false, label: "未订阅 ChatGPT" },
-                                { mixed: true, label: "已订阅 ChatGPT" },
-                              ].map((opt) => (
-                                <button
-                                  key={String(opt.mixed)}
-                                  onClick={() => pickCodexMixed(opt.mixed)}
-                                  className={`rounded-lg px-2.5 py-1.5 text-xs transition ${
-                                    codexMixed === opt.mixed
-                                      ? "bg-white font-medium text-gray-900 shadow-sm dark:bg-white/15 dark:text-gray-100"
-                                      : "text-gray-500 hover:bg-black/[0.04] dark:text-gray-400 dark:hover:bg-white/10"
-                                  }`}
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                            <p className={`mt-1.5 ${SUBTLE}`}>
-                              {codexMixed
-                                ? "保留 ChatGPT 登录态，官方额度与账号功能照常，模型走 momo"
-                                : "只用 momo 的额度，不需要 ChatGPT 账号"}
-                            </p>
-                          </div>
-                        )}
-                        </div>
                       );
                     })}
                     {installedTargets.length > 1 && (
                       <button
                         onClick={() => pickTarget(ALL_TARGETS)}
-                        className={`nk-row w-full text-left text-xs ${
+                        title="对所有已安装应用同时接入"
+                        className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] transition ${
                           targetId === ALL_TARGETS
-                            ? "nk-row-selected"
-                            : ""
+                            ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
+                            : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                         }`}
                       >
-                        <span className="font-medium text-gray-900 dark:text-gray-100">全部已安装应用</span>
-                        <span className="ml-1.5 opacity-60">{installedTargets.length}</span>
+                        全部
+                        <span className="opacity-60">{installedTargets.length}</span>
                       </button>
                     )}
+                    <button
+                      onClick={() => navigate("/install-guide")}
+                      className="ml-1 text-[11px] text-[var(--nk-info)] hover:underline"
+                    >
+                      安装指引
+                    </button>
                   </div>
-                  <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
-                    安装指引
-                  </button>
+
+                  {/* 当前应用的一句话说明 + Codex 订阅模式（都压成一行内） */}
+                  {(() => {
+                    const active = targets.find((t) => t.id === targetId);
+                    if (!active?.installed) return null;
+                    const result = results[active.id];
+                    if (active.id === "codex") {
+                      return (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <span className={`text-[10px] ${SUBTLE}`}>ChatGPT 订阅</span>
+                          {[
+                            { mixed: false, label: "未订阅" },
+                            { mixed: true, label: "已订阅" },
+                          ].map((opt) => (
+                            <button
+                              key={String(opt.mixed)}
+                              onClick={() => pickCodexMixed(opt.mixed)}
+                              title={
+                                opt.mixed
+                                  ? "保留 ChatGPT 登录态，官方额度照常，模型走 momo"
+                                  : "只用 momo 额度，不需要 ChatGPT 账号"
+                              }
+                              className={`rounded-full border px-2 py-0.5 text-[11px] transition ${
+                                codexMixed === opt.mixed
+                                  ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
+                                  : "[border-color:var(--nk-line)] text-gray-500 hover:bg-black/[0.04] dark:text-gray-400 dark:hover:bg-white/10"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                          {result && (
+                            <span
+                              title={result.ok ? "设置已更新" : result.error}
+                              className={`ml-1 truncate text-[10px] ${
+                                result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                              }`}
+                            >
+                              {result.ok
+                                ? result.changed?.length
+                                  ? `✓ 已更新 ${result.changed.length} 项`
+                                  : "✓ 已是最新"
+                                : `✗ ${result.error}`}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    }
+                    const note =
+                      active.id === "claude-desktop"
+                        ? "仅作用于内置 Claude Code 面板，桌面端普通对话仍用 Anthropic 账号"
+                        : active.id === "claude-cli"
+                          ? "写入 ~/.claude/settings.json，终端里的 claude 直接生效"
+                          : active.id === "grok"
+                            ? "写入 ~/.grok/config.toml 的 model.momotoken 段"
+                            : active.id === "antigravity"
+                              ? "仅支持 Gemini 系模型；环境变量写入后需重开终端生效"
+                              : "";
+                    return (
+                      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                        {note && <span className={`min-w-0 truncate text-[10px] ${SUBTLE}`}>{note}</span>}
+                        {result && (
+                          <span
+                            title={result.ok ? "设置已更新" : result.error}
+                            className={`min-w-0 truncate text-[10px] ${
+                              result.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                            }`}
+                          >
+                            {result.ok
+                              ? result.changed?.length
+                                ? `✓ 已更新 ${result.changed.length} 项`
+                                : "✓ 已是最新"
+                              : `✗ ${result.error}`}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </section>
@@ -1102,7 +1112,7 @@ export default function Home() {
                 </span>
               </button>
               {devicesOpen && (
-                <div className="mt-3 space-y-2">
+                <div className="mt-2 max-h-36 space-y-2 overflow-y-auto pr-1">
                   {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
                     <p className="nk-alert-warning">
                       已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
