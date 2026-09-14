@@ -986,15 +986,23 @@ impl ClaudeCliTarget {
             PathBuf::from("/usr/local/bin/claude"),
             PathBuf::from("/opt/homebrew/bin/claude"),
         ];
-        if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
-            return Some(found);
-        }
-        // PATH 兜底：用户可能用 npm -g / 其他包管理器装到非标准位置
-        let path_var = std::env::var_os("PATH")?;
-        std::env::split_paths(&path_var)
-            .map(|dir| dir.join(if cfg!(windows) { "claude.exe" } else { "claude" }))
-            .find(|path| path.is_file())
+        find_cli_executable("claude", &candidates)
     }
+}
+
+/// 在常见安装位置与 PATH 里找 CLI 可执行文件（claude / grok 等共用）
+fn find_cli_executable(name: &str, extra_candidates: &[PathBuf]) -> Option<PathBuf> {
+    let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+    if let Some(found) = extra_candidates
+        .iter()
+        .find(|path| path.is_file())
+    {
+        return Some(found.clone());
+    }
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(&exe))
+        .find(|path| path.is_file())
 }
 
 impl Target for ClaudeCliTarget {
@@ -1015,10 +1023,231 @@ impl Target for ClaudeCliTarget {
     }
 }
 
+/// Grok Build CLI 的模型目录键与顶层默认键都是 Niko 独占写入的固定名
+const GROK_MODEL_KEY: &str = "momotoken";
+const GROK_DEFAULT_PATH: &str = "models.default";
+
+/// Grok Build CLI（`grok`）。配置在 ~/.grok/config.toml 的 [model.<key>] 段：
+/// base_url + api_key + api_backend 三种协议（chat_completions/responses/messages）
+/// 由服务端转协议承接，客户端固定用 chat_completions 即可。
+pub struct GrokTarget;
+
+fn grok_config_path() -> PathBuf {
+    home_dir().join(".grok").join("config.toml")
+}
+
+/// 向 ~/.grok/config.toml 合并 Niko 的 [model.momotoken] 段与 [models].default，
+/// 用户自己的其他 model 段与键一律保留；解析失败拒绝写入。
+fn grok_apply(plan: &ApplyPlan) -> Result<Vec<String>, String> {
+    let path = grok_config_path();
+    let _ = save_backup("grok", &path);
+    let mut changed = Vec::new();
+
+    let mut doc: toml::Table = if path.exists() {
+        let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if !raw.trim().is_empty() {
+            raw.parse().map_err(|e| format!("~/.grok/config.toml 解析失败，未做任何修改：{e}"))?
+        } else {
+            toml::Table::new()
+        }
+    } else {
+        toml::Table::new()
+    };
+
+    let model = plan.model.clone().unwrap_or_default();
+    let entry = toml::Table::from_iter([
+        ("model".to_owned(), toml::Value::String(model)),
+        ("name".to_owned(), toml::Value::String("momotoken".to_owned())),
+        ("base_url".to_owned(), toml::Value::String(plan.base_url.trim_end_matches('/').to_owned())),
+        ("api_key".to_owned(), toml::Value::String(plan.api_key.clone())),
+        ("api_backend".to_owned(), toml::Value::String("chat_completions".to_owned())),
+    ]);
+    let models = doc
+        .entry("model")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or("config.toml 的 model 段不是表，未做任何修改")?;
+    let existing = models
+        .entry(GROK_MODEL_KEY)
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or("config.toml 的 model.momotoken 段不是表，未做任何修改")?;
+    for (key, value) in &entry {
+        if existing.get(key) != Some(value) {
+            existing.insert(key.clone(), value.clone());
+            changed.push(format!("config.toml:model.{GROK_MODEL_KEY}.{key}"));
+        }
+    }
+
+    let top = doc
+        .entry("models")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or("config.toml 的 models 段不是表，未做任何修改")?;
+    let expected_default = toml::Value::String(GROK_MODEL_KEY.to_owned());
+    if top.get("default") != Some(&expected_default) {
+        top.insert("default".to_owned(), expected_default);
+        changed.push(format!("config.toml:{GROK_DEFAULT_PATH}"));
+    }
+
+    if !changed.is_empty() {
+        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        let content = toml::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        let snap = fsx::write_with_snapshot(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+    Ok(changed)
+}
+
+/// 摘掉 Niko 的模型段与 default 指向；只清理指向我们的 default，用户自己的保留
+fn grok_restore() -> Result<Vec<String>, String> {
+    let path = grok_config_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let _ = save_backup("grok", &path);
+    let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut doc: toml::Table =
+        raw.parse().map_err(|e| format!("~/.grok/config.toml 解析失败：{e}"))?;
+    let mut changed = Vec::new();
+
+    if let Some(models) = doc.get_mut("model").and_then(|v| v.as_table_mut()) {
+        if models.remove(GROK_MODEL_KEY).is_some() {
+            changed.push(format!("-config.toml:model.{GROK_MODEL_KEY}"));
+        }
+    }
+    let ours = toml::Value::String(GROK_MODEL_KEY.to_owned());
+    if let Some(top) = doc.get_mut("models").and_then(|v| v.as_table_mut()) {
+        if top.get("default") == Some(&ours) {
+            top.remove("default");
+            changed.push(format!("-config.toml:{GROK_DEFAULT_PATH}"));
+        }
+    }
+
+    if !changed.is_empty() {
+        let content = toml::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        let snap = fsx::write_with_snapshot(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+        snap.commit();
+    }
+    Ok(changed)
+}
+
+/// 读回 [model.momotoken] 里真正生效的接入参数
+fn grok_effective() -> Result<EffectiveConfig, String> {
+    let path = grok_config_path();
+    let raw = fs::read_to_string(&path)
+        .map_err(|_| "未找到 ~/.grok/config.toml，请先点击启用".to_owned())?;
+    let doc: toml::Table = raw
+        .parse()
+        .map_err(|e| format!("~/.grok/config.toml 解析失败：{e}"))?;
+    let entry = doc
+        .get("model")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get(GROK_MODEL_KEY))
+        .and_then(|v| v.as_table())
+        .ok_or("Grok 配置里缺少 Niko 接入信息，请先点击启用")?;
+    let base_url = entry
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .ok_or("model.momotoken 缺少 base_url")?;
+    let api_key = entry
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or("model.momotoken 缺少 api_key")?;
+    let model = entry.get("model").and_then(|v| v.as_str()).map(str::to_owned);
+    Ok(EffectiveConfig {
+        target_id: "grok".to_owned(),
+        endpoint: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+        api_key: api_key.to_owned(),
+        model,
+        auth_style: "openai".to_owned(),
+    })
+}
+
+/// Grok 配置漂移检查
+fn grok_drift(h: &Path, plan: &ApplyPlan) -> Vec<String> {
+    let mut mismatched = Vec::new();
+    let path = h.join(".grok").join("config.toml");
+    if !path.exists() {
+        mismatched.push("config.toml:missing".to_owned());
+        return mismatched;
+    }
+    let Ok(doc) = fs::read_to_string(&path).unwrap_or_default().parse::<toml::Table>() else {
+        mismatched.push("config.toml:parse_error".to_owned());
+        return mismatched;
+    };
+    let entry = doc
+        .get("model")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get(GROK_MODEL_KEY))
+        .and_then(|v| v.as_table());
+    if entry.is_none() {
+        mismatched.push(format!("config.toml:model.{GROK_MODEL_KEY}:missing"));
+        return mismatched;
+    }
+    let entry = entry.unwrap();
+    if entry.get("base_url").and_then(|v| v.as_str())
+        != Some(plan.base_url.trim_end_matches('/'))
+    {
+        mismatched.push(format!("config.toml:model.{GROK_MODEL_KEY}.base_url"));
+    }
+    if entry.get("api_key").and_then(|v| v.as_str()) != Some(&plan.api_key) {
+        mismatched.push(format!("config.toml:model.{GROK_MODEL_KEY}.api_key"));
+    }
+    let expected_model = plan.model.as_deref().unwrap_or("");
+    if entry.get("model").and_then(|v| v.as_str()) != Some(expected_model) {
+        mismatched.push(format!("config.toml:model.{GROK_MODEL_KEY}.model"));
+    }
+    if doc.get("models").and_then(|v| v.as_table())
+        .and_then(|t| t.get("default"))
+        .and_then(|v| v.as_str())
+        != Some(GROK_MODEL_KEY)
+    {
+        mismatched.push(format!("config.toml:{GROK_DEFAULT_PATH}"));
+    }
+    mismatched
+}
+
+impl Target for GrokTarget {
+    fn id(&self) -> &'static str { "grok" }
+    fn display_name(&self) -> &'static str { "Grok Build CLI" }
+
+    fn is_installed(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        let candidates = vec![
+            home_dir().join(".local").join("bin").join("grok.exe"),
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let candidates = vec![
+            home_dir().join(".local").join("bin").join("grok"),
+            PathBuf::from("/usr/local/bin/grok"),
+            PathBuf::from("/opt/homebrew/bin/grok"),
+        ];
+        find_cli_executable("grok", &candidates).is_some()
+    }
+
+    fn icon_data_uri(&self) -> Option<String> {
+        None
+    }
+
+    fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
+        let changed = grok_apply(plan)?;
+        Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
+    }
+}
+
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
-    vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget), Box::new(ClaudeCliTarget)]
+    vec![
+        Box::new(CodexTarget),
+        Box::new(ClaudeDesktopTarget),
+        Box::new(ClaudeCliTarget),
+        Box::new(GrokTarget),
+    ]
 }
 
 pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
@@ -1033,6 +1262,7 @@ pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
             }
             Ok(paths)
         }
+        "grok" => Ok(vec![grok_config_path()]),
         other => Err(format!("unknown transaction target: {other}")),
     }
 }
@@ -1145,6 +1375,7 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
             }
             claude_settings_effective(&h, target_id)
         }
+        "grok" => grok_effective(),
         other => Err(format!("未知目标: {other}")),
     }
 }
@@ -1442,6 +1673,42 @@ fn observe_claude_config(home: &Path) -> TargetConfigObservation {
     observe_claude_settings(home, "claude-desktop")
 }
 
+/// Grok 配置观测：[model.momotoken] 完整且指向明确才算 Matchable
+fn observe_grok_config(home: &Path) -> TargetConfigObservation {
+    let path = home.join(".grok").join("config.toml");
+    let raw = match read_regular_text(&path) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return TargetConfigObservation::Other,
+        Err(()) => return TargetConfigObservation::Unreadable,
+    };
+    let Ok(doc) = raw.parse::<toml::Table>() else {
+        return TargetConfigObservation::Unreadable;
+    };
+    let entry = doc
+        .get("model")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get(GROK_MODEL_KEY))
+        .and_then(|v| v.as_table());
+    let Some(entry) = entry else {
+        return TargetConfigObservation::Other;
+    };
+    let (Some(toml::Value::String(base)), Some(toml::Value::String(key)), Some(toml::Value::String(model))) = (
+        entry.get("base_url"),
+        entry.get("api_key"),
+        entry.get("model"),
+    ) else {
+        return TargetConfigObservation::Ambiguous;
+    };
+    let endpoint = format!("{}/chat/completions", base.trim_end_matches('/'));
+    matchable_target_config(
+        "grok",
+        &endpoint,
+        "openai",
+        Some(model.as_str()),
+        key,
+    )
+}
+
 pub(crate) fn observe_active_config_at(
     target_id: &str,
     home: &Path,
@@ -1450,6 +1717,7 @@ pub(crate) fn observe_active_config_at(
         "codex" => observe_codex_config(home),
         "claude-desktop" => observe_claude_config(home),
         "claude-cli" => observe_claude_settings(home, target_id),
+        "grok" => observe_grok_config(home),
         _ => TargetConfigObservation::Unreadable,
     }
 }
@@ -1494,6 +1762,19 @@ pub(crate) fn expected_config_digest_at(
                 } else {
                     "anthropic"
                 },
+                plan.model.as_deref(),
+                &plan.api_key,
+            ))
+        }
+        "grok" => {
+            let endpoint = format!(
+                "{}/chat/completions",
+                plan.base_url.trim_end_matches('/')
+            );
+            Ok(crate::active_groups::config_digest(
+                "grok",
+                &endpoint,
+                "openai",
                 plan.model.as_deref(),
                 &plan.api_key,
             ))
@@ -1595,6 +1876,9 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
             let settings_path = h.join(".claude").join("settings.json");
             let _ = save_backup(target_id, &settings_path);
             changed.append(&mut claude_settings_restore(&settings_path)?);
+        }
+        "grok" => {
+            changed.append(&mut grok_restore()?);
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -1768,6 +2052,9 @@ pub(crate) fn check_drift_at(
                     }
                 }
             }
+        }
+        "grok" => {
+            mismatched.append(&mut grok_drift(h, plan));
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -2201,6 +2488,93 @@ mod tests {
         ClaudeCliTarget.apply(&plan).unwrap();
         let drift = check_drift_at(&home, "claude-desktop", &plan).unwrap();
         assert!(!drift.drifted, "unexpected drift: {:?}", drift.mismatched_keys);
+    }
+
+    /// Grok Build：写 [model.momotoken] + [models].default，保留用户自己的段，
+    /// 幂等，漂移可检出，恢复只摘自己的键。
+    #[test]
+    fn grok_apply_preserves_user_config_and_is_idempotent() {
+        let home = tmp_dir("grok_apply");
+        fs::create_dir_all(home.join(".grok")).unwrap();
+        fs::write(
+            home.join(".grok").join("config.toml"),
+            "[models]\nexperience = \"on\"\n\n[model.mine]\nmodel = \"grok-4.5\"\n",
+        )
+        .unwrap();
+
+        let plan = claude_plan();
+        let _home = set_test_home(&home);
+        let summary = GrokTarget.apply(&plan).unwrap();
+        assert_eq!(summary.target_id, "grok");
+        assert!(!summary.changed_keys.is_empty());
+
+        let raw = fs::read_to_string(home.join(".grok").join("config.toml")).unwrap();
+        let doc: toml::Table = raw.parse().unwrap();
+        // 用户配置保留
+        assert_eq!(
+            doc.get("models").and_then(|t| t.get("experience")).and_then(|v| v.as_str()),
+            Some("on")
+        );
+        assert!(doc.get("model").and_then(|t| t.get("mine")).is_some());
+        // 我们的段写入
+        let entry = doc.get("model").and_then(|t| t.get(GROK_MODEL_KEY)).unwrap();
+        assert_eq!(entry.get("base_url").and_then(|v| v.as_str()), Some("https://momotoken.win/v1"));
+        assert_eq!(entry.get("api_key").and_then(|v| v.as_str()), Some("sk-test"));
+        assert_eq!(entry.get("model").and_then(|v| v.as_str()), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.get("api_backend").and_then(|v| v.as_str()), Some("chat_completions"));
+        assert_eq!(
+            doc.get("models").and_then(|t| t.get("default")).and_then(|v| v.as_str()),
+            Some(GROK_MODEL_KEY)
+        );
+
+        // 幂等
+        let again = GrokTarget.apply(&plan).unwrap();
+        assert!(again.changed_keys.is_empty());
+
+        // 无漂移
+        let drift = check_drift_at(&home, "grok", &plan).unwrap();
+        assert!(!drift.drifted, "unexpected drift: {:?}", drift.mismatched_keys);
+
+        // effective 回读
+        let effective = grok_effective().unwrap();
+        assert_eq!(effective.endpoint, "https://momotoken.win/v1/chat/completions");
+        assert_eq!(effective.auth_style, "openai");
+    }
+
+    /// 解析失败的 config.toml 必须拒绝写入（防止污染用户配置），
+    /// 恢复只移除指向我们的 default，用户自己的 default 保留。
+    #[test]
+    fn grok_unparsable_config_refuses_write_and_restore_is_scoped() {
+        let home = tmp_dir("grok_unparsable");
+        fs::create_dir_all(home.join(".grok")).unwrap();
+        fs::write(home.join(".grok").join("config.toml"), "not [valid toml").unwrap();
+        let _home = set_test_home(&home);
+        assert!(GrokTarget.apply(&claude_plan()).is_err());
+
+        // 用户自己的 default 不被我们动
+        let home2 = tmp_dir("grok_restore");
+        fs::create_dir_all(home2.join(".grok")).unwrap();
+        let plan = claude_plan();
+        let _home2 = set_test_home(&home2);
+        GrokTarget.apply(&plan).unwrap();
+        let path = home2.join(".grok").join("config.toml");
+        let mut doc: toml::Table =
+            fs::read_to_string(&path).unwrap().parse().unwrap();
+        doc.get_mut("models")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert("default".to_owned(), toml::Value::String("mine".to_owned()));
+        fs::write(&path, toml::to_string_pretty(&doc).unwrap()).unwrap();
+
+        restore_defaults("grok").unwrap();
+        let doc: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            doc.get("models").and_then(|t| t.get("default")).and_then(|v| v.as_str()),
+            Some("mine"),
+            "用户自己的 default 必须保留"
+        );
+        assert!(doc.get("model").and_then(|t| t.get(GROK_MODEL_KEY)).is_none());
     }
 
     /// 3p 模式下桌面端按托管配置注入环境变量，优先级高于 settings.json，

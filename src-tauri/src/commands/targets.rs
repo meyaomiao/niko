@@ -316,7 +316,7 @@ fn provider_transaction_paths_for_targets(
     let mut paths = Vec::new();
     for target_id in target_ids {
         if target_id != "codex" {
-            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli") {
+            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli" | "grok") {
                 return Err(SafeCommandError::invalid_request());
             }
             paths.extend(
@@ -354,7 +354,7 @@ fn validate_provider_transaction_shape(
     }
 
     // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单
-    const CANONICAL_ORDER: &[&str] = &["codex", "claude-desktop", "claude-cli"];
+    const CANONICAL_ORDER: &[&str] = &["codex", "claude-desktop", "claude-cli", "grok"];
     let valid_target_order = !target_ids.is_empty()
         && target_ids.iter().all(|id| CANONICAL_ORDER.contains(&id.as_str()))
         && {
@@ -410,7 +410,7 @@ fn validate_provider_transaction_path_structure(
 
     if target_ids
         .iter()
-        .any(|target_id| target_id != "codex")
+        .any(|target_id| target_id == "claude-desktop" || target_id == "claude-cli")
         && paths[0].file_name().and_then(|name| name.to_str()) != Some("settings.json")
     {
         return Err(SafeCommandError::change_failed(false));
@@ -864,7 +864,10 @@ pub async fn apply_all_targets(
     let claude_cli = targets
         .iter()
         .find(|target| target.id() == "claude-cli" && target.is_installed());
-    if codex.is_none() && claude.is_none() && claude_cli.is_none() {
+    let grok = targets
+        .iter()
+        .find(|target| target.id() == "grok" && target.is_installed());
+    if codex.is_none() && claude.is_none() && claude_cli.is_none() && grok.is_none() {
         return Ok(Vec::new());
     }
 
@@ -877,6 +880,9 @@ pub async fn apply_all_targets(
     }
     if claude_cli.is_some() {
         target_ids.push("claude-cli".to_owned());
+    }
+    if grok.is_some() {
+        target_ids.push("grok".to_owned());
     }
     let records = records_for_plan(&target_ids, &plan)?;
     let known_codex_transactions = if codex.is_some() {
@@ -891,6 +897,9 @@ pub async fn apply_all_targets(
     if claude_cli.is_some() {
         preflight_target_apply("claude-cli")
             .map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    if grok.is_some() {
+        preflight_target_apply("grok").map_err(|_| SafeCommandError::change_failed(false))?;
     }
 
     let paths = provider_transaction_paths_for_targets(&target_ids)?;
@@ -910,8 +919,8 @@ pub async fn apply_all_targets(
     }
 
     let mut claude_summaries: Vec<_> = Vec::new();
-    for claude_target in [claude, claude_cli].into_iter().flatten() {
-        let summary = match claude_target.apply(&plan) {
+    for extra_target in [claude, claude_cli, grok].into_iter().flatten() {
+        let summary = match extra_target.apply(&plan) {
             Ok(summary) => summary,
             Err(_) => {
                 return Err(rollback_provider_transaction(

@@ -24,6 +24,10 @@ const TARGET_FALLBACKS: Record<string, { icon?: string; label: string; className
     label: "C",
     className: "bg-[var(--nk-warning-soft)] text-[var(--nk-accent)]",
   },
+  grok: {
+    label: "𝕏",
+    className: "bg-black/5 text-gray-900 dark:bg-white/10 dark:text-gray-100",
+  },
 };
 
 export default function TargetAppIcon({

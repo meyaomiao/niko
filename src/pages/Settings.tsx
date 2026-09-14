@@ -55,9 +55,10 @@ const TARGET_LABELS: Record<string, string> = {
   "codex": "ChatGPT 桌面端",
   "claude-desktop": "Claude 桌面端",
   "claude-cli": "Claude Code CLI",
+  "grok": "Grok Build CLI",
 };
 
-const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-cli"];
+const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-cli", "grok"];
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString("zh-CN", {
