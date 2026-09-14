@@ -148,12 +148,23 @@ export default function Models() {
     return cards.filter((c) => c.name.toLowerCase().includes(q));
   }, [cards, query]);
 
-  const sections = VENDORS.map((vendor) => ({
-    vendor,
-    cards: filtered.filter((c) => vendorOfModel(c.name) === vendor),
-  })).filter((s) => s.cards.length > 0);
+  const counts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of filtered) {
+      const v = vendorOfModel(c.name);
+      map.set(v, (map.get(v) ?? 0) + 1);
+    }
+    return map;
+  }, [filtered]);
 
-  const total = sections.reduce((sum, s) => sum + s.cards.length, 0);
+  // 厂家切换：全部=分区铺开；选中某家=只看该家
+  const [activeVendor, setActiveVendor] = useState<string>("全部");
+  const visible = activeVendor === "全部"
+    ? VENDORS.map((vendor) => ({ vendor, cards: filtered.filter((c) => vendorOfModel(c.name) === vendor) }))
+    : VENDORS.filter((v) => v === activeVendor).map((vendor) => ({ vendor, cards: filtered.filter((c) => vendorOfModel(c.name) === vendor) }));
+  const sections = visible.filter((s) => s.cards.length > 0);
+
+  const total = filtered.length;
 
   return (
     <div className="nk-shell">
@@ -193,6 +204,30 @@ export default function Models() {
               ))}
             </div>
           </div>
+
+          {/* 厂家切换：sticky 吸顶，切走长滚动 */}
+          {!loading && !error && (
+            <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1 overflow-x-auto rounded-xl border bg-[var(--nk-surface)] px-1 py-1 [border-color:var(--nk-line)]">
+              {["全部", ...VENDORS.filter((v) => (counts.get(v) ?? 0) > 0)].map((vendor) => (
+                <button
+                  key={vendor}
+                  onClick={() => setActiveVendor(vendor)}
+                  aria-pressed={activeVendor === vendor}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs transition ${
+                    activeVendor === vendor
+                      ? "bg-[var(--nk-accent)] font-medium text-white"
+                      : "text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                  }`}
+                >
+                  {vendor !== "全部" && <VendorIcon vendor={vendor} />}
+                  {vendor}
+                  <span className="tabular-nums opacity-60">
+                    {vendor === "全部" ? total : counts.get(vendor) ?? 0}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {loading && <p className={`${CARD} ${SUBTLE}`}>正在加载模型目录…</p>}
           {error && <p className={`${CARD} text-red-500`}>{error}</p>}
