@@ -9,6 +9,8 @@ import { loadAuth } from "../store/auth";
 import { api, type BootstrapData, type GroupOption, type ModelMetadata } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS, vendorOfModel } from "../lib/vendor";
+import { computeTags, topUsedModels, type ModelTag } from "../lib/modelTags";
+import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
 import { friendlyDesktopError } from "../lib/copy";
 
@@ -68,6 +70,7 @@ interface Card {
   /** 相对价位 0~1（按本页有价模型的输入价分位），仅用于价格条长度 */
   level: number;
   bench?: BenchEntry;
+  tags: ModelTag[];
 }
 
 export default function Models() {
@@ -80,6 +83,7 @@ export default function Models() {
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
+  const [topUsed, setTopUsed] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -92,6 +96,11 @@ export default function Models() {
       .then((res) => {
         setData(res);
         setGroup(res.user?.group || res.groups?.[0]?.name || "");
+        // 用户自己的用量聚合 → 「常用」标签；失败静默，不阻塞目录
+        api
+          .usageSummary(token)
+          .then((s) => setTopUsed(topUsedModels(s)))
+          .catch(() => undefined);
       })
       .catch((e) => setError(friendlyDesktopError(e)))
       .finally(() => setLoading(false));
@@ -123,8 +132,16 @@ export default function Models() {
         r.price && !r.price.perRequest && Number.isFinite(min)
           ? Math.min(1, Math.max(0, (r.price.input - min) / span))
           : 0.5,
+      tags: computeTags({
+        name: r.name,
+        release: r.release,
+        level: r.price && !r.price.perRequest && Number.isFinite(min)
+          ? Math.min(1, Math.max(0, (r.price.input - min) / span))
+          : undefined,
+        topUsed,
+      }),
     }));
-  }, [data, pricingIndex, ratio, bench]);
+  }, [data, pricingIndex, ratio, bench, topUsed]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -183,7 +200,10 @@ export default function Models() {
           {!loading && !error && sections.map(({ vendor, cards: list }) => (
             <section key={vendor} className={CARD}>
               <div className="flex items-baseline justify-between">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{vendor}</h2>
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  <VendorIcon vendor={vendor} />
+                  {vendor}
+                </h2>
                 <span className={`text-[11px] ${SUBTLE}`}>{list.length} 个模型</span>
               </div>
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -218,7 +238,14 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
           <p className="truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100" title={card.name}>
             {card.name}
           </p>
-          {card.release && <p className={`mt-0.5 text-[10px] tabular-nums ${SUBTLE}`}>{card.release} 发布</p>}
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {card.tags.map((tag) => (
+              <span key={tag.id} className={`rounded-full px-1.5 py-0.5 text-[10px] ${tag.className}`}>
+                {tag.label}
+              </span>
+            ))}
+            {card.release && <span className={`text-[10px] tabular-nums ${SUBTLE}`}>{card.release} 发布</span>}
+          </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           {card.bench && (
