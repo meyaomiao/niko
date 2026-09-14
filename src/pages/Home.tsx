@@ -310,6 +310,34 @@ export default function Home() {
     [bootstrap?.pricing, groups]
   );
 
+  /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
+  const releaseLabelOf = (name: string) => {
+    const m = bootstrap?.model_metadata?.[name];
+    return (
+      m?.release_date ??
+      m?.released_at ??
+      m?.official_release_date ??
+      m?.version_date ??
+      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
+      ""
+    );
+  };
+
+  /** 发布日期时间戳；没有日期返回 null（排序走服务端发布序兜底） */
+  const releaseTimeOf = (name: string) => {
+    const label = releaseLabelOf(name);
+    if (!label) return null;
+    const ts = Date.parse(label);
+    return Number.isFinite(ts) ? ts : null;
+  };
+
+  /** 服务端发布顺序索引（bootstrap 注释：该顺序即发布日期的先后） */
+  const catalogOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    (bootstrap?.model_order ?? []).forEach((name, index) => map.set(name, index));
+    return map;
+  }, [bootstrap?.model_order]);
+
   const vendorTabs = useMemo(() => {
     const buckets = bucketByVendor(catalog.models, (model) => vendorNameOf(vendorIndex, model));
     // 组装成与原来一致的 VendorModelTab 形状（含每个模型的可用分组与发布时间）
@@ -495,33 +523,6 @@ export default function Home() {
   );
   const hasTokenGroups = tokenGroupNames.length > 0;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
-  /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
-  const releaseLabelOf = (name: string) => {
-    const m = bootstrap?.model_metadata?.[name];
-    return (
-      m?.release_date ??
-      m?.released_at ??
-      m?.official_release_date ??
-      m?.version_date ??
-      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
-      ""
-    );
-  };
-
-  /** 发布日期时间戳；没有日期返回 null（排序走服务端发布序兜底） */
-  const releaseTimeOf = (name: string) => {
-    const label = releaseLabelOf(name);
-    if (!label) return null;
-    const ts = Date.parse(label);
-    return Number.isFinite(ts) ? ts : null;
-  };
-
-  /** 服务端发布顺序索引（bootstrap 注释：该顺序即发布日期的先后） */
-  const catalogOrder = useMemo(() => {
-    const map = new Map<string, number>();
-    (bootstrap?.model_order ?? []).forEach((name, index) => map.set(name, index));
-    return map;
-  }, [bootstrap?.model_order]);
 
   /**
    * 模型排序（无论是否筛选厂家都同一规则）：

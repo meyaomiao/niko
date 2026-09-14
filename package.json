@@ -13,6 +13,8 @@
     "test:tags": "node --experimental-strip-types --test tests/modelTags.test.ts",
     "test:order": "node --experimental-strip-types --test tests/modelOrder.test.ts",
     "test:catalog": "node --experimental-strip-types --test tests/catalog.test.ts",
+    "test:component-order": "node --experimental-strip-types --test tests/componentOrder.test.ts",
+    "test:smoke": "node --experimental-strip-types --test tests/renderSmoke.test.ts",
     "test:registration": "node --experimental-strip-types --test tests/registration.test.ts",
     "test:sessions": "node --experimental-strip-types --test tests/codexSessions.test.ts",
     "preview": "vite preview",
