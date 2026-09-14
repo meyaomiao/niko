@@ -478,6 +478,13 @@ export default function Home() {
     () => (model ? groupsForModel(groupCatalog, bootstrap?.pricing, model, groups) : []),
     [groupCatalog, bootstrap?.pricing, model, groups]
   );
+  // 服务端是否真的下发了该模型的令牌分组（enable_groups）
+  const tokenGroupNames = useMemo(
+    () => bootstrap?.pricing?.find((item) => item.model_name === model)?.enable_groups ?? [],
+    [bootstrap?.pricing, model]
+  );
+  const hasTokenGroups = tokenGroupNames.length > 0;
+  const tokenGroupsHidden = modelGroups.filter((g) => !g.usable).length;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
   const models = useMemo(() => {
     const kw = modelFilter.trim().toLowerCase();
@@ -1340,7 +1347,7 @@ export default function Home() {
                   <div className="nk-group-section mt-3 shrink-0">
                     <div className="flex items-center justify-between gap-3">
                       <p className={LABEL}>
-                        分组
+                        令牌分组
                         <span className="ml-1.5 opacity-70">{modelGroups.length}</span>
                       </p>
                       {model && modelGroups.length > 0 && (
@@ -1358,6 +1365,17 @@ export default function Home() {
                         </button>
                       )}
                     </div>
+                    {/* 诊断：服务端没下发 enable_groups 时明确说明，避免误以为是账号分组 */}
+                    {model && !hasTokenGroups && (
+                      <p className={`mt-1 text-[10px] ${SUBTLE}`}>
+                        服务端未下发该模型的令牌分组（enable_groups），当前只能列出账号可用的分组
+                      </p>
+                    )}
+                    {model && hasTokenGroups && tokenGroupsHidden > 0 && (
+                      <p className={`mt-1 text-[10px] ${SUBTLE}`}>
+                        另有 {tokenGroupsHidden} 个令牌分组当前账号未开通，已置灰显示
+                      </p>
+                    )}
                     {/* 横向胶囊：一行扫完所有分组，不再占一整块滚动区 */}
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {modelGroups.length === 0 && <p className={`text-[11px] ${SUBTLE}`}>先选择模型</p>}
