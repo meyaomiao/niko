@@ -91,7 +91,6 @@ const CARD = "nk-card";
 const LABEL = "nk-label";
 const TITLE = "nk-title";
 const SUBTLE = "nk-muted";
-const INPUT = "nk-input py-1 text-xs";
 const GHOST_BTN = "nk-btn-secondary";
 const PRIMARY_BTN = "nk-btn-primary";
 
@@ -1103,16 +1102,17 @@ export default function Home() {
                     ) : (
                       <span>{activeGroupView.text}</span>
                     )}
-                    <span className="text-gray-500 dark:text-gray-400">
-                      草稿：{draftSelection
-                        ? `${draftSelection.provider} · ${draftSelection.model} · ${draftSelection.group}`
-                        : draftSource === "recommendation" ? "未修改" : "未选择"}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-400">
-                      推荐：{recommendedSelection
-                        ? `${recommendedSelection.provider} · ${recommendedSelection.model} · ${recommendedSelection.group}`
-                        : "暂不可用"}
-                    </span>
+                    {/* 草稿/推荐只在和当前生效不一致时才出现，平时不占地方 */}
+                    {draftSource === "manual" && draftSelection && (
+                      <span className="text-gray-500 dark:text-gray-400">
+                        草稿：{draftSelection.provider} · {draftSelection.model} · {draftSelection.group}
+                      </span>
+                    )}
+                    {draftSource !== "recommendation" && recommendedSelection && (
+                      <span className="text-gray-500 dark:text-gray-400">
+                        推荐：{recommendedSelection.provider} · {recommendedSelection.model} · {recommendedSelection.group}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -1122,36 +1122,32 @@ export default function Home() {
               ) : (
                 <>
                   <div className="flex min-h-0 flex-1 flex-col overflow-hidden pr-1">
-                  <div className="flex shrink-0 gap-1 overflow-x-auto border-b [border-color:var(--nk-line)]">
-                    {vendorTabs.map((tab) => (
-                      <button
-                        key={tab.vendor}
-                        onClick={() => pickVendor(tab)}
-                        className={`-mb-px border-b-2 px-3 py-2 text-xs transition ${
-                          tab.vendor === activeVendor
-                            ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
-                            : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
-                        }`}
-                      >
-                        {tab.vendor}
-                        <span className="ml-1.5 opacity-60">{tab.models.length}</span>
-                        {recommendVendor && tab.vendor !== recommendVendor && (
-                          <span className="ml-1.5 opacity-60">转换接入</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="mt-3 flex shrink-0 items-center justify-between gap-3">
-                    <p className={`${LABEL} shrink-0`}>
-                      模型
-                      <span className="ml-1.5 opacity-70">{models.length}</span>
-                    </p>
+                  <div className="flex shrink-0 items-center gap-2 border-b [border-color:var(--nk-line)]">
+                    <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+                      {vendorTabs.map((tab) => (
+                        <button
+                          key={tab.vendor}
+                          onClick={() => pickVendor(tab)}
+                          className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-xs transition ${
+                            tab.vendor === activeVendor
+                              ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
+                              : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                          }`}
+                        >
+                          {tab.vendor}
+                          <span className="ml-1.5 opacity-60">{tab.models.length}</span>
+                          {recommendVendor && tab.vendor !== recommendVendor && (
+                            <span className="ml-1.5 opacity-60">转换接入</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
                     <input
                       value={modelFilter}
                       onChange={(e) => setModelFilter(e.target.value)}
-                      placeholder="搜索模型"
+                      placeholder="搜索"
                       aria-label="搜索模型"
-                      className={`w-44 ${INPUT}`}
+                      className="w-28 shrink-0 sm:w-36"
                     />
                   </div>
                   <div className="nk-model-scroll mt-2 md:flex-1 md:max-h-none">
@@ -1203,75 +1199,61 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="nk-group-section mt-3">
+                  <div className="nk-group-section mt-3 shrink-0">
                     <div className="flex items-center justify-between gap-3">
                       <p className={LABEL}>
                         分组
                         <span className="ml-1.5 opacity-70">{modelGroups.length}</span>
                       </p>
-                      <div className="flex min-w-0 items-center gap-2">
-                        {model && modelGroups.length > 0 && (
-                          <button
-                            onClick={runBenchmarks}
-                            disabled={benchmarkRunning}
-                            title="对当前模型的各分组发真实请求测首字延迟"
-                            className={`shrink-0 rounded-lg px-2 py-0.5 text-[11px] transition ${
-                              benchmarkRunning
-                                ? "cursor-wait text-gray-400 dark:text-gray-500"
-                                : "text-[var(--nk-info)] hover:bg-black/[0.04] dark:hover:bg-white/10"
-                            }`}
-                          >
-                            {benchmarkRunning ? "测速中…" : "⚡ 测速"}
-                          </button>
-                        )}
-                        {model && (
-                          <p className={`${SUBTLE} truncate`}>
-                            仅显示支持当前模型的分组
-                          </p>
-                        )}
-                      </div>
+                      {model && modelGroups.length > 0 && (
+                        <button
+                          onClick={runBenchmarks}
+                          disabled={benchmarkRunning}
+                          title="对当前模型的各分组发真实请求测首字延迟"
+                          className={`shrink-0 rounded-lg px-2 py-0.5 text-[11px] transition ${
+                            benchmarkRunning
+                              ? "cursor-wait text-gray-400 dark:text-gray-500"
+                              : "text-[var(--nk-info)] hover:bg-black/[0.04] dark:hover:bg-white/10"
+                          }`}
+                        >
+                          {benchmarkRunning ? "测速中…" : "⚡ 测速"}
+                        </button>
+                      )}
                     </div>
-                    <div className="nk-group-list mt-1.5 pr-1 md:max-h-[9rem]">
-                      {modelGroups.length === 0 && <p className="nk-empty">先选择模型</p>}
+                    {/* 横向胶囊：一行扫完所有分组，不再占一整块滚动区 */}
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {modelGroups.length === 0 && <p className={`text-[11px] ${SUBTLE}`}>先选择模型</p>}
                       {modelGroups.map((g) => (
                         <button
                           key={g.name}
                           onClick={() => pickGroup(g.name)}
                           aria-pressed={g.name === group}
-                          className={`nk-group-card w-full text-left ${
+                          title={g.desc || g.name}
+                          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition ${
                             g.name === group
-                              ? "nk-group-card-selected text-gray-900 dark:text-white"
-                              : "text-gray-600 dark:text-gray-300"
+                              ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
+                              : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                           }`}
                         >
-                          <span className="flex min-h-[1.75rem] min-w-0 items-center justify-between gap-3">
-                            <span className="flex min-w-0 items-center gap-2">
-                              <span className="shrink-0 truncate text-[11px] font-medium">{g.name}</span>
-                              <span className="truncate text-[10px] text-gray-500 dark:text-gray-400">
-                                {g.desc || "标准分组"}
-                              </span>
+                          <span className="font-medium">{g.name}</span>
+                          <span className="tabular-nums opacity-70">{g.ratio}x</span>
+                          <span className="tabular-nums opacity-90">{groupPriceLabel(model, g.ratio)}</span>
+                          {benchmarks[g.name] === "loading" ? (
+                            <span className="opacity-60">…</span>
+                          ) : typeof benchmarks[g.name] === "number" ? (
+                            <span
+                              title="首字延迟中位数（3 次采样）"
+                              className={`tabular-nums ${
+                                (benchmarks[g.name] as number) <= 1500
+                                  ? "text-green-600 dark:text-green-400"
+                                  : (benchmarks[g.name] as number) <= 4000
+                                    ? "text-yellow-600 dark:text-yellow-400"
+                                    : "text-red-500"
+                              }`}
+                            >
+                              {benchmarks[g.name]}ms
                             </span>
-                            <span className="flex shrink-0 items-center gap-2 tabular-nums text-[11px] font-medium text-gray-700 dark:text-gray-200">
-                              {benchmarks[g.name] === "loading" ? (
-                                <span className="text-[10px] font-normal text-gray-400">…</span>
-                              ) : typeof benchmarks[g.name] === "number" ? (
-                                <span
-                                  title="首字延迟中位数（3 次采样）"
-                                  className={`text-[10px] font-normal ${
-                                    (benchmarks[g.name] as number) <= 1500
-                                      ? "text-green-600 dark:text-green-400"
-                                      : (benchmarks[g.name] as number) <= 4000
-                                        ? "text-yellow-600 dark:text-yellow-400"
-                                        : "text-red-500"
-                                  }`}
-                                >
-                                  {benchmarks[g.name]}ms
-                                </span>
-                              ) : null}
-                              <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">{g.ratio}x</span>
-                              <span>{groupPriceLabel(model, g.ratio)}</span>
-                            </span>
-                          </span>
+                          ) : null}
                         </button>
                       ))}
                     </div>
