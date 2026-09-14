@@ -475,6 +475,14 @@ export default function Home() {
           model,
           samples: 3,
         });
+        if (result.median_ttft_ms != null) {
+          // 落一份本地缓存，供「模型与价格」页展示实测延迟
+          try {
+            const cache = JSON.parse(localStorage.getItem("niko_model_bench") ?? "{}") as Record<string, unknown>;
+            cache[model] = { median: result.median_ttft_ms, samples: 3, at: Date.now() };
+            localStorage.setItem("niko_model_bench", JSON.stringify(cache));
+          } catch { /* 缓存失败不影响测速 */ }
+        }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
       } catch {
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
@@ -770,6 +778,10 @@ export default function Home() {
             <BookOpenIcon />
             <span className="hidden sm:inline">ChatGPT 会话</span>
           </button>
+          <button onClick={() => navigate("/models")} className={GHOST_BTN} aria-label="模型与价格" title="模型与价格">
+            <span aria-hidden="true" className="text-[13px] leading-none">¥</span>
+            <span className="hidden sm:inline">模型</span>
+          </button>
           <button onClick={logout} className={GHOST_BTN} aria-label="退出" title="退出">
             <LogOutIcon />
             <span className="hidden sm:inline">退出</span>
@@ -819,9 +831,6 @@ export default function Home() {
                 <div className="flex items-center gap-2">
                   <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
                     充值
-                  </button>
-                  <button onClick={() => navigate("/models")} className={GHOST_BTN}>
-                    模型价格
                   </button>
                   <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
                     使用明细

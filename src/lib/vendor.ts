@@ -1,5 +1,5 @@
 // 上游厂商归类：分组名和模型名都按前缀/关键词判断，未匹配统一归「其他」
-export const VENDORS = ["OpenAI", "Anthropic", "Google", "其他"] as const;
+export const VENDORS = ["OpenAI", "Anthropic", "Google", "xAI", "其他"] as const;
 export type Vendor = (typeof VENDORS)[number];
 
 export function vendorOfGroup(name: string): Vendor {
@@ -14,12 +14,14 @@ export function vendorOfGroup(name: string): Vendor {
   )
     return "Anthropic";
   if (n.startsWith("gemini") || n.includes("google")) return "Google";
+  if (n.startsWith("grok") || n.includes("xai")) return "xAI";
   return "其他";
 }
 
 export function vendorOfModel(name: string): Vendor {
   const n = name.toLowerCase();
   if (n.startsWith("claude") || n.startsWith("anthropic")) return "Anthropic";
+  if (n.startsWith("grok")) return "xAI";
   if (n.startsWith("gemini") || n.startsWith("imagen") || n.startsWith("veo") || n.startsWith("text-embedding-00"))
     return "Google";
   if (
