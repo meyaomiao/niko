@@ -220,6 +220,14 @@ select:disabled {
     box-shadow: var(--nk-shadow);
   }
 
+  /* 紧凑卡片：顶部摘要区用，降低内边距以压缩纵向高度 */
+  .nk-card-tight {
+    @apply rounded-2xl border px-3 py-2.5;
+    border-color: var(--nk-line);
+    background: color-mix(in srgb, var(--nk-surface) 96%, transparent);
+    box-shadow: var(--nk-shadow);
+  }
+
   .nk-inset {
     @apply rounded-xl;
     background: var(--nk-surface-muted);

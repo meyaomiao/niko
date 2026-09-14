@@ -574,10 +574,14 @@ pub(crate) fn lock_and_recover_provider_transaction_for_sessions(
     Ok(guard)
 }
 
+/// 只读命令共享的事务锁：用阻塞式加锁而不是 try_lock。
+/// 首页启动会并发发起 list_targets / detect_* 等多个命令，try_lock 会让
+/// 抢不到锁的那个直接失败（界面显示「未能读取本机应用状态」）。
+/// 临界区很短，阻塞等待远好于让用户看到假失败。
 pub(crate) fn lock_provider_transaction_readonly(
 ) -> Result<MutexGuard<'static, ()>, SafeCommandError> {
     PROVIDER_TRANSACTION_LOCK
-        .try_lock()
+        .lock()
         .map_err(|_| SafeCommandError::busy())
 }
 

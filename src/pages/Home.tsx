@@ -92,6 +92,7 @@ const TOKEN_TIP =
   "token 是模型计算文字量的单位。你发出的内容和 AI 回复的内容分别计价，页面上的价格按 100 万 token 计算。";
 
 const CARD = "nk-card";
+const CARD_TIGHT = "nk-card-tight";
 const LABEL = "nk-label";
 const TITLE = "nk-title";
 const SUBTLE = "nk-muted";
@@ -891,15 +892,15 @@ export default function Home() {
 
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col gap-4">
-          {/* 上方：用户状态（余额）+ 本机应用（接入目标） */}
-          <div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-[22rem_minmax(0,1fr)]">
+          {/* 上方摘要：用户状态 + 本机应用 + 登录设备，三卡一行不换行 */}
+          <div className="grid shrink-0 grid-cols-1 gap-3 md:grid-cols-[19rem_minmax(0,1fr)_15rem]">
             {/* 余额 */}
-            <section className={CARD}>
-              <div className="flex items-end justify-between">
-                <div>
-                  <p className={LABEL}>{auth?.username ?? "已登录"}</p>
-                  <div className="mt-1 flex items-center gap-1.5">
-                    <p className="text-2xl font-semibold text-gray-900 dark:text-white" aria-live="polite">
+            <section className={CARD_TIGHT}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className={`${LABEL} truncate`}>{auth?.username ?? "已登录"}</p>
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <p className="text-xl font-semibold text-gray-900 dark:text-white" aria-live="polite">
                       {formatBalanceUSD(balance.snapshot)}
                     </p>
                     <button
@@ -918,7 +919,7 @@ export default function Home() {
                       </span>
                     </button>
                   </div>
-                  <p className={`mt-1 ${SUBTLE}`}>
+                  <p className={`mt-0.5 text-[11px] ${SUBTLE}`}>
                     可用余额
                     {balance.snapshot ? ` · ${formatBalanceUpdatedAt(balance.snapshot)}` : ""}
                   </p>
@@ -940,8 +941,8 @@ export default function Home() {
             </section>
 
             {/* 接入应用（先选应用，再按应用推荐模型） */}
-            <section className={CARD}>
-              <div className="mb-3 flex items-center justify-between">
+            <section className={`${CARD_TIGHT} min-w-0`}>
+              <div className="mb-2 flex items-center justify-between">
                 <h2 className={TITLE}>接入应用</h2>
                 <span className={SUBTLE}>
                   {targetsLoading ? "正在检查…" : targetsError ? "检查失败" : `已安装 ${installedTargets.length}/${targets.length}`}
@@ -1088,7 +1089,7 @@ export default function Home() {
             </section>
 
             {/* 设备（折叠） */}
-            <section className={CARD}>
+            <section className={CARD_TIGHT}>
               <button
                 onClick={() => setDevicesOpen((v) => !v)}
                 className="flex w-full items-center justify-between"

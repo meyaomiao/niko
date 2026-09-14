@@ -20,6 +20,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             setup_tray(app)?;
+            fit_main_window_to_screen(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +67,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ─── 窗口尺寸自适应 ─────────────────────────────────────────────────────────
+
+/// 把主窗口拉高到屏幕允许的最大高度（留出菜单栏/程序坞余量），
+/// 屏幕不够高时不强行超出，避免窗口跑到屏幕外。
+fn fit_main_window_to_screen(app: &tauri::App) {
+    use tauri::{LogicalSize, Manager};
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let screen = monitor.size().to_logical::<f64>(scale);
+
+    // 目标高度：偏好 900，但绝不超过屏幕高度的 80%（用户要求），下限 560
+    let preferred = 900.0_f64;
+    let available = (screen.height * 0.8).max(560.0);
+    let height = preferred.min(available);
+    // 宽度同理：偏好 1180，不超出屏幕宽度的 90%
+    let width = 1180.0_f64.min((screen.width * 0.9).max(800.0));
+
+    let _ = window.set_size(LogicalSize::new(width, height));
 }
 
 // ─── 托盘图标 (E8-1) ────────────────────────────────────────────────────────
