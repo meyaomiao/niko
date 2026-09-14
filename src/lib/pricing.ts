@@ -59,6 +59,21 @@ export function priceOf(item: PricingItem | undefined, groupRatio: number): Mode
 }
 
 /** 金额保留可读精度；免费不显示成容易误解的 $0。 */
+/** 服务端额度单位缺失时的兜底值：new-api 默认 500000 额度 = $1 */
+export const DEFAULT_QUOTA_PER_UNIT = 500_000;
+
+/** 解析服务端下发的 quota_per_unit，非法值回退到默认单位 */
+export function quotaPerUnitOf(value: unknown): number {
+  const unit = typeof value === "string" ? Number(value.trim()) : Number(value);
+  return Number.isFinite(unit) && unit > 0 ? unit : DEFAULT_QUOTA_PER_UNIT;
+}
+
+/** 把服务端额度换算成美元展示，必须使用服务端下发的单位，不要硬编码 */
+export function fmtQuotaUSD(quota: number, quotaPerUnitValue: unknown): string {
+  const unit = quotaPerUnitOf(quotaPerUnitValue);
+  return fmtUSD(quota / unit);
+}
+
 export function fmtUSD(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "价格暂不可用";
   if (value === 0) return "免费";
