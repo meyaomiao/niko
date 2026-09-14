@@ -22,8 +22,12 @@ concurrency:
 
 jobs:
   rust-check:
-    name: Rust cargo check
-    runs-on: macos-latest
+    name: Rust cargo check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     timeout-minutes: 30
     defaults:
       run:
