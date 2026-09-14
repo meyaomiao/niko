@@ -93,6 +93,10 @@ fn fit_main_window_to_screen(app: &tauri::App) {
     let width = 1180.0_f64.min((screen.width * 0.9).max(800.0));
 
     let _ = window.set_size(LogicalSize::new(width, height));
+    // 居中并置顶聚焦：避免窗口出现在屏幕外或藏在其他窗口后面
+    let _ = window.center();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 // ─── 托盘图标 (E8-1) ────────────────────────────────────────────────────────
