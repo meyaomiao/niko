@@ -892,8 +892,8 @@ export default function Home() {
 
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col gap-4">
-          {/* 上方摘要：用户状态 + 本机应用 + 登录设备，三卡一行不换行 */}
-          <div className="grid shrink-0 grid-cols-1 items-start gap-3 md:grid-cols-[19rem_minmax(0,1fr)_15rem]">
+          {/* 上方摘要：用户状态（含登录设备）+ 本机应用，两卡一行 */}
+          <div className="grid shrink-0 grid-cols-1 items-start gap-3 md:grid-cols-[20rem_minmax(0,1fr)]">
             {/* 余额 */}
             <section className={CARD_TIGHT}>
               <div className="flex items-start justify-between gap-2">
@@ -937,6 +937,59 @@ export default function Home() {
                     使用明细
                   </button>
                 </div>
+              </div>
+              <div className="mt-2 border-t pt-2 [border-color:var(--nk-line)]">
+              <button
+                onClick={() => setDevicesOpen((v) => !v)}
+                className="flex w-full items-center justify-between"
+              >
+                <h2 className={TITLE}>登录设备</h2>
+                <span className={SUBTLE}>
+                  {devices.length}
+                  {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台{" "}
+                  {devicesOpen ? "▲" : "▼"}
+                </span>
+              </button>
+              {devicesOpen && (
+                <div className="mt-2 max-h-36 space-y-2 overflow-y-auto pr-1">
+                  {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
+                    <p className="nk-alert-warning">
+                      已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
+                    </p>
+                  )}
+                  {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
+                  {devices.map((d) => (
+                    <div
+                      key={d.id}
+                      className="nk-row flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
+                          {displayDeviceLabel(d.device_name, d.platform)}
+                          {d.is_current && <span className="ml-2 opacity-60">当前</span>}
+                        </p>
+                        <p className={SUBTLE}>
+                          {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
+                        </p>
+                      </div>
+                      {!d.is_current && (
+                        <button
+                          onClick={() => revokeDevice(d.id)}
+                          disabled={revoking !== null}
+                          className={GHOST_BTN}
+                        >
+                          {revoking === d.id ? "…" : "撤销"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {otherDevices > 0 && (
+                    <button onClick={revokeOthers} disabled={revoking !== null} className={PRIMARY_BTN}>
+                      {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
+                    </button>
+                  )}
+                </div>
+              )}
               </div>
             </section>
 
@@ -1098,60 +1151,6 @@ export default function Home() {
               )}
             </section>
 
-            {/* 设备（折叠） */}
-            <section className={CARD_TIGHT}>
-              <button
-                onClick={() => setDevicesOpen((v) => !v)}
-                className="flex w-full items-center justify-between"
-              >
-                <h2 className={TITLE}>登录设备</h2>
-                <span className={SUBTLE}>
-                  {devices.length}
-                  {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台{" "}
-                  {devicesOpen ? "▲" : "▼"}
-                </span>
-              </button>
-              {devicesOpen && (
-                <div className="mt-2 max-h-36 space-y-2 overflow-y-auto pr-1">
-                  {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
-                    <p className="nk-alert-warning">
-                      已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
-                    </p>
-                  )}
-                  {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
-                  {devices.map((d) => (
-                    <div
-                      key={d.id}
-                      className="nk-row flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                          {displayDeviceLabel(d.device_name, d.platform)}
-                          {d.is_current && <span className="ml-2 opacity-60">当前</span>}
-                        </p>
-                        <p className={SUBTLE}>
-                          {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
-                        </p>
-                      </div>
-                      {!d.is_current && (
-                        <button
-                          onClick={() => revokeDevice(d.id)}
-                          disabled={revoking !== null}
-                          className={GHOST_BTN}
-                        >
-                          {revoking === d.id ? "…" : "撤销"}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {otherDevices > 0 && (
-                    <button onClick={revokeOthers} disabled={revoking !== null} className={PRIMARY_BTN}>
-                      {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
-                    </button>
-                  )}
-                </div>
-              )}
-            </section>
 
           </div>
 
@@ -1241,16 +1240,17 @@ export default function Home() {
                         厂家
                         <span className="ml-1.5 opacity-70">{vendorTabs.length}</span>
                       </p>
-                      <div className="mt-1.5 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                      {/* 厂家数量不多，用卡片式条目（图标 + 名称 + 模型数） */}
+                      <div className="mt-1.5 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
                         {vendorTabs.map((tab) => (
                           <button
                             key={tab.vendor}
                             onClick={() => pickVendor(tab)}
                             title={`${tab.vendor} · ${tab.models.length} 个模型`}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                            className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-xs transition ${
                               tab.vendor === activeVendor
-                                ? "bg-[var(--nk-accent)] font-medium text-white"
-                                : "text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                                ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
+                                : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                             }`}
                           >
                             <VendorIcon vendor={tab.vendor} />
@@ -1328,55 +1328,52 @@ export default function Home() {
                             {modelFilter ? "没有匹配的模型，请换一个关键词。" : "当前没有可用模型。"}
                           </p>
                         )}
-                        <div className="nk-model-grid">
+                        <div className="space-y-1">
                           {models.map((choice) => {
                             const compat = compatOf(choice.name);
+                            const selected = choice.name === model;
                             return (
                               <button
                                 key={choice.name}
                                 onClick={() => pickModel(choice)}
-                                aria-pressed={choice.name === model}
-                                className={`nk-model-card w-full text-left ${
-                                  choice.name === model
-                                    ? "nk-model-card-selected text-gray-900 dark:text-white"
-                                    : "text-gray-600 dark:text-gray-300"
+                                aria-pressed={selected}
+                                className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
+                                  selected
+                                    ? "border-transparent bg-[var(--nk-accent)] text-white"
+                                    : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                                 }`}
                               >
-                                <span className="flex min-w-0 flex-col justify-center gap-0.5">
-                                  <span className="flex min-w-0 items-baseline justify-between gap-2">
-                                    <span className="min-w-0 truncate font-mono text-sm font-semibold">
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex min-w-0 items-center gap-1.5">
+                                    <span className="truncate font-mono text-xs font-semibold">
                                       {choice.name}
                                     </span>
-                                    <span className={`shrink-0 text-[10px] tabular-nums ${SUBTLE}`}>
-                                      {releaseLabelOf(choice.name)}
-                                    </span>
-                                  </span>
-                                  <span className="flex min-w-0 flex-wrap items-center gap-1">
                                     {modelTags(choice.name).map((tag) => (
                                       <span
                                         key={tag.id}
-                                        className={`rounded-full px-1.5 py-0.5 text-[9px] leading-3 ${tag.className}`}
+                                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] leading-3 ${tag.className}`}
                                       >
                                         {tag.label}
                                       </span>
                                     ))}
-                                    <span className="tabular-nums text-[11px] text-gray-500 dark:text-gray-400">
-                                      {choice.groups.length} 组
-                                    </span>
                                   </span>
-                                  <span className="flex min-w-0 items-center justify-between gap-1.5">
-                                    <span className="flex min-w-0 items-center gap-1.5">
-                                      {compat && (
-                                        <span
-                                          title={compat.note}
-                                          className={`truncate rounded-full px-1.5 py-0.5 text-[10px] ${COMPAT_STYLE[compat.level]}`}
-                                        >
-                                          {COMPAT_LABEL[compat.level]}
-                                        </span>
-                                      )}
+                                </span>
+                                <span
+                                  className={`flex shrink-0 items-center gap-2 text-[10px] tabular-nums ${
+                                    selected ? "text-white/80" : SUBTLE
+                                  }`}
+                                >
+                                  {compat && (
+                                    <span
+                                      title={compat.note}
+                                      className={`rounded-full px-1.5 py-0.5 ${COMPAT_STYLE[compat.level]}`}
+                                    >
+                                      {COMPAT_LABEL[compat.level]}
                                     </span>
-                                    {choice.name === model && <span aria-hidden="true">✓</span>}
-                                  </span>
+                                  )}
+                                  <span>{choice.groups.length} 组</span>
+                                  <span className="w-14 text-right">{releaseLabelOf(choice.name)}</span>
+                                  {selected && <span aria-hidden="true">✓</span>}
                                 </span>
                               </button>
                             );
