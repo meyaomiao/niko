@@ -6,10 +6,11 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type ModelMetadata, type UsageSummary, type VendorMeta } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS } from "../lib/vendor";
 import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
+import { buildGroupCatalog, groupsForModel, type GroupInfo } from "../lib/groupCatalog";
 import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
@@ -72,6 +73,8 @@ interface Card {
   level: number;
   bench?: BenchEntry;
   tags: ModelTag[];
+  /** 该模型的令牌分组（服务端 enable_groups） */
+  groups: GroupInfo[];
 }
 
 export default function Models() {
@@ -85,7 +88,8 @@ export default function Models() {
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
   const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [vendorMetas, setVendorMetas] = useState<VendorMeta[]>([]);
+  const [vendorMetas] = useState<VendorMeta[]>([]);
+  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(null);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -103,10 +107,10 @@ export default function Models() {
           .usageSummary(token)
           .then((s) => setUsage(s))
           .catch(() => undefined);
-        // 厂商目录（公开接口）；失败时厂家名回退到本地启发式
+        // 厂商目录 + 全部分组说明（公开接口）；失败时回退本地启发式
         api
-          .vendors()
-          .then((list) => setVendorMetas(list))
+          .pricingMeta()
+          .then((meta) => setPricingMeta(meta))
           .catch(() => undefined);
       })
       .catch((e) => setError(friendlyDesktopError(e)))
@@ -116,6 +120,17 @@ export default function Models() {
   const groups: GroupOption[] = data?.groups ?? [];
   const ratio = groups.find((g) => g.name === group)?.ratio ?? 0;
   const pricingIndex = useMemo(() => buildPricingIndex(data?.pricing), [data]);
+
+  // 分组目录：模型 → 令牌分组（服务端 enable_groups + 中文说明/倍率）
+  const groupCatalog = useMemo(
+    () =>
+      buildGroupCatalog({
+        accountGroups: groups,
+        usableGroup: pricingMeta?.usableGroup,
+        groupRatio: pricingMeta?.groupRatio,
+      }),
+    [groups, pricingMeta]
+  );
 
   const cards = useMemo(() => {
     if (!data) return [];
@@ -134,26 +149,23 @@ export default function Models() {
     return names.map((name) => {
       const price = priceByName.get(name) ?? null;
       const level = levels.get(name);
+      const release = releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date);
       return {
         name,
-        release: releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date),
+        release,
         price,
         level: level ?? 0.5,
         bench: bench[name],
-        tags: computeTags({
-          name,
-          release: releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date),
-          rank: ranks.get(name),
-          level,
-        }),
+        tags: computeTags({ name, release, rank: ranks.get(name), level }),
+        groups: groupsForModel(groupCatalog, data.pricing, name, groups),
       };
     });
-  }, [data, pricingIndex, ratio, bench, usage]);
+  }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups]);
 
   // 服务端厂商目录：模型 → 厂家（服务端优先，缺失回退本地启发式）
   const vendorIndex = useMemo(
-    () => buildVendorIndex(data?.pricing, vendorMetas),
-    [data?.pricing, vendorMetas]
+    () => buildVendorIndex(data?.pricing, pricingMeta?.vendors ?? vendorMetas),
+    [data?.pricing, pricingMeta?.vendors, vendorMetas]
   );
   const vendorOfName = useCallback(
     (name: string) => vendorNameOf(vendorIndex, name),
@@ -161,10 +173,10 @@ export default function Models() {
   );
   /** 分区顺序：服务端厂商表顺序优先，其余按本地启发式表补齐 */
   const vendorOrder = useMemo(() => {
-    const fromServer = vendorMetas.map((v) => v.name).filter(Boolean);
+    const fromServer = (pricingMeta?.vendors ?? vendorMetas).map((v) => v.name).filter(Boolean);
     const seen = new Set(fromServer);
     return [...fromServer, ...VENDORS.filter((v) => !seen.has(v))];
-  }, [vendorMetas]);
+  }, [pricingMeta?.vendors, vendorMetas]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -306,6 +318,28 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
             ))}
             {card.release && <span className={`text-[10px] tabular-nums ${SUBTLE}`}>{card.release} 发布</span>}
           </div>
+          {/* 令牌分组：该模型支持的 API 分组（服务端 enable_groups） */}
+          {card.groups.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span className={`text-[10px] ${SUBTLE}`}>分组</span>
+              {card.groups.slice(0, 4).map((g) => (
+                <span
+                  key={g.name}
+                  title={`${g.desc || g.name}（${g.name}）${g.usable ? "" : " · 当前账号未开通"}`}
+                  className={`rounded px-1 py-0.5 font-mono text-[10px] ${
+                    g.usable
+                      ? "bg-[var(--nk-info-soft)] text-[var(--nk-info)]"
+                      : "bg-black/[0.04] text-gray-400 dark:bg-white/10 dark:text-gray-500"
+                  }`}
+                >
+                  {g.name}
+                </span>
+              ))}
+              {card.groups.length > 4 && (
+                <span className={`text-[10px] ${SUBTLE}`}>+{card.groups.length - 4}</span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           {card.bench && (

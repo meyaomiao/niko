@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type DeviceItem, type UsageSummary, type VendorMeta } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type DeviceItem, type PricingMeta, type UsageSummary } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
@@ -10,7 +10,8 @@ import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelect
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
 import { buildVendorIndex } from "../lib/vendorCatalog";
-import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
+import { buildGroupCatalog, groupsForModel } from "../lib/groupCatalog";
+import { vendorOfGroup, vendorOfModel, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
 import { VendorIcon } from "../components/VendorIcon";
 import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
@@ -107,8 +108,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   // 用户用量聚合（厂家内排名用），驱动「常用 / 性价比」标签
   const [usage, setUsage] = useState<UsageSummary | null>(null);
-  // 服务端厂商目录（公开接口，无需登录）
-  const [vendorMetas, setVendorMetas] = useState<VendorMeta[]>([]);
+  // 服务端厂商目录 + 分组说明（公开接口）
+  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(null);
   const initialBalance = parseBalanceSnapshot(
     auth?.quota,
     auth?.quotaPerUnit,
@@ -243,10 +244,10 @@ export default function Home() {
       .then((s) => setUsage(s))
       .catch(() => undefined);
 
-    // 厂商目录：公开接口，失败时厂家名回退到本地启发式
+    // 厂商目录 + 全部分组说明：公开接口，失败时回退到本地启发式
     api
-      .vendors()
-      .then((list) => setVendorMetas(list))
+      .pricingMeta()
+      .then((meta) => setPricingMeta(meta))
       .catch(() => undefined);
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
@@ -278,8 +279,19 @@ export default function Home() {
 
   // 服务端厂商目录：模型 → 厂家（新版 pricing 带 vendor_id，公开 /api/pricing 给名称）
   const vendorIndex = useMemo(
-    () => buildVendorIndex(bootstrap?.pricing, vendorMetas),
-    [bootstrap?.pricing, vendorMetas]
+    () => buildVendorIndex(bootstrap?.pricing, pricingMeta?.vendors),
+    [bootstrap?.pricing, pricingMeta?.vendors]
+  );
+
+  // 分组目录：模型 → 令牌分组（pricing.enable_groups）+ 中文说明/倍率
+  const groupCatalog = useMemo(
+    () =>
+      buildGroupCatalog({
+        accountGroups: groups,
+        usableGroup: pricingMeta?.usableGroup,
+        groupRatio: pricingMeta?.groupRatio,
+      }),
+    [groups, pricingMeta]
   );
 
   // 按供应商汇总模型，再由模型反查可用分组。新服务端以 model_order 给出完整显示顺序；
@@ -302,8 +314,8 @@ export default function Home() {
       modelMetadata,
       modelOrder: bootstrap?.model_order,
       recommendVendor,
-      // 服务端厂商目录优先，缺失的模型回退到本地名启发式
-      vendorOf: (model) => vendorIndex.get(model)?.name,
+      // 服务端厂商目录优先，缺失的模型按模型名回退本地启发式
+      vendorOf: (model) => vendorIndex.get(model)?.name ?? vendorOfModel(model),
     });
   }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor, vendorIndex]);
 
@@ -455,8 +467,11 @@ export default function Home() {
   })();
   const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? vendorTabs[0] ?? null;
   const vendorModels = activeVendorTab?.models ?? [];
-  const currentModelChoice = vendorModels.find((choice) => choice.name === model) ?? null;
-  const modelGroups = currentModelChoice?.groups ?? [];
+  // 模型的令牌分组（不是账号可用分组）：来自服务端 pricing.enable_groups
+  const modelGroups = useMemo(
+    () => (model ? groupsForModel(groupCatalog, bootstrap?.pricing, model, groups) : []),
+    [groupCatalog, bootstrap?.pricing, model, groups]
+  );
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
   const models = useMemo(() => {
     const kw = modelFilter.trim().toLowerCase();
@@ -469,13 +484,13 @@ export default function Home() {
     if (!selected) return;
     if (selected.name !== model) {
       setModel(selected.name);
-      setGroup(selected.groups[0]?.name ?? "");
       return;
     }
-    if (!selected.groups.some((g) => g.name === group)) {
-      setGroup(selected.groups[0]?.name ?? "");
-    }
-  }, [activeVendorTab, groups.length, group, model]);
+    // 分组必须是账号可用的：模型列出的令牌分组里挑第一个可用项
+    const usable = modelGroups.filter((g) => g.usable);
+    if (usable.length === 0) return;
+    if (!usable.some((g) => g.name === group)) setGroup(usable[0].name);
+  }, [activeVendorTab, groups.length, group, model, modelGroups]);
 
   const groupPriceLabel = (name: string, ratio: number) => {
     const p = priceOf(pricingIndex.get(name), ratio);
@@ -851,8 +866,8 @@ export default function Home() {
 
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         {/* 双列：左侧账户与应用，右侧模型选择，避免宽窗口下大量留白 */}
-        <div className="mx-auto grid min-h-full max-w-[120rem] grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(19rem,32%)_minmax(0,1fr)]">
-          <div className="flex min-h-0 flex-col gap-3 pr-0.5 md:overflow-y-auto">
+        <div className="mx-auto grid min-h-full max-w-[120rem] grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[21rem_minmax(0,1fr)]">
+          <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-x-hidden pr-0.5 md:overflow-y-auto">
             {/* 余额 */}
             <section className={CARD}>
               <div className="flex items-end justify-between">
@@ -1105,7 +1120,7 @@ export default function Home() {
           </div>
 
           {/* 右列不设滚动：滚动只交给内部的模型列表，避免出现嵌套双层滚动条 */}
-          <div className="flex min-h-0 flex-col md:overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-col md:overflow-hidden">
             {/* 分组 + 模型选择（跟随所选应用推荐） */}
             {installedTargets.length > 0 && (
             <section className={`${CARD} flex min-h-[20rem] flex-1 flex-col sm:min-h-[22rem] md:min-h-0`}>
@@ -1298,20 +1313,28 @@ export default function Home() {
                       {modelGroups.map((g) => (
                         <button
                           key={g.name}
-                          onClick={() => pickGroup(g.name)}
+                          onClick={() => g.usable && pickGroup(g.name)}
+                          disabled={!g.usable}
                           aria-pressed={g.name === group}
-                          title={`${g.desc || g.name}（${g.name}）`}
+                          title={
+                            g.usable
+                              ? `${g.desc || g.name}（${g.name}）`
+                              : `${g.desc || g.name}：当前账号未开通该分组`
+                          }
                           className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition ${
                             g.name === group
                               ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
-                              : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                              : g.usable
+                                ? "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                                : "cursor-not-allowed border-dashed [border-color:var(--nk-line)] text-gray-400 opacity-70 dark:text-gray-500"
                           }`}
                         >
                           {/* 分组名多是内部代号，优先展示服务端中文说明 */}
                           <span className="font-medium">{g.desc?.trim() || g.name}</span>
                           {g.desc?.trim() && <span className="font-mono text-[10px] opacity-60">{g.name}</span>}
                           <span className="tabular-nums opacity-70">{g.ratio}x</span>
-                          <span className="tabular-nums opacity-90">{groupPriceLabel(model, g.ratio)}</span>
+                          {g.usable && <span className="tabular-nums opacity-90">{groupPriceLabel(model, g.ratio)}</span>}
+                          {!g.usable && <span className="text-[10px] opacity-80">未开通</span>}
                           {benchmarks[g.name] === "loading" ? (
                             <span className="opacity-60">…</span>
                           ) : typeof benchmarks[g.name] === "number" ? (

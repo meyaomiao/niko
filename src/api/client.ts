@@ -111,6 +111,13 @@ export interface VendorMeta {
   icon?: string;
 }
 
+/** 公开定价元数据：厂商表 + 分组说明/倍率 */
+export interface PricingMeta {
+  vendors: VendorMeta[];
+  usableGroup: Record<string, string>;
+  groupRatio: Record<string, number>;
+}
+
 export interface BootstrapData {
   site: {
     base_url: string;
@@ -256,12 +263,20 @@ export const api = {
   status(): Promise<StatusData> {
     return get<StatusData>("/status");
   },
-  /** 公开定价接口：取厂商元数据（id/name/icon），无需登录 */
-  async vendors(): Promise<VendorMeta[]> {
+  /** 公开定价接口：厂商表 + 全部分组说明与倍率（无需登录，模型列表按账号过滤故忽略） */
+  async pricingMeta(): Promise<PricingMeta> {
     const res = await fetch(`${BASE_URL}/api/pricing`);
-    if (!res.ok) throw new Error(`vendors ${res.status}`);
-    const json = (await res.json()) as { vendors?: VendorMeta[] };
-    return json.vendors ?? [];
+    if (!res.ok) throw new Error(`pricing ${res.status}`);
+    const json = (await res.json()) as {
+      vendors?: VendorMeta[];
+      usable_group?: Record<string, string>;
+      group_ratio?: Record<string, number>;
+    };
+    return {
+      vendors: json.vendors ?? [],
+      usableGroup: json.usable_group ?? {},
+      groupRatio: json.group_ratio ?? {},
+    };
   },
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");

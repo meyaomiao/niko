@@ -35,10 +35,10 @@
   --nk-info-soft: #e4f3f7;
   --nk-shadow:
     0 1px 2px rgba(81, 58, 46, 0.04),
-    0 14px 34px rgba(81, 58, 46, 0.08);
+    0 6px 16px rgba(81, 58, 46, 0.05);
   --nk-shadow-hover:
     0 2px 4px rgba(81, 58, 46, 0.05),
-    0 18px 42px rgba(81, 58, 46, 0.11);
+    0 10px 24px rgba(81, 58, 46, 0.08);
 
   /* Tailwind color channels are backed by the same brand tokens. */
   --nk-gray-50: 255 254 253;
@@ -85,11 +85,11 @@ html.dark {
   --nk-danger-soft: rgba(238, 146, 136, 0.15);
   --nk-info-soft: rgba(120, 197, 223, 0.14);
   --nk-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.2),
-    0 16px 38px rgba(0, 0, 0, 0.2);
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 8px 20px rgba(0, 0, 0, 0.14);
   --nk-shadow-hover:
-    0 2px 4px rgba(0, 0, 0, 0.24),
-    0 20px 44px rgba(0, 0, 0, 0.26);
+    0 2px 4px rgba(0, 0, 0, 0.2),
+    0 12px 28px rgba(0, 0, 0, 0.18);
 
   --nk-gray-50: 255 250 245;
   --nk-gray-100: 246 239 233;
