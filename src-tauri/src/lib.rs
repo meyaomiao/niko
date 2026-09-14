@@ -47,6 +47,7 @@ pub fn run() {
             commands::diagnostics::ping_diag,
             commands::diagnostics::export_log,
             commands::diagnostics::probe_compat,
+            commands::diagnostics::benchmark_group,
             commands::payment::open_cashier,
             commands::payment::close_cashier,
             commands::process::check_process,

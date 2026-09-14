@@ -399,3 +399,145 @@ fn chrono_now() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+// ─── E9: 分组测速（TTFT + 中位数采样） ───────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct BenchmarkSample {
+    pub ttft_ms: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BenchmarkResult {
+    pub model: String,
+    pub samples: Vec<BenchmarkSample>,
+    /// TTFT 中位数（只统计成功样本；不足一半成功时为 None）
+    pub median_ttft_ms: Option<u64>,
+}
+
+/// 纯函数：中位数（偶数个取中间两值较小者，偏向保守估计）
+fn median(values: &[u64]) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    Some(sorted[sorted.len() / 2])
+}
+
+/// 用当前模型向指定分组发真实流式补全请求，测首字延迟（TTFT）。
+/// 每次采样都是独立请求：max_tokens=1 控制成本，流式读首 chunk 计时。
+/// HEAD ping 只能测网关可达性，测不出模型排队与推理首字，所以这里发真实请求。
+#[tauri::command]
+pub async fn benchmark_group(
+    base_url: String,
+    api_key: String,
+    model: String,
+    samples: Option<usize>,
+) -> Result<BenchmarkResult, String> {
+    use std::time::Instant;
+
+    // 采样次数限制在 1~5：多了慢且费钱，少了抖动大
+    let rounds = samples.unwrap_or(3).clamp(1, 5);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| "测速没有完成，请稍后重试。".to_owned())?;
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 1,
+        "stream": true,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+
+    let mut out: Vec<BenchmarkSample> = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let t0 = Instant::now();
+        let sample = match client
+            .post(&url)
+            .bearer_auth(&api_key)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let mut resp = resp;
+                let mut ttft = None;
+                let mut stream_error: Option<String> = None;
+                loop {
+                    match resp.chunk().await {
+                        Ok(Some(bytes)) => {
+                            if !bytes.is_empty() {
+                                ttft = Some(t0.elapsed().as_millis() as u64);
+                                // 首 chunk 已到手即判定 TTFT；max_tokens=1 时服务端随即收尾，
+                                // 不继续消费剩余流
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            stream_error = Some(safe_reqwest_detail(&e));
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = stream_error {
+                    BenchmarkSample {
+                        ttft_ms: None,
+                        total_ms: Some(t0.elapsed().as_millis() as u64),
+                        error: Some(error),
+                    }
+                } else {
+                    match ttft {
+                        Some(ms) => BenchmarkSample {
+                            ttft_ms: Some(ms),
+                            total_ms: Some(t0.elapsed().as_millis() as u64),
+                            error: None,
+                        },
+                        None => BenchmarkSample {
+                            ttft_ms: None,
+                            total_ms: Some(t0.elapsed().as_millis() as u64),
+                            error: Some("模型服务暂时不可用，请稍后重试。".to_owned()),
+                        },
+                    }
+                }
+            }
+            Ok(resp) => BenchmarkSample {
+                ttft_ms: None,
+                total_ms: Some(t0.elapsed().as_millis() as u64),
+                error: Some(safe_status_detail(resp.status().as_u16())),
+            },
+            Err(e) => BenchmarkSample {
+                ttft_ms: None,
+                total_ms: None,
+                error: Some(safe_reqwest_detail(&e)),
+            },
+        };
+        out.push(sample);
+    }
+
+    let ttfts: Vec<u64> = out.iter().filter_map(|s| s.ttft_ms).collect();
+    let median_ttft = median(&ttfts);
+    crate::logx::append(
+        "benchmark_group",
+        &format!("model={model} samples={rounds} median_ttft={median_ttft:?}"),
+    );
+    Ok(BenchmarkResult { model, samples: out, median_ttft_ms: median_ttft })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::median;
+
+    #[test]
+    fn median_prefers_conservative_middle() {
+        assert_eq!(median(&[]), None);
+        assert_eq!(median(&[120]), Some(120));
+        assert_eq!(median(&[300, 100, 200]), Some(200));
+        assert_eq!(median(&[400, 100, 200, 300]), Some(300));
+    }
+}

@@ -131,6 +131,9 @@ export default function Home() {
   const [draftSource, setDraftSource] = useState<"recommendation" | "saved" | "manual">("recommendation");
   const groupTouchedRef = useRef(false);
   const requestGuardRef = useRef(initialRequestGuard());
+  // 分组测速：group 名 → TTFT 中位数（ms）|"loading"（进行中）|null（失败）
+  const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
 
   useEffect(() => {
     requestGuardRef.current = mountRequests(requestGuardRef.current);
@@ -451,6 +454,33 @@ export default function Home() {
     setGroup(name);
     setDraftSource("manual");
     setNotice(null);
+  };
+
+  // 分组测速：对当前模型的每个分组发 3 次最小流式请求，取 TTFT 中位数。
+  // 当前保存密钥所属分组直接复用密钥；其余分组临时申请（不覆盖已保存密钥）。
+  const runBenchmarks = async () => {
+    if (!auth?.accessToken || !model || benchmarkRunning) return;
+    setBenchmarkRunning(true);
+    setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
+    for (const g of modelGroups) {
+      try {
+        let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
+        if (!apiKey) {
+          const res = await api.provision(auth.accessToken, g.name);
+          apiKey = res.api_key;
+        }
+        const result = await invoke<{ median_ttft_ms: number | null }>("benchmark_group", {
+          base_url: RELAY_BASE_URL,
+          api_key: apiKey,
+          model,
+          samples: 3,
+        });
+        setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
+      } catch {
+        setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
+      }
+    }
+    setBenchmarkRunning(false);
   };
 
   const pickModel = (choice: VendorModelChoice) => {
@@ -1160,11 +1190,27 @@ export default function Home() {
                         分组
                         <span className="ml-1.5 opacity-70">{modelGroups.length}</span>
                       </p>
-                      {model && (
-                        <p className={`${SUBTLE} truncate`}>
-                          仅显示支持当前模型的分组
-                        </p>
-                      )}
+                      <div className="flex min-w-0 items-center gap-2">
+                        {model && modelGroups.length > 0 && (
+                          <button
+                            onClick={runBenchmarks}
+                            disabled={benchmarkRunning}
+                            title="对当前模型的各分组发真实请求测首字延迟"
+                            className={`shrink-0 rounded-lg px-2 py-0.5 text-[11px] transition ${
+                              benchmarkRunning
+                                ? "cursor-wait text-gray-400 dark:text-gray-500"
+                                : "text-[var(--nk-info)] hover:bg-black/[0.04] dark:hover:bg-white/10"
+                            }`}
+                          >
+                            {benchmarkRunning ? "测速中…" : "⚡ 测速"}
+                          </button>
+                        )}
+                        {model && (
+                          <p className={`${SUBTLE} truncate`}>
+                            仅显示支持当前模型的分组
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <div className="nk-group-list mt-1.5 pr-1 md:max-h-[9rem]">
                       {modelGroups.length === 0 && <p className="nk-empty">先选择模型</p>}
@@ -1187,6 +1233,22 @@ export default function Home() {
                               </span>
                             </span>
                             <span className="flex shrink-0 items-center gap-2 tabular-nums text-[11px] font-medium text-gray-700 dark:text-gray-200">
+                              {benchmarks[g.name] === "loading" ? (
+                                <span className="text-[10px] font-normal text-gray-400">…</span>
+                              ) : typeof benchmarks[g.name] === "number" ? (
+                                <span
+                                  title="首字延迟中位数（3 次采样）"
+                                  className={`text-[10px] font-normal ${
+                                    (benchmarks[g.name] as number) <= 1500
+                                      ? "text-green-600 dark:text-green-400"
+                                      : (benchmarks[g.name] as number) <= 4000
+                                        ? "text-yellow-600 dark:text-yellow-400"
+                                        : "text-red-500"
+                                  }`}
+                                >
+                                  {benchmarks[g.name]}ms
+                                </span>
+                              ) : null}
                               <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">{g.ratio}x</span>
                               <span>{groupPriceLabel(model, g.ratio)}</span>
                             </span>
