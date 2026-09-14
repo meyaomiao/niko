@@ -487,6 +487,27 @@ export default function Home() {
   );
   const hasTokenGroups = tokenGroupNames.length > 0;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
+  /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
+  const releaseLabelOf = (name: string) => {
+    const m = bootstrap?.model_metadata?.[name];
+    return (
+      m?.release_date ??
+      m?.released_at ??
+      m?.official_release_date ??
+      m?.version_date ??
+      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
+      ""
+    );
+  };
+
+  /** 发布日期时间戳；没有日期返回 null（排序走服务端发布序兜底） */
+  const releaseTimeOf = (name: string) => {
+    const label = releaseLabelOf(name);
+    if (!label) return null;
+    const ts = Date.parse(label);
+    return Number.isFinite(ts) ? ts : null;
+  };
+
   /** 服务端发布顺序索引（bootstrap 注释：该顺序即发布日期的先后） */
   const catalogOrder = useMemo(() => {
     const map = new Map<string, number>();
@@ -556,26 +577,6 @@ export default function Home() {
     });
   };
 
-  /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
-  const releaseLabelOf = (name: string) => {
-    const m = bootstrap?.model_metadata?.[name];
-    return (
-      m?.release_date ??
-      m?.released_at ??
-      m?.official_release_date ??
-      m?.version_date ??
-      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
-      ""
-    );
-  };
-
-  /** 发布日期时间戳；没有日期返回 null（排序走服务端发布序兜底） */
-  const releaseTimeOf = (name: string) => {
-    const label = releaseLabelOf(name);
-    if (!label) return null;
-    const ts = Date.parse(label);
-    return Number.isFinite(ts) ? ts : null;
-  };
 
   const pickGroup = (name: string) => {
     groupTouchedRef.current = true;
