@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type DeviceItem, type UsageSummary } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type DeviceItem, type UsageSummary, type VendorMeta } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
 import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelection";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
+import { buildVendorIndex } from "../lib/vendorCatalog";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
+import { VendorIcon } from "../components/VendorIcon";
 import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
 import TargetAppIcon from "../components/TargetAppIcon";
 import {
@@ -105,6 +107,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   // 用户用量聚合（厂家内排名用），驱动「常用 / 性价比」标签
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  // 服务端厂商目录（公开接口，无需登录）
+  const [vendorMetas, setVendorMetas] = useState<VendorMeta[]>([]);
   const initialBalance = parseBalanceSnapshot(
     auth?.quota,
     auth?.quotaPerUnit,
@@ -239,6 +243,12 @@ export default function Home() {
       .then((s) => setUsage(s))
       .catch(() => undefined);
 
+    // 厂商目录：公开接口，失败时厂家名回退到本地启发式
+    api
+      .vendors()
+      .then((list) => setVendorMetas(list))
+      .catch(() => undefined);
+
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
     void loadTargets();
     api.listDevices(auth.accessToken).then(setDevices).catch(() => {});
@@ -266,6 +276,12 @@ export default function Home() {
     return (VENDORS as readonly string[]).includes(v ?? "") ? (v as Vendor) : null;
   }, [targetId, targets]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 服务端厂商目录：模型 → 厂家（新版 pricing 带 vendor_id，公开 /api/pricing 给名称）
+  const vendorIndex = useMemo(
+    () => buildVendorIndex(bootstrap?.pricing, vendorMetas),
+    [bootstrap?.pricing, vendorMetas]
+  );
+
   // 按供应商汇总模型，再由模型反查可用分组。新服务端以 model_order 给出完整显示顺序；
   // 元数据只作为旧响应的排序辅助，不能覆盖服务端顺序。
   const vendorTabs = useMemo(() => {
@@ -286,8 +302,10 @@ export default function Home() {
       modelMetadata,
       modelOrder: bootstrap?.model_order,
       recommendVendor,
+      // 服务端厂商目录优先，缺失的模型回退到本地名启发式
+      vendorOf: (model) => vendorIndex.get(model)?.name,
     });
-  }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor]);
+  }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor, vendorIndex]);
 
   const modelByGroup = useMemo(() => {
     const index = new Map<string, string>();
@@ -422,10 +440,19 @@ export default function Home() {
   const compatOf = (name: string) => (compatTargetId ? baselineFor(compatTargetId, name) : null);
 
   const currentGroup = groups.find((g) => g.name === group);
-  // 页签跟随当前分组所属厂商，切换页签时自动选中该厂商的最新模型
-  const activeVendor: Vendor | null = currentGroup
-    ? vendorOfGroup(currentGroup.name)
-    : vendorTabs[0]?.vendor ?? null;
+  // 页签跟随当前模型所属厂家；没有模型时按当前分组所属厂家推断，最后兜底第一个页签
+  const activeVendor: string | null = (() => {
+    if (model) {
+      const tab = vendorTabs.find((item) => item.models.some((choice) => choice.name === model));
+      if (tab) return tab.vendor;
+    }
+    if (currentGroup) {
+      const guess = vendorOfGroup(currentGroup.name);
+      const tab = vendorTabs.find((item) => item.vendor === guess);
+      if (tab) return tab.vendor;
+    }
+    return vendorTabs[0]?.vendor ?? null;
+  })();
   const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? vendorTabs[0] ?? null;
   const vendorModels = activeVendorTab?.models ?? [];
   const currentModelChoice = vendorModels.find((choice) => choice.name === model) ?? null;
@@ -1162,16 +1189,17 @@ export default function Home() {
                         <button
                           key={tab.vendor}
                           onClick={() => pickVendor(tab)}
-                          className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-xs transition ${
+                          className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-xs transition ${
                             tab.vendor === activeVendor
                               ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
                               : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                           }`}
                         >
+                          <VendorIcon vendor={tab.vendor} />
                           {tab.vendor}
-                          <span className="ml-1.5 opacity-60">{tab.models.length}</span>
+                          <span className="opacity-60">{tab.models.length}</span>
                           {recommendVendor && tab.vendor !== recommendVendor && (
-                            <span className="ml-1.5 opacity-60">转换接入</span>
+                            <span className="opacity-60">转换接入</span>
                           )}
                         </button>
                       ))}
@@ -1272,14 +1300,16 @@ export default function Home() {
                           key={g.name}
                           onClick={() => pickGroup(g.name)}
                           aria-pressed={g.name === group}
-                          title={g.desc || g.name}
+                          title={`${g.desc || g.name}（${g.name}）`}
                           className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition ${
                             g.name === group
                               ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
                               : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                           }`}
                         >
-                          <span className="font-medium">{g.name}</span>
+                          {/* 分组名多是内部代号，优先展示服务端中文说明 */}
+                          <span className="font-medium">{g.desc?.trim() || g.name}</span>
+                          {g.desc?.trim() && <span className="font-mono text-[10px] opacity-60">{g.name}</span>}
                           <span className="tabular-nums opacity-70">{g.ratio}x</span>
                           <span className="tabular-nums opacity-90">{groupPriceLabel(model, g.ratio)}</span>
                           {benchmarks[g.name] === "loading" ? (

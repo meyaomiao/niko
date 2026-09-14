@@ -8,7 +8,8 @@ export interface VendorModelChoice {
 }
 
 export interface VendorModelTab {
-  vendor: Vendor;
+  /** 厂家名：优先用服务端厂商目录，缺失时回退到本地名启发式 */
+  vendor: string;
   groups: GroupOption[];
   models: VendorModelChoice[];
 }
@@ -91,21 +92,27 @@ export function buildVendorModelTabs(params: {
   models?: BootstrapModel[];
   modelMetadata?: Record<string, ModelMetadata>;
   modelOrder?: string[];
-  recommendVendor?: Vendor | null;
+  recommendVendor?: string | null;
+  /** 服务端厂商归属（模型名 → 厂家名）；缺失的模型回退到分组名启发式 */
+  vendorOf?: (model: string) => string | undefined;
 }): VendorModelTab[] {
-  const { groups, models, modelMetadata, modelOrder, recommendVendor } = params;
+  const { groups, models, modelMetadata, modelOrder, recommendVendor, vendorOf } = params;
   const order = buildModelOrder(models, modelMetadata, modelOrder);
-  const buckets = new Map<Vendor, { groups: GroupOption[]; models: Map<string, VendorModelChoice> }>();
+  const buckets = new Map<string, { groups: GroupOption[]; models: Map<string, VendorModelChoice> }>();
 
   for (const group of groups) {
-    const vendor = vendorOfGroup(group.name);
-    let bucket = buckets.get(vendor);
-    if (!bucket) {
-      bucket = { groups: [], models: new Map() };
-      buckets.set(vendor, bucket);
-    }
-    bucket.groups.push(group);
+    const groupVendor: Vendor = vendorOfGroup(group.name);
     for (const model of group.models) {
+      // 模型级厂商优先（服务端目录），没有才退回分组名判断
+      const vendor = vendorOf?.(model) ?? groupVendor;
+      let bucket = buckets.get(vendor);
+      if (!bucket) {
+        bucket = { groups: [], models: new Map() };
+        buckets.set(vendor, bucket);
+      }
+      if (!bucket.groups.some((g) => g.name === group.name)) {
+        bucket.groups.push(group);
+      }
       // Groups can contain a custom model absent from the bootstrap catalog.
       // It has no server position or release metadata, so it uses the stable
       // model-name fallback in compareModels.

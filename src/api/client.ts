@@ -94,6 +94,21 @@ export interface PricingItem {
   /** Optional official release metadata mirrored by bootstrap model catalog. */
   release_date?: string;
   release_source?: string;
+  /** 服务端厂商归属（新版目录下发），用于「厂家 → 模型」归类 */
+  vendor_id?: number;
+  /** 端点能力：openai / anthropic / gemini / image-generation ... */
+  supported_endpoint_types?: string[];
+  tags?: string;
+  description?: string;
+  billing_mode?: string;
+}
+
+/** 厂商元数据（来自公开 /api/pricing 的 vendors 数组） */
+export interface VendorMeta {
+  id: number;
+  name: string;
+  description?: string;
+  icon?: string;
 }
 
 export interface BootstrapData {
@@ -240,6 +255,13 @@ export interface EpayOrder {
 export const api = {
   status(): Promise<StatusData> {
     return get<StatusData>("/status");
+  },
+  /** 公开定价接口：取厂商元数据（id/name/icon），无需登录 */
+  async vendors(): Promise<VendorMeta[]> {
+    const res = await fetch(`${BASE_URL}/api/pricing`);
+    if (!res.ok) throw new Error(`vendors ${res.status}`);
+    const json = (await res.json()) as { vendors?: VendorMeta[] };
+    return json.vendors ?? [];
   },
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");

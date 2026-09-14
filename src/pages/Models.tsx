@@ -3,12 +3,13 @@
 //   输入价（USD / 百万 token）= model_ratio × 2 × 分组倍率，输出价再乘 completion_ratio
 // 计价分组只影响倍率，做成次要的小切换；实测延迟来自首页「⚡测速」的本地缓存。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type ModelMetadata, type UsageSummary } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type ModelMetadata, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
-import { VENDORS, vendorOfModel } from "../lib/vendor";
+import { VENDORS } from "../lib/vendor";
+import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
 import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
@@ -84,6 +85,7 @@ export default function Models() {
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [vendorMetas, setVendorMetas] = useState<VendorMeta[]>([]);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -100,6 +102,11 @@ export default function Models() {
         api
           .usageSummary(token)
           .then((s) => setUsage(s))
+          .catch(() => undefined);
+        // 厂商目录（公开接口）；失败时厂家名回退到本地启发式
+        api
+          .vendors()
+          .then((list) => setVendorMetas(list))
           .catch(() => undefined);
       })
       .catch((e) => setError(friendlyDesktopError(e)))
@@ -143,6 +150,22 @@ export default function Models() {
     });
   }, [data, pricingIndex, ratio, bench, usage]);
 
+  // 服务端厂商目录：模型 → 厂家（服务端优先，缺失回退本地启发式）
+  const vendorIndex = useMemo(
+    () => buildVendorIndex(data?.pricing, vendorMetas),
+    [data?.pricing, vendorMetas]
+  );
+  const vendorOfName = useCallback(
+    (name: string) => vendorNameOf(vendorIndex, name),
+    [vendorIndex]
+  );
+  /** 分区顺序：服务端厂商表顺序优先，其余按本地启发式表补齐 */
+  const vendorOrder = useMemo(() => {
+    const fromServer = vendorMetas.map((v) => v.name).filter(Boolean);
+    const seen = new Set(fromServer);
+    return [...fromServer, ...VENDORS.filter((v) => !seen.has(v))];
+  }, [vendorMetas]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return cards.filter((c) => c.name.toLowerCase().includes(q));
@@ -151,17 +174,18 @@ export default function Models() {
   const counts = useMemo(() => {
     const map = new Map<string, number>();
     for (const c of filtered) {
-      const v = vendorOfModel(c.name);
+      const v = vendorOfName(c.name);
       map.set(v, (map.get(v) ?? 0) + 1);
     }
     return map;
-  }, [filtered]);
+  }, [filtered, vendorOfName]);
 
   // 厂家切换：全部=分区铺开；选中某家=只看该家
   const [activeVendor, setActiveVendor] = useState<string>("全部");
-  const visible = activeVendor === "全部"
-    ? VENDORS.map((vendor) => ({ vendor, cards: filtered.filter((c) => vendorOfModel(c.name) === vendor) }))
-    : VENDORS.filter((v) => v === activeVendor).map((vendor) => ({ vendor, cards: filtered.filter((c) => vendorOfModel(c.name) === vendor) }));
+  const visible = (activeVendor === "全部" ? vendorOrder : [activeVendor]).map((vendor) => ({
+    vendor,
+    cards: filtered.filter((c) => vendorOfName(c.name) === vendor),
+  }));
   const sections = visible.filter((s) => s.cards.length > 0);
 
   const total = filtered.length;
