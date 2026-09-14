@@ -142,13 +142,54 @@ export default function InstallGuide() {
 
           <div className={CARD}>
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              还没装 ChatGPT 桌面端或 Claude 桌面端？
+              还没装要接入的应用？
             </p>
             <p className={`mt-1 ${SUBTLE}`}>
-              本应用负责把账号和模型设置接入这些应用，本身不替代它们。请先从官网装好
-              ChatGPT 桌面端或 Claude 桌面端，再回到首页选择应用并一键接入，
-              本应用会自动检查应用是否已经安装。
+              本应用负责把账号和模型设置接入这些应用，本身不替代它们。请先装好下面的应用，
+              再回到首页选择应用并一键接入，本应用会自动检查应用是否已经安装。
             </p>
+            <div className="mt-3 space-y-3">
+              <TargetInstall
+                name="ChatGPT 桌面端"
+                desc="从 chatgpt.com/download 下载安装。接入的是其中的 Codex 功能。"
+              />
+              <TargetInstall
+                name="Claude 桌面端"
+                desc="从 claude.com/download 下载安装。接入的是其内置的 Claude Code 功能。"
+              />
+              <TargetInstall
+                name="Claude Code CLI"
+                desc="命令行工具，需要 Node.js 18+。终端里运行："
+                command="npm install -g @anthropic-ai/claude-code"
+              />
+              <TargetInstall
+                name="Grok Build CLI"
+                desc={
+                  platform === "macos"
+                    ? "用 xAI 官方安装器（或 Node.js 20+ 时用 npm）："
+                    : "Windows 用 npm 安装（需要 Node.js 20+）："
+                }
+                command={
+                  platform === "macos"
+                    ? "curl -fsSL https://x.ai/cli/install.sh | bash"
+                    : "npm install -g @xai-official/grok"
+                }
+                altCommand={platform === "macos" ? "npm install -g @xai-official/grok" : undefined}
+              />
+              <TargetInstall
+                name="Antigravity CLI"
+                desc={
+                  platform === "macos"
+                    ? "Google 官方安装器（接入后仅支持 Gemini 系模型）："
+                    : "PowerShell 运行 Google 官方安装器（接入后仅支持 Gemini 系模型）："
+                }
+                command={
+                  platform === "macos"
+                    ? "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+                    : "irm https://antigravity.google/cli/install.ps1 | iex"
+                }
+              />
+            </div>
           </div>
         </div>
       </main>
@@ -161,6 +202,33 @@ function Note({ title, children }: { title: string; children: React.ReactNode })
     <div className="nk-alert-info mt-2 p-4">
       <p className="text-xs font-semibold">{title}</p>
       <p className="mt-1 text-xs">{children}</p>
+    </div>
+  );
+}
+
+function TargetInstall({
+  name,
+  desc,
+  command,
+  altCommand,
+}: {
+  name: string;
+  desc: string;
+  command?: string;
+  altCommand?: string;
+}) {
+  return (
+    <div className="rounded-lg border p-3 [border-color:var(--nk-line)]">
+      <p className="text-xs font-medium text-gray-900 dark:text-gray-100">{name}</p>
+      <p className={`mt-0.5 text-xs ${SUBTLE}`}>{desc}</p>
+      {command && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          <code className={`${CODE} block truncate py-1 font-mono text-xs`}>{command}</code>
+          {altCommand && (
+            <code className={`${CODE} block truncate py-1 font-mono text-xs`}>{altCommand}</code>
+          )}
+        </div>
+      )}
     </div>
   );
 }
