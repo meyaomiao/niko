@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type DeviceItem } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type DeviceItem, type UsageSummary } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
 import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelection";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
-import { computeTags, topUsedModels } from "../lib/modelTags";
+import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
 import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
@@ -103,8 +103,8 @@ export default function Home() {
 
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [loading, setLoading] = useState(true);
-  // 用户最常用模型（来自用量聚合），驱动模型卡上的「常用」标签
-  const [topUsed, setTopUsed] = useState<Set<string>>(new Set());
+  // 用户用量聚合（厂家内排名用），驱动「常用 / 性价比」标签
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
   const initialBalance = parseBalanceSnapshot(
     auth?.quota,
     auth?.quotaPerUnit,
@@ -233,10 +233,10 @@ export default function Home() {
       })
       .finally(() => setLoading(false));
 
-    // 常用模型标签：取当前账号用量聚合的前几名；失败静默
+    // 常用/性价比标签：取当前账号用量聚合，按厂家内排名判定；失败静默
     api
       .usageSummary(auth.accessToken)
-      .then((s) => setTopUsed(topUsedModels(s)))
+      .then((s) => setUsage(s))
       .catch(() => undefined);
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
@@ -457,15 +457,33 @@ export default function Home() {
     return `${fmtUSD(p.input)} / ${fmtUSD(p.output)}`;
   };
 
-  // 模型卡标签：刚上新（发布 60 天内）+ 常用（本人用量前几名）
+  // 模型卡标签：全部按厂家内比较
+  // 刚上新（发布 14 天内）/ 常用（厂家内用量前 3）/ 性价比（厂家内用量前 5 且价格分位 < 1/5）
+  const tagLevels = useMemo(() => {
+    const names = vendorTabs.flatMap((tab) => tab.models.map((choice) => choice.name));
+    const ratio = currentGroup?.ratio ?? 0;
+    return vendorPriceLevels(names, (name) => {
+      const p = priceOf(pricingIndex.get(name), ratio);
+      return p && !p.perRequest ? p.input : undefined;
+    });
+  }, [vendorTabs, pricingIndex, currentGroup?.ratio]);
+
+  const tagRanks = useMemo(() => vendorUsageRanks(usage), [usage]);
+
   const modelTags = (name: string) => {
     const m = bootstrap?.model_metadata?.[name];
     const release =
       m?.release_date ?? m?.released_at ?? m?.official_release_date ?? m?.version_date;
-    return computeTags({ name, release, topUsed });
+    return computeTags({
+      name,
+      release,
+      rank: tagRanks.get(name),
+      level: tagLevels.get(name),
+    });
   };
 
-  const pickGroup = (name: string) => {    groupTouchedRef.current = true;
+  const pickGroup = (name: string) => {
+    groupTouchedRef.current = true;
     setGroup(name);
     setDraftSource("manual");
     setNotice(null);

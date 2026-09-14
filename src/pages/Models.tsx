@@ -6,10 +6,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type ModelMetadata } from "../api/client";
+import { api, type BootstrapData, type GroupOption, type ModelMetadata, type UsageSummary } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS, vendorOfModel } from "../lib/vendor";
-import { computeTags, topUsedModels, type ModelTag } from "../lib/modelTags";
+import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
 import { friendlyDesktopError } from "../lib/copy";
@@ -83,7 +83,7 @@ export default function Models() {
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
-  const [topUsed, setTopUsed] = useState<Set<string>>(new Set());
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -96,10 +96,10 @@ export default function Models() {
       .then((res) => {
         setData(res);
         setGroup(res.user?.group || res.groups?.[0]?.name || "");
-        // 用户自己的用量聚合 → 「常用」标签；失败静默，不阻塞目录
+        // 用户自己的用量聚合 → 厂家内排名的「常用 / 性价比」；失败静默，不阻塞目录
         api
           .usageSummary(token)
-          .then((s) => setTopUsed(topUsedModels(s)))
+          .then((s) => setUsage(s))
           .catch(() => undefined);
       })
       .catch((e) => setError(friendlyDesktopError(e)))
@@ -112,36 +112,36 @@ export default function Models() {
 
   const cards = useMemo(() => {
     if (!data) return [];
-    const rows = orderedModels(data).map((name) => ({
-      name,
-      release: releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date),
-      price: priceOf(pricingIndex.get(name), ratio) as ModelPrice | null,
-      level: 0.5,
-      bench: bench[name],
-    }));
-    // 价位分位在全目录内统一计算，价格条才有可比性
-    const inputs = rows
-      .filter((r) => r.price && !r.price.perRequest)
-      .map((r) => r.price!.input);
-    const min = Math.min(...inputs, Infinity);
-    const max = Math.max(...inputs, 0);
-    const span = max > min ? max - min : 1;
-    return rows.map((r) => ({
-      ...r,
-      level:
-        r.price && !r.price.perRequest && Number.isFinite(min)
-          ? Math.min(1, Math.max(0, (r.price.input - min) / span))
-          : 0.5,
-      tags: computeTags({
-        name: r.name,
-        release: r.release,
-        level: r.price && !r.price.perRequest && Number.isFinite(min)
-          ? Math.min(1, Math.max(0, (r.price.input - min) / span))
-          : undefined,
-        topUsed,
-      }),
-    }));
-  }, [data, pricingIndex, ratio, bench, topUsed]);
+    const names = orderedModels(data);
+    const priceByName = new Map<string, ModelPrice | null>();
+    for (const name of names) {
+      priceByName.set(name, priceOf(pricingIndex.get(name), ratio) as ModelPrice | null);
+    }
+    // 价格分位与用量名次都按「厂家内」比较，价格条与标签口径一致
+    const levels = vendorPriceLevels(names, (name) => {
+      const price = priceByName.get(name);
+      return price && !price.perRequest ? price.input : undefined;
+    });
+    const ranks = vendorUsageRanks(usage);
+
+    return names.map((name) => {
+      const price = priceByName.get(name) ?? null;
+      const level = levels.get(name);
+      return {
+        name,
+        release: releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date),
+        price,
+        level: level ?? 0.5,
+        bench: bench[name],
+        tags: computeTags({
+          name,
+          release: releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date),
+          rank: ranks.get(name),
+          level,
+        }),
+      };
+    });
+  }, [data, pricingIndex, ratio, bench, usage]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -254,7 +254,8 @@ export default function Models() {
           )}
 
           <p className={`px-1 text-[11px] ${SUBTLE}`}>
-            价格 = 官方基准 × 分组倍率（当前 {group || "—"}：{ratio || "—"}x）。价格条长度为该模型输入价在全部有价模型中的相对位置；
+            价格 = 官方基准 × 分组倍率（当前 {group || "—"}：{ratio || "—"}x）。价格条长度为该模型输入价在同厂家有价模型中的相对位置；
+            标签规则：刚上新＝官方发布 14 天内，常用＝该厂家内用量前 3，性价比＝该厂家内用量前 5 且价格分位低于 1/5；
             「实测」来自首页 ⚡测速 的首字延迟中位数，未实测不显示。
           </p>
         </div>
