@@ -192,9 +192,16 @@ export default function Models() {
     return map;
   }, [filtered, vendorOfName]);
 
-  // 厂家切换：全部=分区铺开；选中某家=只看该家
+  // 厂家切换：全部=分区铺开；选中某家=只看该家；切换条按模型数量降序
   const [activeVendor, setActiveVendor] = useState<string>("全部");
-  const visible = (activeVendor === "全部" ? vendorOrder : [activeVendor]).map((vendor) => ({
+  const orderedVendors = useMemo(
+    () =>
+      vendorOrder
+        .filter((vendor) => (counts.get(vendor) ?? 0) > 0)
+        .sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b)),
+    [vendorOrder, counts]
+  );
+  const visible = (activeVendor === "全部" ? orderedVendors : [activeVendor]).map((vendor) => ({
     vendor,
     cards: filtered.filter((c) => vendorOfName(c.name) === vendor),
   }));
@@ -244,7 +251,7 @@ export default function Models() {
           {/* 厂家切换：sticky 吸顶，切走长滚动 */}
           {!loading && !error && (
             <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1 overflow-x-auto rounded-xl border bg-[var(--nk-surface)] px-1 py-1 [border-color:var(--nk-line)]">
-              {["全部", ...VENDORS.filter((v) => (counts.get(v) ?? 0) > 0)].map((vendor) => (
+              {["全部", ...orderedVendors].map((vendor) => (
                 <button
                   key={vendor}
                   onClick={() => setActiveVendor(vendor)}

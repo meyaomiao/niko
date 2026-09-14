@@ -124,6 +124,8 @@ export default function Home() {
   const [group, setGroup] = useState(auth?.defaultGroup ?? "");
   const [model, setModel] = useState("");
   const [modelFilter, setModelFilter] = useState("");
+  // 搜索默认收起为一个图标，避免常驻输入框挤占页签宽度
+  const [searchOpen, setSearchOpen] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -308,7 +310,7 @@ export default function Home() {
         };
       }
     }
-    return buildVendorModelTabs({
+    const tabs = buildVendorModelTabs({
       groups,
       models: bootstrap?.models,
       modelMetadata,
@@ -317,6 +319,10 @@ export default function Home() {
       // 服务端厂商目录优先，缺失的模型按模型名回退本地启发式
       vendorOf: (model) => vendorIndex.get(model)?.name ?? vendorOfModel(model),
     });
+    // 页签顺序按模型数量降序，数量相同按名称；原生厂商不置顶，改为页签小徽标
+    return [...tabs].sort(
+      (a, b) => b.models.length - a.models.length || a.vendor.localeCompare(b.vendor)
+    );
   }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor, vendorIndex]);
 
   const modelByGroup = useMemo(() => {
@@ -1198,34 +1204,79 @@ export default function Home() {
               ) : (
                 <>
                   <div className="flex min-h-0 flex-1 flex-col overflow-hidden pr-1">
-                  <div className="flex shrink-0 items-center gap-2 border-b [border-color:var(--nk-line)]">
-                    <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+                  <div className="flex shrink-0 items-center gap-1 border-b [border-color:var(--nk-line)]">
+                    <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto">
                       {vendorTabs.map((tab) => (
                         <button
                           key={tab.vendor}
                           onClick={() => pickVendor(tab)}
-                          className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-xs transition ${
+                          title={
+                            recommendVendor && tab.vendor !== recommendVendor
+                              ? `${tab.vendor} · ${tab.models.length} 个模型 · 需服务端转换接入`
+                              : `${tab.vendor} · ${tab.models.length} 个模型`
+                          }
+                          className={`-mb-px flex shrink-0 items-center gap-1 border-b-2 px-2 py-2 text-xs transition ${
                             tab.vendor === activeVendor
                               ? "border-gray-900 font-medium text-gray-900 dark:border-white dark:text-white"
                               : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                           }`}
                         >
                           <VendorIcon vendor={tab.vendor} />
-                          {tab.vendor}
+                          <span className="max-w-[5.5rem] truncate">{tab.vendor}</span>
                           <span className="opacity-60">{tab.models.length}</span>
+                          {/* 非原生厂商只留一个符号徽标，不再占文字宽度 */}
+                          {recommendVendor === tab.vendor && (
+                            <span className="rounded bg-[var(--nk-info-soft)] px-1 text-[9px] text-[var(--nk-info)]">
+                              原生
+                            </span>
+                          )}
                           {recommendVendor && tab.vendor !== recommendVendor && (
-                            <span className="opacity-60">转换接入</span>
+                            <span className="text-[10px] opacity-50" aria-hidden="true">⇄</span>
                           )}
                         </button>
                       ))}
                     </div>
-                    <input
-                      value={modelFilter}
-                      onChange={(e) => setModelFilter(e.target.value)}
-                      placeholder="搜索"
-                      aria-label="搜索模型"
-                      className="w-28 shrink-0 sm:w-36"
-                    />
+                    {searchOpen ? (
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <input
+                          autoFocus
+                          value={modelFilter}
+                          onChange={(e) => setModelFilter(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              setModelFilter("");
+                              setSearchOpen(false);
+                            }
+                          }}
+                          placeholder="搜索模型"
+                          aria-label="搜索模型"
+                          className="nk-input w-32 py-1 text-xs sm:w-40"
+                        />
+                        <button
+                          onClick={() => {
+                            setModelFilter("");
+                            setSearchOpen(false);
+                          }}
+                          aria-label="收起搜索"
+                          title="收起搜索"
+                          className="nk-btn-ghost px-1.5 py-1 text-xs"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setSearchOpen(true)}
+                        aria-label="搜索模型"
+                        title="搜索模型"
+                        className="nk-btn-ghost mr-1 shrink-0 px-2 py-1"
+                      >
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6">
+                          <circle cx="8.5" cy="8.5" r="5" />
+                          <path d="M12.5 12.5 17 17" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                   <div className="nk-model-scroll mt-2 md:flex-1 md:max-h-none">
                     {models.length === 0 && (
