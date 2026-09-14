@@ -820,6 +820,9 @@ export default function Home() {
                   <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
                     充值
                   </button>
+                  <button onClick={() => navigate("/models")} className={GHOST_BTN}>
+                    模型价格
+                  </button>
                   <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
                     使用明细
                   </button>

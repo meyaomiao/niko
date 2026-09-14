@@ -4,6 +4,7 @@ import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Usage from "./pages/Usage";
 import TopUp from "./pages/TopUp";
+import Models from "./pages/Models";
 import Settings from "./pages/Settings";
 import ForceUpgrade from "./pages/ForceUpgrade";
 import InstallGuide from "./pages/InstallGuide";
@@ -104,6 +105,7 @@ export default function App() {
               <Routes>
                 <Route path="/home" element={<Home />} />
                 <Route path="/usage" element={<Usage />} />
+                <Route path="/models" element={<Models />} />
                 <Route path="/topup" element={<TopUp />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/install-guide" element={<InstallGuide />} />
