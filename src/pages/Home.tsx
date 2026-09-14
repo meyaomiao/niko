@@ -893,7 +893,7 @@ export default function Home() {
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col gap-4">
           {/* 上方摘要：用户状态（含登录设备）+ 本机应用，两卡一行 */}
-          <div className="grid shrink-0 grid-cols-1 items-start gap-3 md:grid-cols-[20rem_minmax(0,1fr)]">
+          <div className="grid shrink-0 grid-cols-1 gap-3 md:grid-cols-[20rem_minmax(0,1fr)]">
             {/* 余额 */}
             <section className={CARD_TIGHT}>
               <div className="flex items-start justify-between gap-2">
@@ -938,58 +938,18 @@ export default function Home() {
                   </button>
                 </div>
               </div>
-              <div className="mt-2 border-t pt-2 [border-color:var(--nk-line)]">
-              <button
-                onClick={() => setDevicesOpen((v) => !v)}
-                className="flex w-full items-center justify-between"
-              >
-                <h2 className={TITLE}>登录设备</h2>
-                <span className={SUBTLE}>
-                  {devices.length}
-                  {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台{" "}
-                  {devicesOpen ? "▲" : "▼"}
-                </span>
-              </button>
-              {devicesOpen && (
-                <div className="mt-2 max-h-36 space-y-2 overflow-y-auto pr-1">
-                  {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
-                    <p className="nk-alert-warning">
-                      已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
-                    </p>
-                  )}
-                  {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
-                  {devices.map((d) => (
-                    <div
-                      key={d.id}
-                      className="nk-row flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
-                          {displayDeviceLabel(d.device_name, d.platform)}
-                          {d.is_current && <span className="ml-2 opacity-60">当前</span>}
-                        </p>
-                        <p className={SUBTLE}>
-                          {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
-                        </p>
-                      </div>
-                      {!d.is_current && (
-                        <button
-                          onClick={() => revokeDevice(d.id)}
-                          disabled={revoking !== null}
-                          className={GHOST_BTN}
-                        >
-                          {revoking === d.id ? "…" : "撤销"}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {otherDevices > 0 && (
-                    <button onClick={revokeOthers} disabled={revoking !== null} className={PRIMARY_BTN}>
-                      {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
-                    </button>
-                  )}
-                </div>
-              )}
+              <div className="mt-2 flex items-center justify-between gap-2 border-t pt-2 [border-color:var(--nk-line)]">
+                <button
+                  onClick={() => setDevicesOpen(true)}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+                  aria-haspopup="dialog"
+                >
+                  <span className={TITLE}>登录设备</span>
+                  <span className={`${SUBTLE} truncate`}>
+                    {devices.length}
+                    {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台 · 管理 ›
+                  </span>
+                </button>
               </div>
             </section>
 
@@ -1351,7 +1311,9 @@ export default function Home() {
                                     {modelTags(choice.name).map((tag) => (
                                       <span
                                         key={tag.id}
-                                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] leading-3 ${tag.className}`}
+                                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] leading-3 ${
+                                          selected ? "bg-white/25 text-white" : tag.className
+                                        }`}
                                       >
                                         {tag.label}
                                       </span>
@@ -1366,7 +1328,9 @@ export default function Home() {
                                   {compat && (
                                     <span
                                       title={compat.note}
-                                      className={`rounded-full px-1.5 py-0.5 ${COMPAT_STYLE[compat.level]}`}
+                                      className={`rounded-full px-1.5 py-0.5 ${
+                                        selected ? "bg-white/25 text-white" : COMPAT_STYLE[compat.level]
+                                      }`}
                                     >
                                       {COMPAT_LABEL[compat.level]}
                                     </span>
@@ -1515,6 +1479,81 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      {/* 登录设备弹窗：面板式管理，不再把列表挤进账户卡 */}
+      {devicesOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="登录设备"
+          onClick={() => setDevicesOpen(false)}
+        >
+          <div
+            className={`${CARD} w-full max-w-md`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 className={TITLE}>
+                登录设备
+                <span className={`ml-2 font-normal ${SUBTLE}`}>
+                  {devices.length}
+                  {deviceLimit > 0 ? ` / ${deviceLimit}` : ""} 台
+                </span>
+              </h2>
+              <button
+                onClick={() => setDevicesOpen(false)}
+                aria-label="关闭"
+                title="关闭"
+                className="nk-btn-ghost px-2"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-3 max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+              {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
+                <p className="nk-alert-warning">
+                  已用 {devices.length} / {deviceLimit} 台，达到上限后新设备将无法登录，建议清理不用的设备。
+                </p>
+              )}
+              {devices.length === 0 && <p className={SUBTLE}>暂无设备记录</p>}
+              {devices.map((d) => (
+                <div key={d.id} className="nk-row flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium text-gray-900 dark:text-gray-100">
+                      {displayDeviceLabel(d.device_name, d.platform)}
+                      {d.is_current && <span className="ml-2 opacity-60">当前</span>}
+                    </p>
+                    <p className={SUBTLE}>
+                      {d.platform} · 最后活跃 {formatTime(d.accessed_time)}
+                    </p>
+                  </div>
+                  {!d.is_current && (
+                    <button
+                      onClick={() => revokeDevice(d.id)}
+                      disabled={revoking !== null}
+                      className={GHOST_BTN}
+                    >
+                      {revoking === d.id ? "…" : "撤销"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {otherDevices > 0 && (
+              <button
+                onClick={revokeOthers}
+                disabled={revoking !== null}
+                className={`mt-3 w-full ${PRIMARY_BTN}`}
+              >
+                {revoking === "others" ? "操作中…" : `踢出其他 ${otherDevices} 台`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
