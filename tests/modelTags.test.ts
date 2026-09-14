@@ -46,7 +46,8 @@ test("用量名次在每个厂家内独立计算", () => {
       { name: "claude-sonnet-5", requests: 50 },
       { name: "gpt-5", requests: 5 },
       { name: "gpt-6", requests: 40 },
-    ])
+    ]),
+    undefined
   );
   // Anthropic 内 sonnet(50) > opus(10)
   assert.equal(ranks.get("claude-sonnet-5"), 1);
@@ -106,4 +107,24 @@ test("按次计费或无价格不参与分位", () => {
   );
   assert.equal(levels.has("gpt-6"), false);
   assert.equal(levels.get("gpt-5"), 0);
+});
+
+test("全站用量排行优先于本人用量", () => {
+  const globalStats = [
+    { model_name: "claude-opus-5", requests: 9000, quota: 100 },
+    { model_name: "claude-sonnet-5", requests: 100, quota: 10 },
+    { model_name: "gpt-5", requests: 500, quota: 50 },
+  ];
+  const mine = summary([{ name: "claude-sonnet-5", requests: 999 }]);
+  // 全站 opus(9000) > sonnet(100)，本人 sonnet(999) 被覆盖
+  const ranks = vendorUsageRanks(mine, globalStats);
+  assert.equal(ranks.get("claude-opus-5"), 1);
+  assert.equal(ranks.get("claude-sonnet-5"), 2);
+  assert.equal(ranks.get("gpt-5"), 1);
+});
+
+test("全站数据为空时回退到本人用量", () => {
+  const mine = summary([{ name: "claude-opus-5", requests: 5 }]);
+  const ranks = vendorUsageRanks(mine, null);
+  assert.equal(ranks.get("claude-opus-5"), 1);
 });

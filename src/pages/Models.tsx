@@ -156,7 +156,7 @@ export default function Models() {
       const price = priceByName.get(name);
       return price && !price.perRequest ? price.input : undefined;
     });
-    const ranks = vendorUsageRanks(usage);
+    const ranks = vendorUsageRanks(usage, data?.model_usage);
 
     return names.map((name) => {
       const price = priceByName.get(name) ?? null;
@@ -189,7 +189,7 @@ export default function Models() {
         // 目录来自 pricing 反查时，hasTokenGroups 恒真；这里保留字段供排查
       };
     });
-  }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups]);
+  }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups, data?.model_usage]);
 
   // 服务端厂商目录：模型 → 厂家（服务端优先，缺失回退本地启发式）
   const vendorIndex = useMemo(

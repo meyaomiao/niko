@@ -572,7 +572,10 @@ export default function Home() {
     });
   }, [vendorTabs, pricingIndex, currentGroup?.ratio]);
 
-  const tagRanks = useMemo(() => vendorUsageRanks(usage), [usage]);
+  const tagRanks = useMemo(
+    () => vendorUsageRanks(usage, bootstrap?.model_usage),
+    [usage, bootstrap?.model_usage]
+  );
 
   const modelTags = (name: string) => {
     const m = bootstrap?.model_metadata?.[name];

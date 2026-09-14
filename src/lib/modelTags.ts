@@ -3,7 +3,7 @@
 // - 常用：该厂家内用量排行前 3（服务端 usage/summary 的本人用量；全站热榜服务端暂未下发）
 // - 性价比：该厂家内用量排行前 5，且输入价在该厂家内相对位置低于 1/5
 
-import type { UsageSummary } from "../api/client.ts";
+import type { ModelUsageStat, UsageSummary } from "../api/client.ts";
 import { vendorOfModel } from "./vendor.ts";
 
 export interface ModelTag {
@@ -30,21 +30,39 @@ export function isNewRelease(release: string | undefined, now = Date.now()): boo
 
 /**
  * 厂家内用量排行（1-based）：先按 requests 降序排，再在每个厂家内部排名。
+ * 优先用全站跨用户排行（bootstrap model_usage），没有时回退到本人 usage summary。
  * 返回 model 名 → 名次；没有用量数据的模型不出现在 Map 里。
  */
 export function vendorUsageRanks(
-  summary: UsageSummary | null | undefined
+  summary: UsageSummary | null | undefined,
+  globalStats?: ModelUsageStat[] | null
 ): Map<string, number> {
-  const byModel = summary?.by_model;
+  const entries: { name: string; requests: number }[] = [];
+
+  // 全站数据优先：真实跨用户热度
+  if (globalStats?.length) {
+    for (const item of globalStats) {
+      if (item.model_name) {
+        entries.push({ name: item.model_name, requests: item.requests ?? 0 });
+      }
+    }
+  } else {
+    // 回退：本人用量
+    for (const item of summary?.by_model ?? []) {
+      if (item.name) {
+        entries.push({ name: item.name, requests: item.requests ?? 0 });
+      }
+    }
+  }
+
   const ranks = new Map<string, number>();
-  if (!byModel?.length) return ranks;
+  if (entries.length === 0) return ranks;
 
   const perVendor = new Map<string, { name: string; requests: number }[]>();
-  for (const item of byModel) {
-    if (!item.name) continue;
+  for (const item of entries) {
     const vendor = vendorOfModel(item.name);
     const list = perVendor.get(vendor) ?? [];
-    list.push({ name: item.name, requests: item.requests ?? 0 });
+    list.push(item);
     perVendor.set(vendor, list);
   }
 

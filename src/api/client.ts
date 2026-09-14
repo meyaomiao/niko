@@ -103,6 +103,13 @@ export interface PricingItem {
   billing_mode?: string;
 }
 
+/** 全站模型用量排行条目 */
+export interface ModelUsageStat {
+  model_name: string;
+  requests: number;
+  quota: number;
+}
+
 /** 厂商元数据（来自公开 /api/pricing 的 vendors 数组） */
 export interface VendorMeta {
   id: number;
@@ -133,6 +140,8 @@ export interface BootstrapData {
   model_order?: string[];
   groups?: GroupOption[];
   pricing: PricingItem[];
+  /** 全站模型用量排行（服务端跨用户聚合，最近 30 天） */
+  model_usage?: ModelUsageStat[];
   /** 允许的最大登录设备数，用于首页展示 已用/上限 */
   device_limit?: number;
   min_supported_version?: string;
