@@ -10,6 +10,7 @@ import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelect
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
 import { buildVendorIndex } from "../lib/vendorCatalog";
+import { compareModelsByRelease } from "../lib/modelOrder";
 import { buildGroupCatalog, groupsForModel } from "../lib/groupCatalog";
 import { vendorOfGroup, vendorOfModel, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
@@ -486,17 +487,28 @@ export default function Home() {
   );
   const hasTokenGroups = tokenGroupNames.length > 0;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
+  /** 服务端发布顺序索引（bootstrap 注释：该顺序即发布日期的先后） */
+  const catalogOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    (bootstrap?.model_order ?? []).forEach((name, index) => map.set(name, index));
+    return map;
+  }, [bootstrap?.model_order]);
+
+  /**
+   * 模型排序（无论是否筛选厂家都同一规则）：
+   * 1. 有官方发布日期的按发布日期从新到旧；
+   * 2. 没有日期的按服务端发布顺序（model_order）靠前；
+   * 3. 都没有才按名称，保证稳定。
+   */
   const models = useMemo(() => {
     const kw = modelFilter.trim().toLowerCase();
     const list = kw ? vendorModels.filter((m) => m.name.toLowerCase().includes(kw)) : vendorModels;
-    // 默认按发布时间从新到旧；没有发布时间的排最后（按名称稳定兜底）
-    return [...list].sort((a, b) => {
-      const ta = a.releaseTime ?? Number.NEGATIVE_INFINITY;
-      const tb = b.releaseTime ?? Number.NEGATIVE_INFINITY;
-      if (ta !== tb) return tb - ta;
-      return a.name.localeCompare(b.name);
-    });
-  }, [vendorModels, modelFilter]);
+    const orderCtx = {
+      dateOf: (name: string) => releaseTimeOf(name),
+      orderOf: (name: string) => catalogOrder.get(name),
+    };
+    return [...list].sort((a, b) => compareModelsByRelease(a.name, b.name, orderCtx));
+  }, [vendorModels, modelFilter, catalogOrder, bootstrap?.model_metadata, bootstrap?.pricing]);
 
   useEffect(() => {
     if (!activeVendorTab || groups.length === 0) return;
@@ -547,7 +559,22 @@ export default function Home() {
   /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
   const releaseLabelOf = (name: string) => {
     const m = bootstrap?.model_metadata?.[name];
-    return m?.release_date ?? m?.released_at ?? m?.official_release_date ?? m?.version_date ?? "";
+    return (
+      m?.release_date ??
+      m?.released_at ??
+      m?.official_release_date ??
+      m?.version_date ??
+      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
+      ""
+    );
+  };
+
+  /** 发布日期时间戳；没有日期返回 null（排序走服务端发布序兜底） */
+  const releaseTimeOf = (name: string) => {
+    const label = releaseLabelOf(name);
+    if (!label) return null;
+    const ts = Date.parse(label);
+    return Number.isFinite(ts) ? ts : null;
   };
 
   const pickGroup = (name: string) => {
@@ -1238,7 +1265,11 @@ export default function Home() {
                         <p className={LABEL}>
                           模型
                           <span className="ml-1.5 opacity-70">{models.length}</span>
-                          <span className={`ml-2 text-[10px] font-normal ${SUBTLE}`}>按发布时间</span>
+                          <span className={`ml-2 text-[10px] font-normal ${SUBTLE}`}>
+                            {vendorModels.some((m) => releaseTimeOf(m.name) !== null)
+                              ? "按发布时间 新→旧"
+                              : "按发布顺序（服务端未提供发布日期）"}
+                          </span>
                         </p>
                         {searchOpen ? (
                           <div className="flex shrink-0 items-center gap-0.5">

@@ -11,6 +11,7 @@ import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pric
 import { VENDORS } from "../lib/vendor";
 import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
 import { buildGroupCatalog, groupsForModel, type GroupInfo } from "../lib/groupCatalog";
+import { compareModelsByRelease } from "../lib/modelOrder";
 import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
@@ -38,19 +39,25 @@ function modelName(item: BootstrapData["models"][number]): string {
 }
 
 /** 服务端目录顺序：model_order 优先，其余按名称稳定兜底（与 modelSelection 的规则一致） */
+/** 与首页同一套排序：发布日期新→旧 → 服务端发布序 → 名称 */
 function orderedModels(data: BootstrapData): string[] {
   const names = (data.models ?? []).map(modelName).filter(Boolean);
   const unique = Array.from(new Set(names));
-  if (!data.model_order?.length) return unique.sort();
-  const index = new Map(data.model_order.map((name, i) => [name, i]));
-  return unique.sort((a, b) => {
-    const ia = index.get(a);
-    const ib = index.get(b);
-    if (ia !== undefined && ib !== undefined) return ia - ib;
-    if (ia !== undefined) return -1;
-    if (ib !== undefined) return 1;
-    return a.localeCompare(b);
-  });
+  const index = new Map((data.model_order ?? []).map((name, i) => [name, i]));
+  const priceByName = new Map((data.pricing ?? []).map((item) => [item.model_name, item]));
+  const dateOf = (name: string): number | null => {
+    const meta = data.model_metadata?.[name];
+    const label = releaseDate(meta, priceByName.get(name)?.release_date);
+    if (!label) return null;
+    const ts = Date.parse(label);
+    return Number.isFinite(ts) ? ts : null;
+  };
+  return unique.sort((a, b) =>
+    compareModelsByRelease(a, b, {
+      dateOf,
+      orderOf: (name) => index.get(name),
+    })
+  );
 }
 
 function releaseDate(meta: ModelMetadata | undefined, fallback?: string): string {
