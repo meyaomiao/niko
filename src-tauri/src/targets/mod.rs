@@ -877,6 +877,41 @@ const CLAUDE_MODEL_ENV_CONFLICTS: &[&str] = &[
     "ANTHROPIC_SMALL_FAST_MODEL",
 ];
 
+/// Claude 系目标共用的 ~/.claude/settings.json 写入。桌面端在此之上还会写 3p 托管配置。
+fn claude_settings_apply(target_id: &str, plan: &ApplyPlan) -> Result<Vec<String>, String> {
+    let settings_path = home_dir().join(".claude").join("settings.json");
+    let _ = save_backup(target_id, &settings_path);
+
+    let mut changed = merge_json_env(
+        &settings_path,
+        &[
+            ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
+            ("ANTHROPIC_BASE_URL", claude_base_url(&plan.base_url)),
+        ],
+    )?;
+    if let Some(model) = &plan.model {
+        changed.append(&mut merge_json_keys(
+            &settings_path,
+            &[("model", Value::String(model.clone()))],
+        )?);
+        // 这些环境变量优先级高于 settings 的 model 字段（ANTHROPIC_MODEL），或会把
+        // opus/sonnet/haiku/fable 别名重定向到别的模型。其他切换工具留下的残留会
+        // 直接盖掉我们刚写入的模型，必须清掉，否则用户看到的仍是旧模型。
+        changed.append(&mut remove_json_env(&settings_path, CLAUDE_MODEL_ENV_CONFLICTS)?);
+    }
+    Ok(changed)
+}
+
+/// Claude 系目标共用的 settings.json 还原：只移除 Niko 写入的接入键
+fn claude_settings_restore(settings_path: &Path) -> Result<Vec<String>, String> {
+    let mut changed = remove_json_env(
+        settings_path,
+        &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
+    )?;
+    changed.append(&mut remove_json_keys(settings_path, &["model"])?);
+    Ok(changed)
+}
+
 impl Target for ClaudeDesktopTarget {
     fn id(&self) -> &'static str { "claude-desktop" }
     fn display_name(&self) -> &'static str { "Claude 桌面端" }
@@ -911,26 +946,7 @@ impl Target for ClaudeDesktopTarget {
         // Claude Desktop 把 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 列为「由 Claude Desktop
         // 托管、不可覆盖」，桌面端聊天本身没有自定义 API 端点入口。能接入的是它内置的
         // Claude Code 面板，读的是 ~/.claude/settings.json，和 CLI 共用同一份配置。
-        let settings_path = home_dir().join(".claude").join("settings.json");
-        let _ = save_backup(self.id(), &settings_path);
-
-        let mut changed = merge_json_env(
-            &settings_path,
-            &[
-                ("ANTHROPIC_AUTH_TOKEN", plan.api_key.clone()),
-                ("ANTHROPIC_BASE_URL", claude_base_url(&plan.base_url)),
-            ],
-        )?;
-        if let Some(model) = &plan.model {
-            changed.append(&mut merge_json_keys(
-                &settings_path,
-                &[("model", Value::String(model.clone()))],
-            )?);
-            // 这些环境变量优先级高于 settings 的 model 字段（ANTHROPIC_MODEL），或会把
-            // opus/sonnet/haiku/fable 别名重定向到别的模型。其他切换工具留下的残留会
-            // 直接盖掉我们刚写入的模型，必须清掉，否则用户看到的仍是旧模型。
-            changed.append(&mut remove_json_env(&settings_path, CLAUDE_MODEL_ENV_CONFLICTS)?);
-        }
+        let mut changed = claude_settings_apply(self.id(), plan)?;
 
         // 3p 模式下托管配置注入的环境变量优先级高于 settings.json，必须一并写入才会真正生效
         if let Some(dir) = claude_3p_config_dir() {
@@ -946,19 +962,74 @@ impl Target for ClaudeDesktopTarget {
     }
 }
 
+/// Claude Code CLI（终端里的 `claude`）。与桌面端内置面板共用 ~/.claude/settings.json，
+/// 但 CLI 没有桌面端的 3p 托管配置层，只写 settings.json 即可生效。
+pub struct ClaudeCliTarget;
+
+impl ClaudeCliTarget {
+    /// 在常见安装位置与 PATH 里找 claude 可执行文件。
+    fn find_executable() -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        let candidates = {
+            let mut list = vec![
+                home_dir().join(".local").join("bin").join("claude.exe"),
+            ];
+            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+                list.push(PathBuf::from(local).join("Programs").join("claude").join("claude.exe"));
+            }
+            list
+        };
+        #[cfg(not(target_os = "windows"))]
+        let candidates = vec![
+            home_dir().join(".local").join("bin").join("claude"),
+            home_dir().join(".claude").join("local").join("claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+        ];
+        if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
+            return Some(found);
+        }
+        // PATH 兜底：用户可能用 npm -g / 其他包管理器装到非标准位置
+        let path_var = std::env::var_os("PATH")?;
+        std::env::split_paths(&path_var)
+            .map(|dir| dir.join(if cfg!(windows) { "claude.exe" } else { "claude" }))
+            .find(|path| path.is_file())
+    }
+}
+
+impl Target for ClaudeCliTarget {
+    fn id(&self) -> &'static str { "claude-cli" }
+    fn display_name(&self) -> &'static str { "Claude Code CLI" }
+
+    fn is_installed(&self) -> bool {
+        Self::find_executable().is_some()
+    }
+
+    fn icon_data_uri(&self) -> Option<String> {
+        None
+    }
+
+    fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
+        let changed = claude_settings_apply(self.id(), plan)?;
+        Ok(ApplySummary { target_id: self.id().to_owned(), changed_keys: changed })
+    }
+}
+
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
-    vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget)]
+    vec![Box::new(CodexTarget), Box::new(ClaudeDesktopTarget), Box::new(ClaudeCliTarget)]
 }
 
 pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
     match target_id {
-        "claude-desktop" => {
+        "claude-desktop" | "claude-cli" => {
             let mut paths = vec![home_dir().join(".claude").join("settings.json")];
-            if let Some(dir) = claude_3p_config_dir() {
-                paths.push(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json")));
-                paths.push(dir.join("_meta.json"));
+            if target_id == "claude-desktop" {
+                if let Some(dir) = claude_3p_config_dir() {
+                    paths.push(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json")));
+                    paths.push(dir.join("_meta.json"));
+                }
             }
             Ok(paths)
         }
@@ -1053,47 +1124,54 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
                 auth_style: "openai".to_owned(),
             })
         }
-        "claude-desktop" => {
-            // 托管配置存在时它才是真正生效的来源，settings.json 只是 CLI 的兜底
-            if let Some((base_url, api_key)) =
-                claude_3p_config_dir().as_deref().and_then(claude_managed_effective)
-            {
-                let model = fs::read_to_string(h.join(".claude").join("settings.json"))
-                    .ok()
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                    .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned));
-                return Ok(EffectiveConfig {
-                    target_id: target_id.to_owned(),
-                    endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
-                    api_key,
-                    model,
-                    auth_style: "anthropic".to_owned(),
-                });
+        "claude-desktop" | "claude-cli" => {
+            if target_id == "claude-desktop" {
+                // 托管配置存在时它才是真正生效的来源，settings.json 只是 CLI 的兜底
+                if let Some((base_url, api_key)) =
+                    claude_3p_config_dir().as_deref().and_then(claude_managed_effective)
+                {
+                    let model = fs::read_to_string(h.join(".claude").join("settings.json"))
+                        .ok()
+                        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                        .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned));
+                    return Ok(EffectiveConfig {
+                        target_id: target_id.to_owned(),
+                        endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+                        api_key,
+                        model,
+                        auth_style: "anthropic".to_owned(),
+                    });
+                }
             }
-            let settings_path = h.join(".claude").join("settings.json");
-            let raw = fs::read_to_string(&settings_path)
-                .map_err(|_| "未找到 ~/.claude/settings.json，请先点击启用".to_owned())?;
-            let v: Value = serde_json::from_str(&raw)
-                .map_err(|e| format!("settings.json 解析失败：{e}"))?;
-            let env = v.get("env").ok_or("settings.json 里没有 env 配置，请先点击启用")?;
-            let base_url = env
-                .get("ANTHROPIC_BASE_URL")
-                .and_then(Value::as_str)
-                .ok_or("settings.json 里没有 ANTHROPIC_BASE_URL，请先点击启用")?;
-            let api_key = env
-                .get("ANTHROPIC_AUTH_TOKEN")
-                .and_then(Value::as_str)
-                .ok_or("settings.json 里没有 ANTHROPIC_AUTH_TOKEN，请先点击启用")?;
-            Ok(EffectiveConfig {
-                target_id: target_id.to_owned(),
-                endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
-                api_key: api_key.to_owned(),
-                model: v.get("model").and_then(Value::as_str).map(str::to_owned),
-                auth_style: "anthropic".to_owned(),
-            })
+            claude_settings_effective(&h, target_id)
         }
         other => Err(format!("未知目标: {other}")),
     }
+}
+
+/// 从 ~/.claude/settings.json 读回真正生效的接入参数（Claude 系目标共用）
+fn claude_settings_effective(h: &Path, target_id: &str) -> Result<EffectiveConfig, String> {
+    let settings_path = h.join(".claude").join("settings.json");
+    let raw = fs::read_to_string(&settings_path)
+        .map_err(|_| "未找到 ~/.claude/settings.json，请先点击启用".to_owned())?;
+    let v: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("settings.json 解析失败：{e}"))?;
+    let env = v.get("env").ok_or("settings.json 里没有 env 配置，请先点击启用")?;
+    let base_url = env
+        .get("ANTHROPIC_BASE_URL")
+        .and_then(Value::as_str)
+        .ok_or("settings.json 里没有 ANTHROPIC_BASE_URL，请先点击启用")?;
+    let api_key = env
+        .get("ANTHROPIC_AUTH_TOKEN")
+        .and_then(Value::as_str)
+        .ok_or("settings.json 里没有 ANTHROPIC_AUTH_TOKEN，请先点击启用")?;
+    Ok(EffectiveConfig {
+        target_id: target_id.to_owned(),
+        endpoint: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+        api_key: api_key.to_owned(),
+        model: v.get("model").and_then(Value::as_str).map(str::to_owned),
+        auth_style: "anthropic".to_owned(),
+    })
 }
 
 fn read_regular_text(path: &Path) -> Result<Option<String>, ()> {
@@ -1230,7 +1308,7 @@ fn observe_codex_config(home: &Path) -> TargetConfigObservation {
     )
 }
 
-fn observe_claude_settings(home: &Path) -> TargetConfigObservation {
+fn observe_claude_settings(home: &Path, target_id: &str) -> TargetConfigObservation {
     let settings_path = home.join(".claude").join("settings.json");
     let raw = match read_regular_text(&settings_path) {
         Ok(Some(raw)) => raw,
@@ -1273,7 +1351,7 @@ fn observe_claude_settings(home: &Path) -> TargetConfigObservation {
         claude_base_url(base).trim_end_matches('/')
     );
     matchable_target_config(
-        "claude-desktop",
+        target_id,
         &endpoint,
         "anthropic",
         model.as_deref(),
@@ -1361,7 +1439,7 @@ fn observe_claude_config(home: &Path) -> TargetConfigObservation {
             Err(()) => return TargetConfigObservation::Unreadable,
         }
     }
-    observe_claude_settings(home)
+    observe_claude_settings(home, "claude-desktop")
 }
 
 pub(crate) fn observe_active_config_at(
@@ -1371,6 +1449,7 @@ pub(crate) fn observe_active_config_at(
     match target_id {
         "codex" => observe_codex_config(home),
         "claude-desktop" => observe_claude_config(home),
+        "claude-cli" => observe_claude_settings(home, target_id),
         _ => TargetConfigObservation::Unreadable,
     }
 }
@@ -1402,7 +1481,7 @@ pub(crate) fn expected_config_digest_at(
                 &plan.api_key,
             ))
         }
-        "claude-desktop" => {
+        "claude-desktop" | "claude-cli" => {
             let endpoint = format!(
                 "{}/v1/messages",
                 claude_base_url(&plan.base_url).trim_end_matches('/')
@@ -1410,7 +1489,7 @@ pub(crate) fn expected_config_digest_at(
             Ok(crate::active_groups::config_digest(
                 target_id,
                 &endpoint,
-                if source_is_managed {
+                if target_id == "claude-desktop" && source_is_managed {
                     "anthropic:managed"
                 } else {
                     "anthropic"
@@ -1505,16 +1584,17 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
         "claude-desktop" => {
             let settings_path = h.join(".claude").join("settings.json");
             let _ = save_backup(target_id, &settings_path);
-            changed.append(&mut remove_json_env(
-                &settings_path,
-                &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
-            )?);
-            changed.append(&mut remove_json_keys(&settings_path, &["model"])?);
+            changed.append(&mut claude_settings_restore(&settings_path)?);
             if let Some(dir) = claude_3p_config_dir() {
                 if dir.exists() {
                     changed.append(&mut claude_managed_restore(&dir)?);
                 }
             }
+        }
+        "claude-cli" => {
+            let settings_path = h.join(".claude").join("settings.json");
+            let _ = save_backup(target_id, &settings_path);
+            changed.append(&mut claude_settings_restore(&settings_path)?);
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -1529,6 +1609,41 @@ pub struct DriftReport {
     pub target_id: String,
     pub drifted: bool,
     pub mismatched_keys: Vec<String>,
+}
+
+/// Claude 系目标共用的 settings.json 漂移检查
+fn claude_settings_drift(h: &Path, plan: &ApplyPlan) -> Vec<String> {
+    let mut mismatched = Vec::new();
+    let settings = h.join(".claude").join("settings.json");
+    if settings.exists() {
+        let raw = fs::read_to_string(&settings).unwrap_or_default();
+        let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        let env = v.get("env");
+        if env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(Value::as_str)
+            != Some(&plan.api_key)
+        {
+            mismatched.push("settings.json:env.ANTHROPIC_AUTH_TOKEN".to_owned());
+        }
+        if env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(Value::as_str)
+            != Some(claude_base_url(&plan.base_url).as_str())
+        {
+            mismatched.push("settings.json:env.ANTHROPIC_BASE_URL".to_owned());
+        }
+        if let Some(model) = &plan.model {
+            if v.get("model").and_then(Value::as_str) != Some(model.as_str()) {
+                mismatched.push("settings.json:model".to_owned());
+            }
+            // 残留的模型环境变量会覆盖 model 字段，等同于配置未生效
+            for k in CLAUDE_MODEL_ENV_CONFLICTS {
+                if env.and_then(|e| e.get(*k)).is_some() {
+                    mismatched.push(format!("settings.json:env.{k}"));
+                }
+            }
+        }
+    } else {
+        mismatched.push("settings.json:missing".to_owned());
+    }
+    mismatched
 }
 
 /// 检测某个 target 当前配置是否与期望 plan 一致
@@ -1630,51 +1745,26 @@ pub(crate) fn check_drift_at(
                 mismatched.push("config.toml:missing".to_owned());
             }
         }
-        // Claude Desktop 内置 Claude Code 面板读 ~/.claude/settings.json
-        "claude-desktop" => {
-            let settings = h.join(".claude").join("settings.json");
-            if settings.exists() {
-                let raw = fs::read_to_string(&settings).unwrap_or_default();
-                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                let env = v.get("env");
-                if env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(Value::as_str)
-                    != Some(&plan.api_key)
-                {
-                    mismatched.push("settings.json:env.ANTHROPIC_AUTH_TOKEN".to_owned());
-                }
-                if env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(Value::as_str)
-                    != Some(claude_base_url(&plan.base_url).as_str())
-                {
-                    mismatched.push("settings.json:env.ANTHROPIC_BASE_URL".to_owned());
-                }
-                if let Some(model) = &plan.model {
-                    if v.get("model").and_then(Value::as_str) != Some(model.as_str()) {
-                        mismatched.push("settings.json:model".to_owned());
-                    }
-                    // 残留的模型环境变量会覆盖 model 字段，等同于配置未生效
-                    for k in CLAUDE_MODEL_ENV_CONFLICTS {
-                        if env.and_then(|e| e.get(*k)).is_some() {
-                            mismatched.push(format!("settings.json:env.{k}"));
-                        }
-                    }
-                }
-            } else {
-                mismatched.push("settings.json:missing".to_owned());
-            }
-            // 托管配置若仍指向别家网关，桌面端注入的环境变量会盖掉 settings.json
-            if let Some(dir) = claude_3p_config_dir() {
-                if dir.join("_meta.json").exists() {
-                    match claude_managed_effective(&dir) {
-                        Some((base_url, api_key)) => {
-                            if base_url != claude_base_url(&plan.base_url) {
-                                mismatched
-                                    .push("configLibrary:inferenceGatewayBaseUrl".to_owned());
+        // Claude Desktop 内置 Claude Code 面板与 Claude Code CLI 共读 ~/.claude/settings.json
+        "claude-desktop" | "claude-cli" => {
+            mismatched.append(&mut claude_settings_drift(h, plan));
+            if target_id == "claude-desktop" {
+                // 托管配置若仍指向别家网关，桌面端注入的环境变量会盖掉 settings.json
+                if let Some(dir) = claude_3p_config_dir() {
+                    if dir.join("_meta.json").exists() {
+                        match claude_managed_effective(&dir) {
+                            Some((base_url, api_key)) => {
+                                if base_url != claude_base_url(&plan.base_url) {
+                                    mismatched
+                                        .push("configLibrary:inferenceGatewayBaseUrl".to_owned());
+                                }
+                                if api_key != plan.api_key {
+                                    mismatched
+                                        .push("configLibrary:inferenceGatewayApiKey".to_owned());
+                                }
                             }
-                            if api_key != plan.api_key {
-                                mismatched.push("configLibrary:inferenceGatewayApiKey".to_owned());
-                            }
+                            None => mismatched.push("configLibrary:missing".to_owned()),
                         }
-                        None => mismatched.push("configLibrary:missing".to_owned()),
                     }
                 }
             }
@@ -2015,6 +2105,102 @@ mod tests {
         let p = tmp_path(name);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn claude_plan() -> ApplyPlan {
+        ApplyPlan {
+            base_url: "https://momotoken.win/v1".to_owned(),
+            api_key: "sk-test".to_owned(),
+            model_group: Some("default".to_owned()),
+            model: Some("claude-sonnet-4-5".to_owned()),
+            codex_mixed: false,
+        }
+    }
+
+    /// Claude Code CLI 只写 ~/.claude/settings.json，不触碰桌面端 3p 托管配置，
+    /// 且用户自己的其他键一律保留。
+    #[test]
+    fn claude_cli_apply_writes_settings_only() {
+        let home = tmp_dir("claude_cli_apply");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::write(
+            home.join(".claude").join("settings.json"),
+            r#"{"includeCoAuthoredBy":false,"env":{"MY_VAR":"keep"}}"#,
+        )
+        .unwrap();
+
+        let plan = claude_plan();
+        let _home = set_test_home(&home);
+        let summary = ClaudeCliTarget.apply(&plan).unwrap();
+        assert_eq!(summary.target_id, "claude-cli");
+        assert!(!summary.changed_keys.is_empty());
+
+        let v: Value =
+            serde_json::from_str(&fs::read_to_string(home.join(".claude").join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(v.get("includeCoAuthoredBy").and_then(Value::as_bool), Some(false));
+        let env = v.get("env").unwrap();
+        assert_eq!(env.get("MY_VAR").and_then(Value::as_str), Some("keep"));
+        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str), Some("sk-test"));
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(Value::as_str),
+            // CLI 会自己拼 /v1/messages，写入时必须去掉 /v1
+            Some("https://momotoken.win")
+        );
+        assert_eq!(v.get("model").and_then(Value::as_str), Some("claude-sonnet-4-5"));
+
+        // 幂等：重复 apply 不产生新的变更
+        let again = ClaudeCliTarget.apply(&plan).unwrap();
+        assert!(again.changed_keys.is_empty());
+    }
+
+    #[test]
+    fn claude_cli_restore_and_drift() {
+        let home = tmp_dir("claude_cli_restore");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let plan = claude_plan();
+        let _home = set_test_home(&home);
+        ClaudeCliTarget.apply(&plan).unwrap();
+
+        // 写入后无漂移
+        let drift = check_drift_at(&home, "claude-cli", &plan).unwrap();
+        assert!(!drift.drifted, "unexpected drift: {:?}", drift.mismatched_keys);
+
+        // effective_config 回读的是磁盘上的真实值
+        let effective = claude_settings_effective(&home, "claude-cli").unwrap();
+        assert_eq!(effective.endpoint, "https://momotoken.win/v1/messages");
+        assert_eq!(effective.api_key, "sk-test");
+        assert_eq!(effective.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(effective.auth_style, "anthropic");
+
+        // 改动磁盘上的密钥 → 漂移被检出
+        let settings = home.join(".claude").join("settings.json");
+        let raw = fs::read_to_string(&settings).unwrap().replace("sk-test", "sk-other");
+        fs::write(&settings, raw).unwrap();
+        let drift = check_drift_at(&home, "claude-cli", &plan).unwrap();
+        assert!(drift.drifted);
+        assert!(drift.mismatched_keys.contains(&"settings.json:env.ANTHROPIC_AUTH_TOKEN".to_owned()));
+
+        // 恢复官方默认：只移除接入键
+        let summary = restore_defaults("claude-cli").unwrap();
+        assert!(!summary.changed_keys.is_empty());
+        let v: Value =
+            serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(v.get("env").is_none_or(|env| env.get("ANTHROPIC_AUTH_TOKEN").is_none()));
+        assert!(v.get("model").is_none());
+    }
+
+    /// claude-desktop 与 claude-cli 写同一份 settings.json，互为幂等别名：
+    /// 任一目标启用后，另一个目标检测自身配置同样一致。
+    #[test]
+    fn claude_cli_and_desktop_share_settings() {
+        let home = tmp_dir("claude_cli_share");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let plan = claude_plan();
+        let _home = set_test_home(&home);
+        ClaudeCliTarget.apply(&plan).unwrap();
+        let drift = check_drift_at(&home, "claude-desktop", &plan).unwrap();
+        assert!(!drift.drifted, "unexpected drift: {:?}", drift.mismatched_keys);
     }
 
     /// 3p 模式下桌面端按托管配置注入环境变量，优先级高于 settings.json，

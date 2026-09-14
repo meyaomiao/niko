@@ -19,6 +19,11 @@ const TARGET_FALLBACKS: Record<string, { icon?: string; label: string; className
     label: "C",
     className: "bg-[var(--nk-warning-soft)] text-[var(--nk-accent)]",
   },
+  "claude-cli": {
+    icon: claudeIcon,
+    label: "C",
+    className: "bg-[var(--nk-warning-soft)] text-[var(--nk-accent)]",
+  },
 };
 
 export default function TargetAppIcon({

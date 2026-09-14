@@ -315,12 +315,13 @@ fn provider_transaction_paths_for_targets(
     let home = crate::targets::user_home_dir();
     let mut paths = Vec::new();
     for target_id in target_ids {
-        if target_id == "claude-desktop" {
+        if target_id != "codex" {
+            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli") {
+                return Err(SafeCommandError::invalid_request());
+            }
             paths.extend(
                 transaction_paths(target_id).map_err(|_| SafeCommandError::change_failed(false))?,
             );
-        } else if target_id != "codex" {
-            return Err(SafeCommandError::invalid_request());
         }
     }
     for target_id in target_ids {
@@ -352,11 +353,17 @@ fn validate_provider_transaction_shape(
         return Err(SafeCommandError::change_failed(false));
     }
 
-    let valid_target_order = match target_ids {
-        [target_id] => matches!(target_id.as_str(), "codex" | "claude-desktop"),
-        [first, second] => first == "codex" && second == "claude-desktop",
-        _ => false,
-    };
+    // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单
+    const CANONICAL_ORDER: &[&str] = &["codex", "claude-desktop", "claude-cli"];
+    let valid_target_order = !target_ids.is_empty()
+        && target_ids.iter().all(|id| CANONICAL_ORDER.contains(&id.as_str()))
+        && {
+            let ranks: Vec<usize> = target_ids
+                .iter()
+                .map(|id| CANONICAL_ORDER.iter().position(|c| c == id).expect("checked"))
+                .collect();
+            ranks.windows(2).all(|pair| pair[0] < pair[1])
+        };
     if !valid_target_order
         || (!target_ids.iter().any(|id| id == "codex")
             && !manifest.known_codex_transactions.is_empty())
@@ -403,7 +410,7 @@ fn validate_provider_transaction_path_structure(
 
     if target_ids
         .iter()
-        .any(|target_id| target_id == "claude-desktop")
+        .any(|target_id| target_id != "codex")
         && paths[0].file_name().and_then(|name| name.to_str()) != Some("settings.json")
     {
         return Err(SafeCommandError::change_failed(false));
@@ -428,15 +435,15 @@ fn validate_provider_transaction_manifest(
     // is supplied by the old Claude-only recovery rule, so only its non-empty
     // shape can be checked here. New manifests have a target-derived path count.
     if let Some(target_ids) = manifest.target_ids.as_deref() {
-        let expected_target_paths = if target_ids
-            .iter()
-            .any(|target_id| target_id == "claude-desktop")
-        {
-            transaction_paths("claude-desktop")
-                .map_err(|_| SafeCommandError::change_failed(false))?
-        } else {
-            Vec::new()
-        };
+        let mut expected_target_paths = Vec::new();
+        for target_id in target_ids {
+            if target_id != "codex" {
+                expected_target_paths.extend(
+                    transaction_paths(target_id)
+                        .map_err(|_| SafeCommandError::change_failed(false))?,
+                );
+            }
+        }
         let expected = target_ids.len() + expected_target_paths.len();
         if paths.len() != expected {
             return Err(SafeCommandError::change_failed(false));
@@ -854,7 +861,10 @@ pub async fn apply_all_targets(
     let claude = targets
         .iter()
         .find(|target| target.id() == "claude-desktop" && target.is_installed());
-    if codex.is_none() && claude.is_none() {
+    let claude_cli = targets
+        .iter()
+        .find(|target| target.id() == "claude-cli" && target.is_installed());
+    if codex.is_none() && claude.is_none() && claude_cli.is_none() {
         return Ok(Vec::new());
     }
 
@@ -865,6 +875,9 @@ pub async fn apply_all_targets(
     if claude.is_some() {
         target_ids.push("claude-desktop".to_owned());
     }
+    if claude_cli.is_some() {
+        target_ids.push("claude-cli".to_owned());
+    }
     let records = records_for_plan(&target_ids, &plan)?;
     let known_codex_transactions = if codex.is_some() {
         Vec::new()
@@ -873,6 +886,10 @@ pub async fn apply_all_targets(
     };
     if claude.is_some() {
         preflight_target_apply("claude-desktop")
+            .map_err(|_| SafeCommandError::change_failed(false))?;
+    }
+    if claude_cli.is_some() {
+        preflight_target_apply("claude-cli")
             .map_err(|_| SafeCommandError::change_failed(false))?;
     }
 
@@ -892,8 +909,9 @@ pub async fn apply_all_targets(
         return Err(rollback_provider_transaction(&manifest, error));
     }
 
-    let claude_summary = if let Some(claude) = claude {
-        let summary = match claude.apply(&plan) {
+    let mut claude_summaries: Vec<_> = Vec::new();
+    for claude_target in [claude, claude_cli].into_iter().flatten() {
+        let summary = match claude_target.apply(&plan) {
             Ok(summary) => summary,
             Err(_) => {
                 return Err(rollback_provider_transaction(
@@ -902,14 +920,14 @@ pub async fn apply_all_targets(
                 ))
             }
         };
+        claude_summaries.push(summary);
+    }
+    if !claude_summaries.is_empty() {
         manifest.phase = ProviderTransactionPhase::ClaudeApplied;
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
-        Some(summary)
-    } else {
-        None
-    };
+    }
 
     let codex_result = if let Some(codex) = codex {
         manifest.phase = ProviderTransactionPhase::CodexStarted;
@@ -943,7 +961,7 @@ pub async fn apply_all_targets(
     if let Some(outcome) = codex_result {
         result.push(outcome);
     }
-    if let Some(summary) = claude_summary {
+    for summary in claude_summaries {
         result.push(serde_json::json!({
             "id": summary.target_id,
             "ok": true,

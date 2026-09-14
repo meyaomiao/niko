@@ -54,9 +54,10 @@ const ERROR_KIND_LABELS: Record<string, string> = {
 const TARGET_LABELS: Record<string, string> = {
   "codex": "ChatGPT 桌面端",
   "claude-desktop": "Claude 桌面端",
+  "claude-cli": "Claude Code CLI",
 };
 
-const ALL_TARGET_IDS = ["codex", "claude-desktop"];
+const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-cli"];
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString("zh-CN", {
