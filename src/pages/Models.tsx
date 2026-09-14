@@ -75,6 +75,8 @@ interface Card {
   tags: ModelTag[];
   /** 该模型的令牌分组（服务端 enable_groups） */
   groups: GroupInfo[];
+  /** 服务端是否下发了该模型的 enable_groups */
+  hasTokenGroups: boolean;
 }
 
 export default function Models() {
@@ -150,6 +152,8 @@ export default function Models() {
       const price = priceByName.get(name) ?? null;
       const level = levels.get(name);
       const release = releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date);
+      const enableGroups =
+        data.pricing?.find((item) => item.model_name === name)?.enable_groups ?? [];
       return {
         name,
         release,
@@ -158,6 +162,7 @@ export default function Models() {
         bench: bench[name],
         tags: computeTags({ name, release, rank: ranks.get(name), level }),
         groups: groupsForModel(groupCatalog, data.pricing, name, groups),
+        hasTokenGroups: enableGroups.length > 0,
       };
     });
   }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups]);
@@ -296,6 +301,16 @@ export default function Models() {
             <p className={`${CARD} ${SUBTLE}`}>没有匹配的模型。</p>
           )}
 
+          {/* 目录诊断：服务端到底下发了哪些字段，一眼可查（排查分组/厂商数据用） */}
+          {!loading && !error && (
+            <p className={`px-1 text-[10px] ${SUBTLE}`}>
+              目录诊断：模型 {cards.length} · 定价 {data?.pricing?.length ?? 0} · 含令牌分组{" "}
+              {cards.filter((c) => c.hasTokenGroups).length} · 账号分组 {groups.length} · 厂商表{" "}
+              {(pricingMeta?.vendors ?? vendorMetas).length} · 分组说明{" "}
+              {Object.keys(pricingMeta?.usableGroup ?? {}).length}
+            </p>
+          )}
+
           <p className={`px-1 text-[11px] ${SUBTLE}`}>
             价格 = 官方基准 × 分组倍率（当前 {group || "—"}：{ratio || "—"}x）。价格条长度为该模型输入价在同厂家有价模型中的相对位置；
             标签规则：刚上新＝官方发布 14 天内，常用＝该厂家内用量前 3，性价比＝该厂家内用量前 5 且价格分位低于 1/5；
@@ -326,7 +341,7 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
             {card.release && <span className={`text-[10px] tabular-nums ${SUBTLE}`}>{card.release} 发布</span>}
           </div>
           {/* 令牌分组：该模型支持的 API 分组（服务端 enable_groups） */}
-          {card.groups.length > 0 && (
+          {card.groups.length > 0 ? (
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
               <span className={`text-[10px] ${SUBTLE}`}>分组</span>
               {card.groups.slice(0, 4).map((g) => (
@@ -346,6 +361,10 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
                 <span className={`text-[10px] ${SUBTLE}`}>+{card.groups.length - 4}</span>
               )}
             </div>
+          ) : (
+            <p className={`mt-1.5 text-[10px] ${SUBTLE}`}>
+              {card.hasTokenGroups ? "分组目录缺少该模型的令牌分组说明" : "服务端未下发该模型的令牌分组"}
+            </p>
           )}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
