@@ -10,8 +10,9 @@ import { api, type BootstrapData, type GroupOption, type ModelMetadata, type Pri
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS } from "../lib/vendor";
 import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
-import { buildGroupCatalog, groupsForModel, type GroupInfo } from "../lib/groupCatalog";
+import { buildGroupCatalog, type GroupInfo } from "../lib/groupCatalog";
 import { compareModelsByRelease } from "../lib/modelOrder";
+import { buildModelCatalog } from "../lib/catalog";
 import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
 import { ArrowLeftIcon } from "../components/Icons";
@@ -40,9 +41,9 @@ function modelName(item: BootstrapData["models"][number]): string {
 
 /** 服务端目录顺序：model_order 优先，其余按名称稳定兜底（与 modelSelection 的规则一致） */
 /** 与首页同一套排序：发布日期新→旧 → 服务端发布序 → 名称 */
-function orderedModels(data: BootstrapData): string[] {
-  const names = (data.models ?? []).map(modelName).filter(Boolean);
-  const unique = Array.from(new Set(names));
+function orderedModels(data: BootstrapData, candidates?: string[]): string[] {
+  const source = candidates ?? (data.models ?? []).map(modelName).filter(Boolean);
+  const unique = Array.from(new Set(source.filter(Boolean)));
   const index = new Map((data.model_order ?? []).map((name, i) => [name, i]));
   const priceByName = new Map((data.pricing ?? []).map((item) => [item.model_name, item]));
   const dateOf = (name: string): number | null => {
@@ -129,6 +130,8 @@ export default function Models() {
   const groups: GroupOption[] = data?.groups ?? [];
   const ratio = groups.find((g) => g.name === group)?.ratio ?? 0;
   const pricingIndex = useMemo(() => buildPricingIndex(data?.pricing), [data]);
+  // 新版 bootstrap 的 models/groups[].models 可能为空，目录改由 pricing 反查
+  const catalog = useMemo(() => buildModelCatalog(data?.pricing, groups), [data?.pricing, groups]);
 
   // 分组目录：模型 → 令牌分组（服务端 enable_groups + 中文说明/倍率）
   const groupCatalog = useMemo(
@@ -143,7 +146,7 @@ export default function Models() {
 
   const cards = useMemo(() => {
     if (!data) return [];
-    const names = orderedModels(data);
+    const names = catalog.models.length > 0 ? orderedModels(data, catalog.models.map((m) => m.name)) : [];
     const priceByName = new Map<string, ModelPrice | null>();
     for (const name of names) {
       priceByName.set(name, priceOf(pricingIndex.get(name), ratio) as ModelPrice | null);
@@ -168,8 +171,22 @@ export default function Models() {
         level: level ?? 0.5,
         bench: bench[name],
         tags: computeTags({ name, release, rank: ranks.get(name), level }),
-        groups: groupsForModel(groupCatalog, data.pricing, name, groups),
+        groups: catalog
+          .groupsOf(name)
+          .map((groupName) => {
+            const info = groupCatalog.get(groupName);
+            const account = groups.find((g) => g.name === groupName);
+            return (
+              info ?? {
+                name: groupName,
+                desc: account?.desc ?? "",
+                ratio: account?.ratio ?? 1,
+                usable: Boolean(account),
+              }
+            );
+          }),
         hasTokenGroups: enableGroups.length > 0,
+        // 目录来自 pricing 反查时，hasTokenGroups 恒真；这里保留字段供排查
       };
     });
   }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups]);
@@ -311,7 +328,7 @@ export default function Models() {
           {/* 目录诊断：服务端到底下发了哪些字段，一眼可查（排查分组/厂商数据用） */}
           {!loading && !error && (
             <p className={`px-1 text-[10px] ${SUBTLE}`}>
-              目录诊断：模型 {cards.length} · 定价 {data?.pricing?.length ?? 0} · 含令牌分组{" "}
+              目录诊断：可用模型 {cards.length}（来源 {catalog.source}） · 定价 {data?.pricing?.length ?? 0} · 含令牌分组{" "}
               {cards.filter((c) => c.hasTokenGroups).length} · 账号分组 {groups.length} · 厂商表{" "}
               {(pricingMeta?.vendors ?? vendorMetas).length} · 分组说明{" "}
               {Object.keys(pricingMeta?.usableGroup ?? {}).length}

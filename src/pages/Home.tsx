@@ -6,13 +6,14 @@ import { api, type BootstrapData, type GroupOption, type DeviceItem, type Pricin
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
 import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/compat";
-import { buildVendorModelTabs, type VendorModelChoice } from "../lib/modelSelection";
+import { type VendorModelChoice } from "../lib/modelSelection";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
-import { buildVendorIndex } from "../lib/vendorCatalog";
+import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
 import { compareModelsByRelease } from "../lib/modelOrder";
-import { buildGroupCatalog, groupsForModel } from "../lib/groupCatalog";
-import { vendorOfGroup, vendorOfModel, VENDORS, type Vendor } from "../lib/vendor";
+import { buildModelCatalog, bucketByVendor } from "../lib/catalog";
+import { buildGroupCatalog } from "../lib/groupCatalog";
+import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
 import { VendorIcon } from "../components/VendorIcon";
 import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
@@ -300,32 +301,30 @@ export default function Home() {
 
   // 按供应商汇总模型，再由模型反查可用分组。新服务端以 model_order 给出完整显示顺序；
   // 元数据只作为旧响应的排序辅助，不能覆盖服务端顺序。
+  /**
+   * 目录来源：新版 bootstrap 的 groups[].models / models 可能为空，
+   * 真正可用的模型要用 pricing 的 enable_groups 与账号分组反查（见 lib/catalog.ts）。
+   */
+  const catalog = useMemo(
+    () => buildModelCatalog(bootstrap?.pricing, groups),
+    [bootstrap?.pricing, groups]
+  );
+
   const vendorTabs = useMemo(() => {
-    const modelMetadata = { ...(bootstrap?.model_metadata ?? {}) };
-    for (const item of bootstrap?.pricing ?? []) {
-      if (item.release_date) {
-        modelMetadata[item.model_name] = {
-          ...modelMetadata[item.model_name],
-          name: modelMetadata[item.model_name]?.name ?? item.model_name,
-          release_date: modelMetadata[item.model_name]?.release_date ?? item.release_date,
-          release_source: modelMetadata[item.model_name]?.release_source ?? item.release_source,
-        };
-      }
-    }
-    const tabs = buildVendorModelTabs({
-      groups,
-      models: bootstrap?.models,
-      modelMetadata,
-      modelOrder: bootstrap?.model_order,
-      recommendVendor,
-      // 服务端厂商目录优先，缺失的模型按模型名回退本地启发式
-      vendorOf: (model) => vendorIndex.get(model)?.name ?? vendorOfModel(model),
-    });
-    // 页签顺序按模型数量降序，数量相同按名称；原生厂商不置顶，改为页签小徽标
-    return [...tabs].sort(
-      (a, b) => b.models.length - a.models.length || a.vendor.localeCompare(b.vendor)
-    );
-  }, [groups, bootstrap?.models, bootstrap?.model_metadata, bootstrap?.model_order, bootstrap?.pricing, recommendVendor, vendorIndex]);
+    const buckets = bucketByVendor(catalog.models, (model) => vendorNameOf(vendorIndex, model));
+    // 组装成与原来一致的 VendorModelTab 形状（含每个模型的可用分组与发布时间）
+    return buckets.map((bucket) => ({
+      vendor: bucket.vendor,
+      groups: groups,
+      models: bucket.models.map((entry) => ({
+        name: entry.name,
+        groups: entry.groupNames
+          .map((name) => groups.find((g) => g.name === name))
+          .filter((g): g is GroupOption => Boolean(g)),
+        releaseTime: releaseTimeOf(entry.name),
+      })),
+    }));
+  }, [catalog, groups, vendorIndex, bootstrap?.model_metadata, bootstrap?.pricing]);
 
   const modelByGroup = useMemo(() => {
     const index = new Map<string, string>();
@@ -475,11 +474,20 @@ export default function Home() {
   })();
   const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? vendorTabs[0] ?? null;
   const vendorModels = activeVendorTab?.models ?? [];
-  // 模型的令牌分组（不是账号可用分组）：来自服务端 pricing.enable_groups
-  const modelGroups = useMemo(
-    () => (model ? groupsForModel(groupCatalog, bootstrap?.pricing, model, groups) : []),
-    [groupCatalog, bootstrap?.pricing, model, groups]
-  );
+  // 模型的令牌分组：pricing.enable_groups 与账号可用分组的交集（catalog 已算好）
+  const modelGroups = useMemo(() => {
+    if (!model) return [];
+    return catalog
+      .groupsOf(model)
+      .map((name) => {
+        const info = groupCatalog.get(name);
+        const account = groups.find((g) => g.name === name);
+        return (
+          info ?? { name, desc: account?.desc ?? "", ratio: account?.ratio ?? 1, usable: Boolean(account) }
+        );
+      })
+      .sort((a, b) => Number(b.usable) - Number(a.usable) || a.ratio - b.ratio || a.name.localeCompare(b.name));
+  }, [catalog, groupCatalog, groups, model]);
   // 服务端是否真的下发了该模型的令牌分组（enable_groups）
   const tokenGroupNames = useMemo(
     () => bootstrap?.pricing?.find((item) => item.model_name === model)?.enable_groups ?? [],
