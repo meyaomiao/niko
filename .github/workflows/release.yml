@@ -77,11 +77,11 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      - name: Build Windows installers
+      - name: Build Windows installers (NSIS only; WiX MSI 与服务账户会话不兼容)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build
+        run: npx tauri build --bundles nsis
 
       - name: Compute SHA256 and validate updater signatures
         shell: pwsh
@@ -89,7 +89,7 @@ jobs:
           $bundles = Get-ChildItem `
             -Path "src-tauri/target/release/bundle" `
             -Recurse `
-            -Include "*.msi","*.exe","*.nsis" |
+            -Include "*.exe" |
           Where-Object { $_.Name -notlike "*debug*" }
           $out = @()
           foreach ($f in $bundles) {
@@ -99,15 +99,13 @@ jobs:
           $out | Out-File -FilePath SHA256SUMS_win.txt -Encoding utf8
           Get-Content SHA256SUMS_win.txt
 
-          $msiFiles = @(Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.msi" -File)
           $exeFiles = @(Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.exe" -File)
-          if ($msiFiles.Count -ne 1 -or $exeFiles.Count -ne 1) {
-            throw "Expected exactly one MSI and one EXE installer"
+          if ($exeFiles.Count -ne 1) {
+            throw "Expected exactly one EXE installer"
           }
 
-          $msiSig = Get-Item "$($msiFiles[0].FullName).sig" -ErrorAction Stop
           $exeSig = Get-Item "$($exeFiles[0].FullName).sig" -ErrorAction Stop
-          if ($msiSig.Length -eq 0 -or $exeSig.Length -eq 0) {
+          if ($exeSig.Length -eq 0) {
             throw "Windows updater signature is missing or empty"
           }
 
@@ -117,8 +115,6 @@ jobs:
           name: windows-unsigned
           retention-days: 7
           path: |
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.msi.sig
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.exe.sig
             SHA256SUMS_win.txt
