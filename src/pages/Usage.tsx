@@ -13,7 +13,7 @@ import {
 import { VENDORS, vendorOfGroup, vendorOfModel, type Vendor } from "../lib/vendor";
 import { ArrowLeftIcon } from "../components/Icons";
 import { friendlyDesktopError } from "../lib/copy";
-import { fmtUSD } from "../lib/pricing";
+import { fmtQuotaUSD, quotaPerUnitOf } from "../lib/pricing";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -33,8 +33,8 @@ function modelName(item: BootstrapModel): string {
   return typeof item === "string" ? item : (item.name ?? item.model_name ?? item.id ?? "");
 }
 
-function usd(quota: number): string {
-  return fmtUSD(quota / 1_000_000);
+function usd(quota: number, quotaPerUnit: number): string {
+  return fmtQuotaUSD(quota, quotaPerUnit);
 }
 
 function num(n: number): string {
@@ -122,7 +122,7 @@ function Sparkline({
   );
 }
 
-function DimensionList({ title, items }: { title: string; items: UsageDimension[] }) {
+function DimensionList({ title, items, quotaPerUnit }: { title: string; items: UsageDimension[]; quotaPerUnit: number }) {
   if (items.length === 0) return null;
   const max = Math.max(...items.map((i) => i.quota), 1);
   return (
@@ -134,7 +134,7 @@ function DimensionList({ title, items }: { title: string; items: UsageDimension[
             <div className="flex items-baseline justify-between gap-3 text-xs">
               <span className="truncate font-mono text-gray-700 dark:text-gray-300">{item.name}</span>
               <span className="shrink-0 text-gray-500 dark:text-gray-400">
-                {num(item.requests)} 次 · {usd(item.quota)}
+                {num(item.requests)} 次 · {usd(item.quota, quotaPerUnit)}
               </span>
             </div>
             <div className="mt-1 h-1 rounded-full bg-black/5 dark:bg-white/10">
@@ -152,6 +152,7 @@ function DimensionList({ title, items }: { title: string; items: UsageDimension[
 
 export default function Usage() {
   const auth = loadAuth();
+  const quotaPerUnit = quotaPerUnitOf(auth?.quotaPerUnit);
   const navigate = useNavigate();
   const token = auth?.accessToken;
 
@@ -228,7 +229,7 @@ export default function Usage() {
 
   const tokensTotal = (summary?.prompt_tokens ?? 0) + (summary?.completion_tokens ?? 0);
   const requests = summary?.requests ?? 0;
-  const avgCost = requests > 0 ? usd(summary!.quota / requests) : "—";
+  const avgCost = requests > 0 ? usd(summary!.quota / requests, quotaPerUnit) : "—";
   const streamRate = requests > 0 ? `${Math.round((summary!.stream_requests / requests) * 100)}%` : "—";
 
   // 折线图按所选周期补齐没有消费的日期，避免时间轴被压缩
@@ -358,10 +359,10 @@ export default function Usage() {
                 <div className={CARD}>
                   <p className={LABEL}>累计花费</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
-                    {usd(summary.quota)}
+                    {usd(summary.quota, quotaPerUnit)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">平均每次 {avgCost}</p>
-                  <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={usd} />
+                  <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={(q) => usd(q, quotaPerUnit)} />
                 </div>
                 <div className={CARD}>
                   <p className={LABEL}>累计文字量</p>
@@ -387,8 +388,8 @@ export default function Usage() {
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
-                <DimensionList title="模型使用排行" items={summary.by_model ?? []} />
-                <DimensionList title="模型服务使用排行" items={summary.by_group ?? []} />
+                <DimensionList title="模型使用排行" items={summary.by_model ?? []} quotaPerUnit={quotaPerUnit} />
+                <DimensionList title="模型服务使用排行" items={summary.by_group ?? []} quotaPerUnit={quotaPerUnit} />
               </div>
             </>
           )}
@@ -434,7 +435,7 @@ export default function Usage() {
                         <td className="text-right">{num(l.prompt_tokens)}</td>
                         <td className="text-right">{num(l.completion_tokens)}</td>
                         <td className="text-right font-semibold text-indigo-600 dark:text-indigo-400">
-                          {usd(l.quota)}
+                          {usd(l.quota, quotaPerUnit)}
                         </td>
                       </tr>
                     ))}
