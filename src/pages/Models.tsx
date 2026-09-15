@@ -1,12 +1,11 @@
-// 模型与价格：按 厂家 → 模型 两层浏览的目录页
-// 价格换算与网页端同一套公式（src/lib/pricing.ts）：
-//   输入价（USD / 百万 token）= model_ratio × 2 × 分组倍率，输出价再乘 completion_ratio
-// 计价分组只影响倍率，做成次要的小切换；实测延迟来自首页「⚡测速」的本地缓存。
+// 模型与价格：按 厂家 → 模型 → 分组 三列浏览（与首页同一布局语言）
+// 模型卡片显示「原价」（分组倍率 1x 的官方基准价），稳定不随分组切换变化；
+// 分组折算价只在第三列跟随所选模型的分组列表展示。
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
-import { api, type BootstrapData, type GroupOption, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
+import { api, type BootstrapData, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS } from "../lib/vendor";
 import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
@@ -39,7 +38,6 @@ function modelName(item: BootstrapData["models"][number]): string {
   return typeof item === "string" ? item : (item.name ?? item.model_name ?? item.id ?? "");
 }
 
-/** 服务端目录顺序：model_order 优先，其余按名称稳定兜底（与 modelSelection 的规则一致） */
 /** 与首页同一套排序：发布日期新→旧 → 服务端发布序 → 名称 */
 function orderedModels(data: BootstrapData, candidates?: string[]): string[] {
   const source = candidates ?? (data.models ?? []).map(modelName).filter(Boolean);
@@ -76,8 +74,9 @@ function delayChip(ms: number): { label: string; className: string } {
 interface Card {
   name: string;
   release: string;
+  /** 原价：分组倍率 1x 的官方基准价，稳定不随分组切换变化 */
   price: ModelPrice | null;
-  /** 相对价位 0~1（按本页有价模型的输入价分位），仅用于价格条长度 */
+  /** 相对价位 0~1（按原价输入价在同厂家有价模型中的分位），仅用于价格条长度 */
   level: number;
   bench?: BenchEntry;
   tags: ModelTag[];
@@ -94,12 +93,14 @@ export default function Models() {
   const [data, setData] = useState<BootstrapData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [vendorMetas] = useState<VendorMeta[]>([]);
   const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(null);
+  const [activeVendor, setActiveVendor] = useState<string>("全部");
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedGroup, setSelectedGroup] = useState<string>("");
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -111,7 +112,6 @@ export default function Models() {
       .bootstrap(token)
       .then((res) => {
         setData(res);
-        setGroup(res.user?.group || res.groups?.[0]?.name || "");
         // 用户自己的用量聚合 → 厂家内排名的「常用 / 性价比」；失败静默，不阻塞目录
         api
           .usageSummary(token)
@@ -127,8 +127,7 @@ export default function Models() {
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const groups: GroupOption[] = data?.groups ?? [];
-  const ratio = groups.find((g) => g.name === group)?.ratio ?? 0;
+  const groups = data?.groups ?? [];
   const pricingIndex = useMemo(() => buildPricingIndex(data?.pricing), [data]);
   // 新版 bootstrap 的 models/groups[].models 可能为空，目录改由 pricing 反查
   const catalog = useMemo(() => buildModelCatalog(data?.pricing, groups), [data?.pricing, groups]);
@@ -147,11 +146,12 @@ export default function Models() {
   const cards = useMemo(() => {
     if (!data) return [];
     const names = catalog.models.length > 0 ? orderedModels(data, catalog.models.map((m) => m.name)) : [];
+    // 原价 = 官方基准（分组倍率 1x）；分组折算价只在第三列按分组展示
     const priceByName = new Map<string, ModelPrice | null>();
     for (const name of names) {
-      priceByName.set(name, priceOf(pricingIndex.get(name), ratio) as ModelPrice | null);
+      priceByName.set(name, priceOf(pricingIndex.get(name), 1) as ModelPrice | null);
     }
-    // 价格分位与用量名次都按「厂家内」比较，价格条与标签口径一致
+    // 价格分位与用量名次都按「厂家内」比较，价格条与标签口径一致（基于原价，稳定）
     const levels = vendorPriceLevels(names, (name) => {
       const price = priceByName.get(name);
       return price && !price.perRequest ? price.input : undefined;
@@ -189,7 +189,7 @@ export default function Models() {
         // 目录来自 pricing 反查时，hasTokenGroups 恒真；这里保留字段供排查
       };
     });
-  }, [data, pricingIndex, ratio, bench, usage, groupCatalog, groups, data?.model_usage]);
+  }, [data, pricingIndex, bench, usage, groupCatalog, groups, catalog, data?.model_usage]);
 
   // 服务端厂商目录：模型 → 厂家（服务端优先，缺失回退本地启发式）
   const vendorIndex = useMemo(
@@ -214,15 +214,14 @@ export default function Models() {
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
-    for (const c of filtered) {
+    for (const c of cards) {
       const v = vendorOfName(c.name);
       map.set(v, (map.get(v) ?? 0) + 1);
     }
     return map;
-  }, [filtered, vendorOfName]);
+  }, [cards, vendorOfName]);
 
-  // 厂家切换：全部=分区铺开；选中某家=只看该家；切换条按模型数量降序
-  const [activeVendor, setActiveVendor] = useState<string>("全部");
+  // 厂家列：按模型数量降序；「全部」置顶
   const orderedVendors = useMemo(
     () =>
       vendorOrder
@@ -230,13 +229,31 @@ export default function Models() {
         .sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b)),
     [vendorOrder, counts]
   );
-  const visible = (activeVendor === "全部" ? orderedVendors : [activeVendor]).map((vendor) => ({
-    vendor,
-    cards: filtered.filter((c) => vendorOfName(c.name) === vendor),
-  }));
-  const sections = visible.filter((s) => s.cards.length > 0);
+
+  // 模型列：全部=按厂家分区铺开；选中某家=只看该家
+  const sections = useMemo(() => {
+    const list = (activeVendor === "全部" ? orderedVendors : [activeVendor]).map((vendor) => ({
+      vendor,
+      cards: filtered.filter((c) => vendorOfName(c.name) === vendor),
+    }));
+    return list.filter((s) => s.cards.length > 0);
+  }, [activeVendor, orderedVendors, filtered, vendorOfName]);
 
   const total = filtered.length;
+
+  // 第三列：所选模型的分组列表
+  const selected = useMemo(() => cards.find((c) => c.name === selectedModel), [cards, selectedModel]);
+  // 选模型时默认带出第一个可用分组
+  useEffect(() => {
+    if (!selectedModel) {
+      setSelectedGroup("");
+      return;
+    }
+    const card = cards.find((c) => c.name === selectedModel);
+    const firstUsable = card?.groups.find((g) => g.usable)?.name ?? card?.groups[0]?.name ?? "";
+    setSelectedGroup(firstUsable);
+  }, [selectedModel, cards]);
+  const selectedItem = selectedModel ? pricingIndex.get(selectedModel) : undefined;
 
   return (
     <div className="nk-shell">
@@ -247,87 +264,144 @@ export default function Models() {
         <h1 className={TITLE}>模型与价格</h1>
       </header>
 
-      <main className="nk-page">
-        <div className="mx-auto max-w-4xl space-y-3">
-          {/* 搜索 + 分组倍率：分组只是计价口径，做成次要的小胶囊切换 */}
-          <div className={`${CARD} flex flex-wrap items-center gap-2`}>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`搜索 ${total} 个模型…`}
-              aria-label="搜索模型"
-              className="nk-input min-w-40 flex-1 py-1 text-xs"
-            />
-            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="计价分组">
-              {groups.map((g) => (
-                <button
-                  key={g.name}
-                  onClick={() => setGroup(g.name)}
-                  aria-pressed={g.name === group}
-                  title={`按 ${g.name} 的倍率（${g.ratio}x）计价`}
-                  className={`rounded-full border px-2 py-0.5 text-[11px] transition ${
-                    g.name === group
-                      ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
-                      : "[border-color:var(--nk-line)] text-gray-500 hover:bg-black/[0.04] dark:text-gray-400 dark:hover:bg-white/10"
-                  }`}
-                >
-                  {g.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 厂家切换：sticky 吸顶，切走长滚动 */}
-          {!loading && !error && (
-            <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1 overflow-x-auto rounded-xl border bg-[var(--nk-surface)] px-1 py-1 [border-color:var(--nk-line)]">
-              {["全部", ...orderedVendors].map((vendor) => (
-                <button
-                  key={vendor}
-                  onClick={() => setActiveVendor(vendor)}
-                  aria-pressed={activeVendor === vendor}
-                  className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs transition ${
-                    activeVendor === vendor
-                      ? "bg-[var(--nk-accent)] font-medium text-white"
-                      : "text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
-                  }`}
-                >
-                  {vendor !== "全部" && <VendorIcon vendor={vendor} />}
-                  {vendor}
-                  <span className="tabular-nums opacity-60">
-                    {vendor === "全部" ? total : counts.get(vendor) ?? 0}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {loading && <p className={`${CARD} ${SUBTLE}`}>正在加载模型目录…</p>}
+      {/* 与首页一致：桌面端锁住外层高度（overflow-hidden），三列各自内部滚动 */}
+      <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
+        <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-3">
+          {loading && <p className={CARD}>正在加载模型目录…</p>}
           {error && <p className={`${CARD} text-red-500`}>{error}</p>}
 
-          {!loading && !error && sections.map(({ vendor, cards: list }) => (
-            <section key={vendor} className={CARD}>
-              <div className="flex items-baseline justify-between">
-                <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  <VendorIcon vendor={vendor} />
-                  {vendor}
-                </h2>
-                <span className={`text-[11px] ${SUBTLE}`}>{list.length} 个模型</span>
+          {!loading && !error && (
+            <div className="grid min-h-0 flex-1 gap-3 overflow-hidden md:grid-cols-[11rem_minmax(0,1fr)_17rem]">
+              {/* 第一列：厂家 */}
+              <div className={`${CARD} flex min-h-0 flex-col overflow-hidden`}>
+                <p className={`shrink-0 px-1 pb-2 text-[11px] font-medium ${SUBTLE}`}>厂家</p>
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+                  {[{ name: "全部", count: cards.length }, ...orderedVendors.map((v) => ({ name: v, count: counts.get(v) ?? 0 }))].map(
+                    (v) => (
+                      <button
+                        key={v.name}
+                        onClick={() => setActiveVendor(v.name)}
+                        aria-pressed={activeVendor === v.name}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                          activeVendor === v.name
+                            ? "bg-[var(--nk-accent)] font-medium text-white"
+                            : "text-gray-700 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
+                        }`}
+                      >
+                        {v.name !== "全部" && <VendorIcon vendor={v.name} />}
+                        <span className="min-w-0 flex-1 truncate">{v.name}</span>
+                        <span className="shrink-0 tabular-nums opacity-60">{v.count}</span>
+                      </button>
+                    )
+                  )}
+                </div>
               </div>
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {list.map((card) => (
-                  <ModelCard key={card.name} card={card} />
-                ))}
-              </div>
-            </section>
-          ))}
 
-          {!loading && !error && sections.length === 0 && (
-            <p className={`${CARD} ${SUBTLE}`}>没有匹配的模型。</p>
+              {/* 第二列：模型（搜索 + 富卡片，保留原模型页内容） */}
+              <div className="flex min-h-0 flex-col gap-2 overflow-hidden">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`搜索 ${total} 个模型…`}
+                  aria-label="搜索模型"
+                  className="nk-input shrink-0 py-1.5 text-xs"
+                />
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                  {sections.map(({ vendor, cards: list }) => (
+                    <section key={vendor}>
+                      {activeVendor === "全部" && (
+                        <h2 className="mb-1.5 flex items-center gap-2 px-1 text-xs font-semibold text-gray-900 dark:text-gray-100">
+                          <VendorIcon vendor={vendor} />
+                          {vendor}
+                          <span className={`text-[10px] font-normal tabular-nums ${SUBTLE}`}>{list.length}</span>
+                        </h2>
+                      )}
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {list.map((card) => (
+                          <ModelCard
+                            key={card.name}
+                            card={card}
+                            selected={card.name === selectedModel}
+                            onSelect={() => setSelectedModel(card.name === selectedModel ? "" : card.name)}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                  {sections.length === 0 && <p className={`${CARD} ${SUBTLE}`}>没有匹配的模型。</p>}
+                </div>
+              </div>
+
+              {/* 第三列：所选模型的分组（分组折算价跟分组走） */}
+              <div className={`${CARD} flex min-h-0 flex-col overflow-hidden`}>
+                <p className={`shrink-0 px-1 pb-2 text-[11px] font-medium ${SUBTLE}`}>分组</p>
+                {!selected ? (
+                  <p className={`px-1 text-xs ${SUBTLE}`}>在中间选择一个模型后，这里显示它支持的分组与折算价。</p>
+                ) : (
+                  <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5">
+                    <p className="truncate px-1 font-mono text-[11px] font-semibold text-gray-900 dark:text-gray-100" title={selected.name}>
+                      {selected.name}
+                    </p>
+                    {selected.groups.length === 0 && (
+                      <p className={`px-1 text-[11px] ${SUBTLE}`}>
+                        {selected.hasTokenGroups ? "分组目录缺少该模型的令牌分组说明" : "服务端未下发该模型的令牌分组"}
+                      </p>
+                    )}
+                    {selected.groups.map((g) => {
+                      const folded = priceOf(selectedItem, g.ratio) as ModelPrice | null;
+                      const active = g.name === selectedGroup;
+                      return (
+                        <button
+                          key={g.name}
+                          onClick={() => setSelectedGroup(g.name)}
+                          aria-pressed={active}
+                          className={`w-full rounded-xl border p-2 text-left transition [border-color:var(--nk-line)] ${
+                            active ? "border-[var(--nk-accent)] bg-[var(--nk-accent)]/[0.06]" : "hover:bg-black/[0.03] dark:hover:bg-white/5"
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate font-mono text-[11px] font-semibold text-gray-900 dark:text-gray-100">{g.name}</span>
+                            {!g.usable && (
+                              <span className="shrink-0 rounded bg-black/[0.05] px-1 py-0.5 text-[9px] text-gray-400 dark:bg-white/10 dark:text-gray-500">
+                                未开通
+                              </span>
+                            )}
+                            <span className={`ml-auto shrink-0 text-[10px] tabular-nums ${SUBTLE}`}>{g.ratio}x</span>
+                          </div>
+                          {g.desc && (
+                            <p className={`mt-0.5 line-clamp-2 text-[10px] ${SUBTLE}`} title={g.desc}>
+                              {g.desc}
+                            </p>
+                          )}
+                          <p className="mt-1 text-xs font-semibold tabular-nums text-gray-900 dark:text-gray-100">
+                            {folded ? (
+                              folded.perRequest ? (
+                                <>
+                                  {fmtUSD(folded.input)}
+                                  <span className="ml-1 text-[10px] font-normal text-gray-500 dark:text-gray-400">/ 次调用</span>
+                                </>
+                              ) : (
+                                <>
+                                  {fmtUSD(folded.input)}
+                                  <span className="ml-1 text-[10px] font-normal text-gray-500 dark:text-gray-400">输入 · 输出 {fmtUSD(folded.output)}</span>
+                                </>
+                              )
+                            ) : (
+                              <span className={`text-[11px] font-normal ${SUBTLE}`}>该分组暂无此模型价格</span>
+                            )}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* 目录诊断：服务端到底下发了哪些字段，一眼可查（排查分组/厂商数据用） */}
           {!loading && !error && (
-            <p className={`px-1 text-[10px] ${SUBTLE}`}>
+            <p className={`shrink-0 px-1 text-[10px] ${SUBTLE}`}>
               目录诊断：可用模型 {cards.length}（来源 {catalog.source}） · 定价 {data?.pricing?.length ?? 0} · 含令牌分组{" "}
               {cards.filter((c) => c.hasTokenGroups).length} · 账号分组 {groups.length} · 厂商表{" "}
               {(pricingMeta?.vendors ?? vendorMetas).length} · 分组说明{" "}
@@ -335,8 +409,9 @@ export default function Models() {
             </p>
           )}
 
-          <p className={`px-1 text-[11px] ${SUBTLE}`}>
-            价格 = 官方基准 × 分组倍率（当前 {group || "—"}：{ratio || "—"}x）。价格条长度为该模型输入价在同厂家有价模型中的相对位置；
+          <p className={`shrink-0 px-1 text-[11px] ${SUBTLE}`}>
+            模型卡片显示原价（官方基准，分组倍率 1x），不随分组变化；选中模型后在右侧分组列查看按分组倍率折算的实付价。
+            价格条长度为该模型原价输入价在同厂家有价模型中的相对位置；
             标签规则：刚上新＝官方发布 14 天内，常用＝该厂家内用量前 3，性价比＝该厂家内用量前 5 且价格分位低于 1/5；
             「实测」来自首页 ⚡测速 的首字延迟中位数，未实测不显示。
           </p>
@@ -346,11 +421,25 @@ export default function Models() {
   );
 }
 
-function ModelCard({ card }: { card: Card & { level: number } }) {
+function ModelCard({
+  card,
+  selected,
+  onSelect,
+}: {
+  card: Card & { level: number };
+  selected: boolean;
+  onSelect: () => void;
+}) {
   const price = card.price;
 
   return (
-    <div className="rounded-xl border p-3 transition hover:border-[var(--nk-accent)] [border-color:var(--nk-line)]">
+    <button
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`rounded-xl border p-3 text-left transition [border-color:var(--nk-line)] ${
+        selected ? "border-[var(--nk-accent)] bg-[var(--nk-accent)]/[0.06]" : "hover:border-[var(--nk-accent)]"
+      }`}
+    >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100" title={card.name}>
@@ -407,7 +496,7 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
         price.perRequest ? (
           <p className="mt-2 text-lg font-semibold tabular-nums text-gray-900 dark:text-gray-100">
             {fmtUSD(price.input)}
-            <span className="ml-1 text-[11px] font-normal text-gray-500 dark:text-gray-400">/ 次调用</span>
+            <span className="ml-1 text-[11px] font-normal text-gray-500 dark:text-gray-400">/ 次调用 · 原价</span>
           </p>
         ) : (
           <>
@@ -416,10 +505,10 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
                 {fmtUSD(price.input)}
               </span>
               <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                输入 · 输出 {fmtUSD(price.output)}
+                输入 · 输出 {fmtUSD(price.output)} · 原价
               </span>
             </div>
-            {/* 价格条：长度即全目录相对价位 */}
+            {/* 价格条：长度即全目录原价相对价位 */}
             <div className="mt-1.5 h-1 w-full rounded-full bg-black/[0.06] dark:bg-white/10">
               <div
                 className="h-1 rounded-full bg-[var(--nk-accent)]"
@@ -429,8 +518,8 @@ function ModelCard({ card }: { card: Card & { level: number } }) {
           </>
         )
       ) : (
-        <p className={`mt-2 text-xs ${SUBTLE}`}>该分组暂无此模型价格</p>
+        <p className={`mt-2 text-xs ${SUBTLE}`}>暂无此模型价格</p>
       )}
-    </div>
+    </button>
   );
 }
