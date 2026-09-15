@@ -2,7 +2,7 @@
 // 模型卡片显示「原价」（分组倍率 1x 的官方基准价），稳定不随分组切换变化；
 // 分组折算价只在第三列跟随所选模型的分组列表展示。
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth } from "../store/auth";
@@ -109,6 +109,19 @@ export default function Models() {
   // 测速进度：仅 running 时展示「done/total」
   const [benchDone, setBenchDone] = useState(0);
   const [benchTotal, setBenchTotal] = useState(0);
+  // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
+  const benchRunRef = useRef(0);
+
+  // 切换模型即清空上一轮分组测速结果（结果只对单次测速的模型有效）
+  useEffect(() => {
+    benchRunRef.current += 1;
+    setBenchmarks({});
+    setBenchErrors({});
+    setBenchmarkRunning(false);
+    setBenchDone(0);
+    setBenchTotal(0);
+    setBench(loadBenchCache());
+  }, [selectedModel]);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -265,7 +278,10 @@ export default function Models() {
     setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
     const RELAY_BASE_URL = "https://momotoken.win/v1";
     let done = 0;
+    const runId = ++benchRunRef.current;
     for (const g of groupsToRun) {
+      // 模型已切换：本轮结果作废，立即停止
+      if (benchRunRef.current !== runId) return;
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
         if (!apiKey) {

@@ -150,6 +150,18 @@ export default function Home() {
   // 测速进度：仅 running 时展示「done/total」
   const [benchDone, setBenchDone] = useState(0);
   const [benchTotal, setBenchTotal] = useState(0);
+  // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
+  const benchRunRef = useRef(0);
+
+  // 切换模型即清空上一轮分组测速结果（结果只对单次测速的模型有效）
+  useEffect(() => {
+    benchRunRef.current += 1;
+    setBenchmarks({});
+    setBenchErrors({});
+    setBenchmarkRunning(false);
+    setBenchDone(0);
+    setBenchTotal(0);
+  }, [model]);
 
   useEffect(() => {
     requestGuardRef.current = mountRequests(requestGuardRef.current);
@@ -609,7 +621,10 @@ export default function Home() {
     setBenchTotal(modelGroups.length);
     setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
     let benchCount = 0;
+    const runId = ++benchRunRef.current;
     for (const g of modelGroups) {
+      // 模型已切换：本轮结果作废，立即停止
+      if (benchRunRef.current !== runId) return;
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
         if (!apiKey) {
