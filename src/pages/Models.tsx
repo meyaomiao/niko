@@ -72,6 +72,13 @@ function delayChip(ms: number): { label: string; className: string } {
   return { label: "偏慢", className: "bg-red-500/10 text-red-600 dark:text-red-400" };
 }
 
+/** 延迟统一用秒展示（内部仍存毫秒） */
+function fmtSec(ms: number): string {
+  if (ms < 100) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 interface Card {
   name: string;
   release: string;
@@ -111,6 +118,8 @@ export default function Models() {
   const [benchTotal, setBenchTotal] = useState(0);
   // 每组耗时打点：区分「申请密钥」与「测速请求」哪段慢
   const [benchTimings, setBenchTimings] = useState<Record<string, string>>({});
+  // 实时阶段：当前正在处理哪个分组、处于哪个环节
+  const [benchPhase, setBenchPhase] = useState("");
   // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
   const benchRunRef = useRef(0);
 
@@ -290,10 +299,14 @@ export default function Models() {
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
         if (!apiKey) {
+          setBenchPhase(`${g.name} · 申请密钥中…`);
           const res = await api.provision(auth.accessToken, g.name);
           apiKey = res.api_key;
           provMs = Math.round(performance.now() - t0);
+        } else {
+          setBenchPhase(`${g.name} · 复用已存密钥`);
         }
+        setBenchPhase(`${g.name} · 测速中…`);
         const result = await invoke<{
           median_ttft_ms: number | null;
           samples: { ttft_ms: number | null; error: string | null }[];
@@ -307,7 +320,7 @@ export default function Models() {
         benchMs = Math.round(performance.now() - t0 - provMs);
         setBenchTimings((prev) => ({
           ...prev,
-          [g.name]: `申请密钥 ${provMs || 0}ms（复用已存密钥时为 0） · 测速请求 ${benchMs}ms（含 3 次采样）`,
+          [g.name]: `申请密钥 ${fmtSec(provMs || 0)}（复用已存密钥时为 0） · 测速请求 ${fmtSec(benchMs)}（含 3 次采样）`,
         }));
         if (result.median_ttft_ms == null) {
           // 采样失败的具体原因在 samples[].error，取第一条给用户看
@@ -429,14 +442,19 @@ export default function Models() {
                 <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-2">
                   <p className={`text-[11px] font-medium ${SUBTLE}`}>分组</p>
                   {selected && selected.groups.some((g) => g.usable) && (
-                    <button
-                      onClick={runBenchmarks}
-                      disabled={benchmarkRunning}
-                      title="对当前模型的各分组发真实请求测首字延迟"
-                      className="rounded-full border px-2 py-0.5 text-[10px] transition hover:bg-black/[0.04] disabled:opacity-50 [border-color:var(--nk-line)] dark:hover:bg-white/10"
-                    >
-                      {benchmarkRunning ? `测速中 ${benchDone}/${benchTotal}…` : "⚡ 测速"}
-                    </button>
+                    <div className="flex min-w-0 items-center gap-1">
+                      <button
+                        onClick={runBenchmarks}
+                        disabled={benchmarkRunning}
+                        title="对当前模型的各分组发真实请求测首字延迟"
+                        className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] transition hover:bg-black/[0.04] disabled:opacity-50 [border-color:var(--nk-line)] dark:hover:bg-white/10"
+                      >
+                        {benchmarkRunning ? `测速中 ${benchDone}/${benchTotal}…` : "⚡ 测速"}
+                      </button>
+                      {benchmarkRunning && benchPhase && (
+                        <span className={`truncate text-[9px] ${SUBTLE}`}>{benchPhase}</span>
+                      )}
+                    </div>
                   )}
                 </div>
                 {!selected ? (
@@ -485,7 +503,7 @@ export default function Models() {
                                   }
                                   title="首字延迟中位数（3 次采样）"
                                 >
-                                  {benchmarks[g.name]}ms
+                                  {fmtSec(benchmarks[g.name] as number)}
                                 </span>
                               ) : benchmarks[g.name] === null ? (
                                 <span className={SUBTLE} title={benchErrors[g.name] || "测速失败"}>
@@ -614,9 +632,9 @@ function ModelCard({
           {card.bench && (
             <span
               className={`rounded-full px-1.5 py-0.5 text-[10px] ${delayChip(card.bench.median).className}`}
-              title={`实测首字延迟中位数 ${card.bench.median}ms（${card.bench.samples} 次）`}
+              title={`实测首字延迟中位数 ${fmtSec(card.bench.median)}（${card.bench.samples} 次）`}
             >
-              {delayChip(card.bench.median).label} · {card.bench.median}ms
+              {delayChip(card.bench.median).label} · {fmtSec(card.bench.median)}
             </span>
           )}
         </div>

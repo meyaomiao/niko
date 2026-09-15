@@ -147,6 +147,8 @@ export default function Home() {
   const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
   const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  // 延迟统一用秒展示（内部仍存毫秒）
+  const fmtSec = (ms: number): string => (ms < 100 ? `${(ms / 1000).toFixed(2)}s` : `${(ms / 1000).toFixed(1)}s`);
   // 测速进度：仅 running 时展示「done/total」
   const [benchDone, setBenchDone] = useState(0);
   const [benchTotal, setBenchTotal] = useState(0);
@@ -1486,7 +1488,7 @@ export default function Home() {
                                 </span>
                                 {typeof benchmarks[g.name] === "number" && (
                                   <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
-                                    实测首字 {benchmarks[g.name]}ms
+                                    实测首字 {fmtSec(benchmarks[g.name] as number)}
                                   </span>
                                 )}
                                 {benchmarks[g.name] === null && (
