@@ -441,10 +441,16 @@ pub async fn benchmark_group(
 
     // 采样次数限制在 1~5：多了慢且费钱，少了抖动大
     let rounds = samples.unwrap_or(3).clamp(1, 5);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "测速没有完成，请稍后重试。".to_owned())?;
+    // 全局共享连接池：与 agent 长连接形态一致，跨分组/跨测速轮次复用 TLS，
+    // 否则每次 invoke 新建 Client 都要重付握手，测出来的是握手而不是模型速度
+    static BENCH_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = BENCH_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .build()
+            .expect("failed to build benchmark http client")
+    });
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
