@@ -267,8 +267,9 @@ export default function Models() {
           apiKey = res.api_key;
         }
         const result = await invoke<{ median_ttft_ms: number | null }>("benchmark_group", {
-          base_url: RELAY_BASE_URL,
-          api_key: apiKey,
+          // Tauri v2：Rust snake_case 参数在 JS 侧必须传 camelCase
+          baseUrl: RELAY_BASE_URL,
+          apiKey,
           model: selectedModel,
           samples: 3,
         });
