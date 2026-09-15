@@ -22,12 +22,12 @@ concurrency:
 
 jobs:
   rust-check:
-    name: Rust cargo check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Rust cargo check (self-hosted)
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [{ name: mac, runs-on: [self-hosted, macOS, niko-macos] }, { name: win, runs-on: [self-hosted, Windows, niko-windows] }]
+    runs-on: ${{ matrix.os.runs-on }}
     timeout-minutes: 30
     defaults:
       run:
@@ -42,7 +42,7 @@ jobs:
 
   ts-check:
     name: TypeScript tsc check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, niko-linux]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
