@@ -531,11 +531,66 @@ pub async fn benchmark_group(
                     }
                 }
             }
-            Ok(resp) => BenchmarkSample {
-                ttft_ms: None,
-                total_ms: Some(t0.elapsed().as_millis() as u64),
-                error: Some(safe_status_detail(resp.status().as_u16())),
-            },
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                // 读错误 body：new-api 的 503 通常带「无可用渠道」等真实原因
+                let body_head = resp
+                    .text()
+                    .await
+                    .map(|t| {
+                        let t = t.trim();
+                        t.chars().take(120).collect::<String>()
+                    })
+                    .unwrap_or_default();
+                // 对 5xx 补一次非流式探测：能通说明渠道活着，只是不支持流式探测
+                if (500..=599).contains(&status) {
+                    let fallback_body = serde_json::json!({
+                        "model": model,
+                        "max_tokens": 16,
+                        "stream": false,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    });
+                    let fallback = client
+                        .post(&url)
+                        .bearer_auth(&api_key)
+                        .json(&fallback_body)
+                        .send()
+                        .await;
+                    if let Ok(fr) = fallback {
+                        if fr.status().is_success() {
+                            BenchmarkSample {
+                                ttft_ms: None,
+                                total_ms: Some(t0.elapsed().as_millis() as u64),
+                                error: Some(
+                                    "渠道可用但不支持流式探测（非流式请求成功，无法测首字延迟）".to_owned(),
+                                ),
+                            }
+                        } else {
+                            BenchmarkSample {
+                                ttft_ms: None,
+                                total_ms: Some(t0.elapsed().as_millis() as u64),
+                                error: Some(format!(
+                                    "渠道不可用（HTTP {status}，非流式也失败 {}）：{}",
+                                    fr.status().as_u16(),
+                                    body_head
+                                )),
+                            }
+                        }
+                    } else {
+                        BenchmarkSample {
+                            ttft_ms: None,
+                            total_ms: Some(t0.elapsed().as_millis() as u64),
+                            error: Some(format!("渠道不可用（HTTP {status}）：{}", body_head)),
+                        }
+                    }
+                } else {
+                    BenchmarkSample {
+                        ttft_ms: None,
+                        total_ms: Some(t0.elapsed().as_millis() as u64),
+                        error: Some(format!("{}（HTTP {status}：{body_head}）", safe_status_detail(status))),
+                    }
+                }
+            }
             Err(e) => BenchmarkSample {
                 ttft_ms: None,
                 total_ms: None,
