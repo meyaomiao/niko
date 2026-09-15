@@ -143,8 +143,9 @@ export default function Home() {
   const [draftSource, setDraftSource] = useState<"recommendation" | "saved" | "manual">("recommendation");
   const groupTouchedRef = useRef(false);
   const requestGuardRef = useRef(initialRequestGuard());
-  // 分组测速：group 名 → TTFT 中位数（ms）|"loading"（进行中）|null（失败）
+  // 分组测速：group 名 → TTFT 中位数（ms）|"loading"（进行中）|null（失败）；benchErrors 记录失败原因
   const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
+  const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
 
   useEffect(() => {
@@ -602,6 +603,7 @@ export default function Home() {
   const runBenchmarks = async () => {
     if (!auth?.accessToken || !model || benchmarkRunning) return;
     setBenchmarkRunning(true);
+    setBenchErrors({});
     setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
     for (const g of modelGroups) {
       try {
@@ -616,6 +618,9 @@ export default function Home() {
           model,
           samples: 3,
         });
+        if (result.median_ttft_ms == null) {
+          setBenchErrors((prev) => ({ ...prev, [g.name]: "请求成功但未取到首字延迟（模型无流式响应或渠道拒绝）" }));
+        }
         if (result.median_ttft_ms != null) {
           // 落一份本地缓存，供「模型与价格」页展示实测延迟
           try {
@@ -625,7 +630,8 @@ export default function Home() {
           } catch { /* 缓存失败不影响测速 */ }
         }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
-      } catch {
+      } catch (e) {
+        setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
     }
@@ -1454,6 +1460,14 @@ export default function Home() {
                                 {typeof benchmarks[g.name] === "number" && (
                                   <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
                                     实测首字 {benchmarks[g.name]}ms
+                                  </span>
+                                )}
+                                {benchmarks[g.name] === null && (
+                                  <span
+                                    className="mt-0.5 block text-[10px] text-red-500 dark:text-red-400"
+                                    title={benchErrors[g.name] || "测速失败"}
+                                  >
+                                    测速失败
                                   </span>
                                 )}
                               </button>

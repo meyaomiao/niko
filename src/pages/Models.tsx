@@ -104,6 +104,7 @@ export default function Models() {
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedGroup, setSelectedGroup] = useState<string>("");
   const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
+  const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
 
   useEffect(() => {
@@ -255,6 +256,7 @@ export default function Models() {
     const groupsToRun = selected.groups.filter((g) => g.usable);
     if (groupsToRun.length === 0) return;
     setBenchmarkRunning(true);
+    setBenchErrors({});
     setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
     const RELAY_BASE_URL = "https://momotoken.win/v1";
     for (const g of groupsToRun) {
@@ -270,6 +272,9 @@ export default function Models() {
           model: selectedModel,
           samples: 3,
         });
+        if (result.median_ttft_ms == null) {
+          setBenchErrors((prev) => ({ ...prev, [g.name]: "请求成功但未取到首字延迟（模型无流式响应或渠道拒绝）" }));
+        }
         if (result.median_ttft_ms != null) {
           // 落一份本地缓存，与首页共用，供卡片「实测」展示
           try {
@@ -279,7 +284,8 @@ export default function Models() {
           } catch { /* 缓存失败不影响测速 */ }
         }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
-      } catch {
+      } catch (e) {
+        setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
     }
@@ -440,7 +446,9 @@ export default function Models() {
                                   {benchmarks[g.name]}ms
                                 </span>
                               ) : benchmarks[g.name] === null ? (
-                                <span className={SUBTLE} title="测速失败">失败</span>
+                                <span className={SUBTLE} title={benchErrors[g.name] || "测速失败"}>
+                                  失败
+                                </span>
                               ) : null}
                             </span>
                             <span className={`shrink-0 text-[10px] tabular-nums ${SUBTLE}`}>{g.ratio}x</span>
