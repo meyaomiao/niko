@@ -109,6 +109,8 @@ export default function Models() {
   // 测速进度：仅 running 时展示「done/total」
   const [benchDone, setBenchDone] = useState(0);
   const [benchTotal, setBenchTotal] = useState(0);
+  // 每组耗时打点：区分「申请密钥」与「测速请求」哪段慢
+  const [benchTimings, setBenchTimings] = useState<Record<string, string>>({});
   // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
   const benchRunRef = useRef(0);
 
@@ -282,11 +284,15 @@ export default function Models() {
     for (const g of groupsToRun) {
       // 模型已切换：本轮结果作废，立即停止
       if (benchRunRef.current !== runId) return;
+      const t0 = performance.now();
+      let provMs = 0;
+      let benchMs = 0;
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
         if (!apiKey) {
           const res = await api.provision(auth.accessToken, g.name);
           apiKey = res.api_key;
+          provMs = Math.round(performance.now() - t0);
         }
         const result = await invoke<{
           median_ttft_ms: number | null;
@@ -298,6 +304,11 @@ export default function Models() {
           model: selectedModel,
           samples: 3,
         });
+        benchMs = Math.round(performance.now() - t0 - provMs);
+        setBenchTimings((prev) => ({
+          ...prev,
+          [g.name]: `申请密钥 ${provMs || 0}ms（复用已存密钥时为 0） · 测速请求 ${benchMs}ms（含 3 次采样）`,
+        }));
         if (result.median_ttft_ms == null) {
           // 采样失败的具体原因在 samples[].error，取第一条给用户看
           const detail = result.samples?.find((s) => s.error)?.error ?? "未取到首字延迟";
@@ -448,6 +459,7 @@ export default function Models() {
                           key={g.name}
                           onClick={() => setSelectedGroup(g.name)}
                           aria-pressed={active}
+                          title={benchTimings[g.name]}
                           className={`w-full rounded-xl border p-2 text-left transition [border-color:var(--nk-line)] ${
                             active ? "border-[var(--nk-accent)] bg-[var(--nk-accent)]/[0.06]" : "hover:bg-black/[0.03] dark:hover:bg-white/5"
                           }`}
