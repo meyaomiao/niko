@@ -84,7 +84,7 @@ jobs:
         run: npx tauri build --bundles nsis
 
       - name: Compute SHA256 and validate updater signatures
-        shell: pwsh
+        shell: powershell
         run: |
           $bundles = Get-ChildItem `
             -Path "src-tauri/target/release/bundle" `
@@ -121,7 +121,7 @@ jobs:
           if-no-files-found: error
 
       - name: Record the local macOS next step
-        shell: pwsh
+        shell: powershell
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
