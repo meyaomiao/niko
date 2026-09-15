@@ -264,7 +264,8 @@ export default function Models() {
         <h1 className={TITLE}>模型与价格</h1>
       </header>
 
-      <main className="nk-page min-h-0 flex-1">
+      {/* 与首页一致：桌面端锁住外层高度（overflow-hidden），三列各自内部滚动 */}
+      <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-3">
           {loading && <p className={CARD}>正在加载模型目录…</p>}
           {error && <p className={`${CARD} text-red-500`}>{error}</p>}
