@@ -199,11 +199,11 @@ fn safe_reqwest_detail(e: &reqwest::Error) -> String {
 
 fn safe_status_detail(code: u16) -> String {
     match code {
-        401 | 403 => "连接密钥无效或已过期，请重新接入后再试。".to_owned(),
-        404 => "服务地址或模型不可用，请重新接入后再试。".to_owned(),
-        429 => "服务暂时繁忙，请稍后重试。".to_owned(),
-        500..=599 => "模型服务暂时不可用，请稍后重试。".to_owned(),
-        _ => "检查没有完成，请重新接入后再试。".to_owned(),
+        401 | 403 => "连接密钥无效或已过期（HTTP 401/403），请重新接入后再试。".to_owned(),
+        404 => "服务地址或模型不可用（HTTP 404）。".to_owned(),
+        429 => "该分组渠道限流中（HTTP 429），请稍后重试。".to_owned(),
+        500..=599 => format!("渠道上游不可用（HTTP {code}）：该分组渠道故障或过载，非客户端问题。"),
+        _ => format!("渠道返回异常状态（HTTP {code}）。"),
     }
 }
 
