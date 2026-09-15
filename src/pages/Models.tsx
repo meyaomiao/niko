@@ -500,6 +500,9 @@ export default function Models() {
                               {g.desc}
                             </p>
                           )}
+                          {benchTimings[g.name] && (
+                            <p className={`mt-0.5 font-mono text-[9px] tabular-nums ${SUBTLE}`}>{benchTimings[g.name]}</p>
+                          )}
                           <p className="mt-1 text-xs font-semibold tabular-nums text-gray-900 dark:text-gray-100">
                             {folded ? (
                               folded.perRequest ? (
