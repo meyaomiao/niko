@@ -106,6 +106,9 @@ export default function Models() {
   const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
   const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  // 测速进度：仅 running 时展示「done/total」
+  const [benchDone, setBenchDone] = useState(0);
+  const [benchTotal, setBenchTotal] = useState(0);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -257,8 +260,11 @@ export default function Models() {
     if (groupsToRun.length === 0) return;
     setBenchmarkRunning(true);
     setBenchErrors({});
+    setBenchDone(0);
+    setBenchTotal(groupsToRun.length);
     setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
     const RELAY_BASE_URL = "https://momotoken.win/v1";
+    let done = 0;
     for (const g of groupsToRun) {
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
@@ -294,6 +300,8 @@ export default function Models() {
         setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
+      done += 1;
+      setBenchDone(done);
     }
     setBenchmarkRunning(false);
     // 刷新卡片上的「实测」缓存（首页同款 BENCH_KEY）
@@ -400,7 +408,7 @@ export default function Models() {
                       title="对当前模型的各分组发真实请求测首字延迟"
                       className="rounded-full border px-2 py-0.5 text-[10px] transition hover:bg-black/[0.04] disabled:opacity-50 [border-color:var(--nk-line)] dark:hover:bg-white/10"
                     >
-                      {benchmarkRunning ? "测速中…" : "⚡ 测速"}
+                      {benchmarkRunning ? `测速中 ${benchDone}/${benchTotal}…` : "⚡ 测速"}
                     </button>
                   )}
                 </div>

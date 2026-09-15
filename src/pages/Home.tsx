@@ -147,6 +147,9 @@ export default function Home() {
   const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
   const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  // 测速进度：仅 running 时展示「done/total」
+  const [benchDone, setBenchDone] = useState(0);
+  const [benchTotal, setBenchTotal] = useState(0);
 
   useEffect(() => {
     requestGuardRef.current = mountRequests(requestGuardRef.current);
@@ -604,7 +607,10 @@ export default function Home() {
     if (!auth?.accessToken || !model || benchmarkRunning) return;
     setBenchmarkRunning(true);
     setBenchErrors({});
+    setBenchDone(0);
+    setBenchTotal(modelGroups.length);
     setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
+    let benchCount = 0;
     for (const g of modelGroups) {
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
@@ -640,6 +646,8 @@ export default function Home() {
         setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
+      benchCount += 1;
+      setBenchDone(benchCount);
     }
     setBenchmarkRunning(false);
   };
@@ -1423,7 +1431,7 @@ export default function Home() {
                                   : "text-[var(--nk-info)] hover:bg-black/[0.04] dark:hover:bg-white/10"
                               }`}
                             >
-                              {benchmarkRunning ? "测速中…" : "⚡ 测速"}
+                              {benchmarkRunning ? `测速中 ${benchDone}/${benchTotal}…` : "⚡ 测速"}
                             </button>
                           )}
                           {!hasTokenGroups && (
