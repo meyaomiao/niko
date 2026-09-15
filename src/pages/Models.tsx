@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { loadAuth } from "../store/auth";
 import { api, type BootstrapData, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
@@ -88,7 +89,8 @@ interface Card {
 
 export default function Models() {
   const navigate = useNavigate();
-  const token = loadAuth()?.accessToken;
+  const auth = loadAuth();
+  const token = auth?.accessToken;
 
   const [data, setData] = useState<BootstrapData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -101,6 +103,8 @@ export default function Models() {
   const [activeVendor, setActiveVendor] = useState<string>("全部");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedGroup, setSelectedGroup] = useState<string>("");
+  const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
 
   useEffect(() => {
     setBench(loadBenchCache());
@@ -243,6 +247,47 @@ export default function Models() {
 
   // 第三列：所选模型的分组列表
   const selected = useMemo(() => cards.find((c) => c.name === selectedModel), [cards, selectedModel]);
+
+  // 分组测速：与首页同一套——对当前模型每个分组发 3 次最小流式请求取 TTFT 中位数；
+  // 已保存密钥所属分组直接复用密钥，其余分组临时申请（不覆盖已保存密钥）。
+  const runBenchmarks = async () => {
+    if (!auth?.accessToken || !selectedModel || benchmarkRunning || !selected) return;
+    const groupsToRun = selected.groups.filter((g) => g.usable);
+    if (groupsToRun.length === 0) return;
+    setBenchmarkRunning(true);
+    setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
+    const RELAY_BASE_URL = "https://momotoken.win/v1";
+    for (const g of groupsToRun) {
+      try {
+        let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
+        if (!apiKey) {
+          const res = await api.provision(auth.accessToken, g.name);
+          apiKey = res.api_key;
+        }
+        const result = await invoke<{ median_ttft_ms: number | null }>("benchmark_group", {
+          base_url: RELAY_BASE_URL,
+          api_key: apiKey,
+          model: selectedModel,
+          samples: 3,
+        });
+        if (result.median_ttft_ms != null) {
+          // 落一份本地缓存，与首页共用，供卡片「实测」展示
+          try {
+            const cache = JSON.parse(localStorage.getItem(BENCH_KEY) ?? "{}") as Record<string, unknown>;
+            cache[selectedModel] = { median: result.median_ttft_ms, samples: 3, at: Date.now() };
+            localStorage.setItem(BENCH_KEY, JSON.stringify(cache));
+          } catch { /* 缓存失败不影响测速 */ }
+        }
+        setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
+      } catch {
+        setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
+      }
+    }
+    setBenchmarkRunning(false);
+    // 刷新卡片上的「实测」缓存（首页同款 BENCH_KEY）
+    setBench(loadBenchCache());
+  };
+
   // 选模型时默认带出第一个可用分组
   useEffect(() => {
     if (!selectedModel) {
@@ -334,7 +379,19 @@ export default function Models() {
 
               {/* 第三列：所选模型的分组（分组折算价跟分组走） */}
               <div className={`${CARD} flex min-h-0 flex-col overflow-hidden`}>
-                <p className={`shrink-0 px-1 pb-2 text-[11px] font-medium ${SUBTLE}`}>分组</p>
+                <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-2">
+                  <p className={`text-[11px] font-medium ${SUBTLE}`}>分组</p>
+                  {selected && selected.groups.some((g) => g.usable) && (
+                    <button
+                      onClick={runBenchmarks}
+                      disabled={benchmarkRunning}
+                      title="对当前模型的各分组发真实请求测首字延迟"
+                      className="rounded-full border px-2 py-0.5 text-[10px] transition hover:bg-black/[0.04] disabled:opacity-50 [border-color:var(--nk-line)] dark:hover:bg-white/10"
+                    >
+                      {benchmarkRunning ? "测速中…" : "⚡ 测速"}
+                    </button>
+                  )}
+                </div>
                 {!selected ? (
                   <p className={`px-1 text-xs ${SUBTLE}`}>在中间选择一个模型后，这里显示它支持的分组与折算价。</p>
                 ) : (
@@ -366,7 +423,27 @@ export default function Models() {
                                 未开通
                               </span>
                             )}
-                            <span className={`ml-auto shrink-0 text-[10px] tabular-nums ${SUBTLE}`}>{g.ratio}x</span>
+                            <span className="ml-auto shrink-0 text-[10px] tabular-nums">
+                              {benchmarks[g.name] === "loading" ? (
+                                <span className={SUBTLE}>…</span>
+                              ) : typeof benchmarks[g.name] === "number" ? (
+                                <span
+                                  className={
+                                    (benchmarks[g.name] as number) <= 1500
+                                      ? "text-green-600 dark:text-green-400"
+                                      : (benchmarks[g.name] as number) <= 4000
+                                        ? "text-amber-600 dark:text-amber-400"
+                                        : "text-red-500 dark:text-red-400"
+                                  }
+                                  title="首字延迟中位数（3 次采样）"
+                                >
+                                  {benchmarks[g.name]}ms
+                                </span>
+                              ) : benchmarks[g.name] === null ? (
+                                <span className={SUBTLE} title="测速失败">失败</span>
+                              ) : null}
+                            </span>
+                            <span className={`shrink-0 text-[10px] tabular-nums ${SUBTLE}`}>{g.ratio}x</span>
                           </div>
                           {g.desc && (
                             <p className={`mt-0.5 line-clamp-2 text-[10px] ${SUBTLE}`} title={g.desc}>
