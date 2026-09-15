@@ -56,7 +56,8 @@ jobs:
   build-windows:
     name: Windows (unsigned + SHA256)
     needs: validate-release
-    runs-on: windows-latest
+    # 自托管 Windows runner（xzb17-win-niko）：与 CI 的 cargo check 同一节点
+    runs-on: [self-hosted, Windows, niko-windows]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
