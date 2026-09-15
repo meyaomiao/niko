@@ -430,16 +430,9 @@ export default function Home() {
       setDraftSource("saved");
       return;
     }
-    const preferredGroup = groups.find((item) => item.name === auth?.defaultGroup);
-    const preferredModel = preferredGroup
-      ? modelByGroup.get(preferredGroup.name)
-      : vendorTabs[0]?.models[0]?.name;
-    const fallbackGroup = preferredGroup?.name ?? vendorTabs[0]?.models[0]?.groups[0]?.name;
-    if (preferredModel && fallbackGroup) {
-      setModel(preferredModel);
-      setGroup(fallbackGroup);
-      setDraftSource("recommendation");
-    }
+    // 不再自动预选厂家、模型和分组（含「其他」桶里的推荐模型）；
+    // 三列保持「先选择模型」的空态，全部由用户自己挑。
+    // saved 草稿仍会回填（上面分支），推荐只作为提示，不落选择。
   }, [auth?.defaultGroup, groups, installedTargets, modelByGroup, targetId, vendorTabs]);
 
   const recommendedSelection = useMemo(() => {
@@ -491,12 +484,14 @@ export default function Home() {
   const compatOf = (name: string) => (compatTargetId ? baselineFor(compatTargetId, name) : null);
 
   const currentGroup = groups.find((g) => g.name === group);
-  // 页签跟随当前模型所属厂家；没有模型时按当前分组所属厂家推断，最后兜底第一个页签
+  // 页签跟随当前模型所属厂家；没有模型时不兜底任何页签（用户明确要求默认不选厂家），
+  // 模型列此时展示全部厂家的模型（activeVendor 为 null 的语义）
   const activeVendor: string | null = (() => {
     if (model) {
       const tab = vendorTabs.find((item) => item.models.some((choice) => choice.name === model));
       if (tab) return tab.vendor;
     }
+    if (!model && !currentGroup) return null;
     if (currentGroup) {
       const guess = vendorOfGroup(currentGroup.name);
       const tab = vendorTabs.find((item) => item.vendor === guess);
@@ -504,7 +499,7 @@ export default function Home() {
     }
     return vendorTabs[0]?.vendor ?? null;
   })();
-  const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? vendorTabs[0] ?? null;
+  const activeVendorTab = vendorTabs.find((tab) => tab.vendor === activeVendor) ?? null;
   const vendorModels = activeVendorTab?.models ?? [];
   // 模型的令牌分组：pricing.enable_groups 与账号可用分组的交集（catalog 已算好）
   const modelGroups = useMemo(() => {
@@ -536,16 +531,19 @@ export default function Home() {
    */
   const models = useMemo(() => {
     const kw = modelFilter.trim().toLowerCase();
-    const list = kw ? vendorModels.filter((m) => m.name.toLowerCase().includes(kw)) : vendorModels;
+    // 未选厂家时展示全部厂家的模型，供用户自行挑选
+    const pool = activeVendorTab?.models ?? vendorTabs.flatMap((tab) => tab.models);
+    const list = kw ? pool.filter((m) => m.name.toLowerCase().includes(kw)) : pool;
     const orderCtx = {
       dateOf: (name: string) => releaseTimeOf(name),
       orderOf: (name: string) => catalogOrder.get(name),
     };
     return [...list].sort((a, b) => compareModelsByRelease(a.name, b.name, orderCtx));
-  }, [vendorModels, modelFilter, catalogOrder, bootstrap?.model_metadata, bootstrap?.pricing]);
+  }, [activeVendorTab, vendorTabs, modelFilter, catalogOrder, bootstrap?.model_metadata, bootstrap?.pricing]);
 
   useEffect(() => {
-    if (!activeVendorTab || groups.length === 0) return;
+    // 只在用户已选中某厂家页签时才需要联动；未选厂家/模型时保持空态，不自动挑模型
+    if (!activeVendorTab || groups.length === 0 || !model) return;
     const selected = activeVendorTab.models.find((choice) => choice.name === model) ?? activeVendorTab.models[0];
     if (!selected) return;
     if (selected.name !== model) {

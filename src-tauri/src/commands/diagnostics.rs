@@ -468,20 +468,45 @@ pub async fn benchmark_group(
                 let mut resp = resp;
                 let mut ttft = None;
                 let mut stream_error: Option<String> = None;
+                // 记录首段内容形态，用于区分「空流」「错误 JSON」等渠道侧问题
+                let mut first_head: Option<String> = None;
+                let mut got_stream_end = false;
                 loop {
                     match resp.chunk().await {
                         Ok(Some(bytes)) => {
                             if !bytes.is_empty() {
+                                if first_head.is_none() {
+                                    first_head = Some(
+                                        String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).to_string(),
+                                    );
+                                }
                                 ttft = Some(t0.elapsed().as_millis() as u64);
                                 // 首 chunk 已到手即判定 TTFT；max_tokens=1 时服务端随即收尾，
                                 // 不继续消费剩余流
                                 break;
                             }
                         }
-                        Ok(None) => break,
+                        Ok(None) => {
+                            got_stream_end = true;
+                            break;
+                        }
                         Err(e) => {
                             stream_error = Some(safe_reqwest_detail(&e));
                             break;
+                        }
+                    }
+                }
+                // 200 但流里没有任何字节就收尾：大概率渠道不支持该模型/密钥无权限/假流式
+                if ttft.is_none() && stream_error.is_none() && got_stream_end && first_head.is_none() {
+                    stream_error =
+                        Some("渠道返回空流（HTTP 200，0 字节即关闭）：密钥可能无该模型权限或渠道为假流式".to_owned());
+                }
+                // 首段不是 SSE data 行也不是 JSON choice：多半是错误 JSON 包在 200 里
+                if ttft.is_some() {
+                    if let Some(head) = &first_head {
+                        let trimmed = head.trim_start();
+                        if trimmed.starts_with('{') && trimmed.contains("\"error\"") {
+                            stream_error = Some(format!("渠道返回错误 JSON（200）：{}", head));
                         }
                     }
                 }
