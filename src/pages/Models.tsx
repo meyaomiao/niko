@@ -266,7 +266,10 @@ export default function Models() {
           const res = await api.provision(auth.accessToken, g.name);
           apiKey = res.api_key;
         }
-        const result = await invoke<{ median_ttft_ms: number | null }>("benchmark_group", {
+        const result = await invoke<{
+          median_ttft_ms: number | null;
+          samples: { ttft_ms: number | null; error: string | null }[];
+        }>("benchmark_group", {
           // Tauri v2：Rust snake_case 参数在 JS 侧必须传 camelCase
           baseUrl: RELAY_BASE_URL,
           apiKey,
@@ -274,7 +277,9 @@ export default function Models() {
           samples: 3,
         });
         if (result.median_ttft_ms == null) {
-          setBenchErrors((prev) => ({ ...prev, [g.name]: "请求成功但未取到首字延迟（模型无流式响应或渠道拒绝）" }));
+          // 采样失败的具体原因在 samples[].error，取第一条给用户看
+          const detail = result.samples?.find((s) => s.error)?.error ?? "未取到首字延迟";
+          setBenchErrors((prev) => ({ ...prev, [g.name]: detail }));
         }
         if (result.median_ttft_ms != null) {
           // 落一份本地缓存，与首页共用，供卡片「实测」展示
