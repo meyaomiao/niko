@@ -480,10 +480,9 @@ pub async fn benchmark_group(
                                         String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).to_string(),
                                     );
                                 }
-                                ttft = Some(t0.elapsed().as_millis() as u64);
-                                // 首 chunk 已到手即判定 TTFT；max_tokens=1 时服务端随即收尾，
-                                // 不继续消费剩余流
-                                break;
+                                if ttft.is_none() {
+                                    ttft = Some(t0.elapsed().as_millis() as u64);
+                                }
                             }
                         }
                         Ok(None) => {
@@ -496,6 +495,9 @@ pub async fn benchmark_group(
                         }
                     }
                 }
+                // 重要：读完整个响应体（max_tokens=1 的流只有几十字节），
+                // 让连接归池复用——否则每次采样都重付 TLS 握手，
+                // 测出来的是握手时间而不是用户 agent 真实的稳态首字延迟。
                 // 200 但流里没有任何字节就收尾：大概率渠道不支持该模型/密钥无权限/假流式
                 if ttft.is_none() && stream_error.is_none() && got_stream_end && first_head.is_none() {
                     stream_error =
