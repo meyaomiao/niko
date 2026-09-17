@@ -1061,7 +1061,7 @@ export default function Home() {
               ) : installedTargets.length === 0 ? (
                 <div>
                   <p className={SUBTLE}>
-                    没有找到支持的应用。先安装 ChatGPT 桌面端或 Claude 桌面端，再回来接入。
+                    没有找到支持的应用。先安装 ChatGPT、Claude、DSH 或 ZCode，再回来接入。
                   </p>
                   <button onClick={() => navigate("/install-guide")} className={`mt-3 ${GHOST_BTN}`}>
                     安装指引
@@ -1171,7 +1171,11 @@ export default function Home() {
                             ? "写入 ~/.grok/config.toml 的 model.momotoken 段"
                             : active.id === "antigravity"
                               ? "仅支持 Gemini 系模型；环境变量写入后需重开终端生效"
-                              : "";
+                              : active.id === "dsh"
+                                ? "写入 DSH 自定义网关 momotoken，打开工作台即可使用"
+                                : active.id === "zcode"
+                                  ? "写入自定义提供方，打开 ZCode 后请选择 Niko / momotoken"
+                                  : "";
                     return (
                       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                         {note && <span className={`min-w-0 truncate text-[10px] ${SUBTLE}`}>{note}</span>}
@@ -1530,11 +1534,28 @@ export default function Home() {
                     <button
                       onClick={restartTargets}
                       disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title={targetLabel ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效` : "选择应用后可重启"}
-                      aria-label="重启应用"
+                      title={
+                        targetId === "dsh" ||
+                        (targetId === ALL_TARGETS && installedTargets.every((t) => t.id === "dsh"))
+                          ? "打开 DSH 工作台。配置写入后无需重启进程。"
+                          : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
+                            ? "打开 DSH，并启动或重启其他已接入应用"
+                            : targetLabel
+                              ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效`
+                              : "选择应用后可打开"
+                      }
+                      aria-label={targetId === "dsh" ? "打开 DSH" : "打开或重启应用"}
                       className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px]`}
                     >
-                      {restarting ? "重启中…" : "重启"}
+                      {restarting
+                        ? targetId === "dsh"
+                          ? "打开中…"
+                          : "处理中…"
+                        : targetId === "dsh"
+                          ? "打开"
+                          : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
+                            ? "打开"
+                            : "重启"}
                     </button>
                     <button
                       onClick={testConnectivity}

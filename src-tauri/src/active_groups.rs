@@ -121,7 +121,10 @@ pub(crate) fn record_root(home: &Path) -> PathBuf {
 }
 
 pub(crate) fn record_path(home: &Path, target_id: &str) -> io::Result<PathBuf> {
-    if !matches!(target_id, "codex" | "claude-desktop") {
+    if !matches!(
+        target_id,
+        "codex" | "claude-desktop" | "claude-cli" | "grok" | "antigravity" | "dsh" | "zcode"
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unknown active group target",

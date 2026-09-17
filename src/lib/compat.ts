@@ -34,6 +34,8 @@ const MATRIX: Record<string, Record<Family, CompatLevel>> = {
   "claude-cli": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
   "grok": { claude: "good", gpt: "good", gemini: "limited", other: "good" },
   "antigravity": { claude: "limited", gpt: "limited", gemini: "native", other: "limited" },
+  "dsh": { claude: "good", gpt: "good", gemini: "limited", other: "good" },
+  "zcode": { claude: "native", gpt: "good", gemini: "limited", other: "limited" },
 };
 
 const NOTES: Record<string, Record<Family, string>> = {
@@ -65,6 +67,18 @@ const NOTES: Record<string, Record<Family, string>> = {
     claude: "Antigravity CLI 仅支持 Gemini 协议，Claude 系模型不可用",
     gpt: "Antigravity CLI 仅支持 Gemini 协议，GPT 系模型不可用",
     gemini: "Gemini 系模型原生可用",
+    other: "暂未在该应用验证，部分能力可能不可用",
+  },
+  "dsh": {
+    claude: "通过服务适配接入 DSH，对话与工具调用正常",
+    gpt: "通过服务适配接入 DSH，对话与工具调用正常",
+    gemini: "通过服务适配接入，图片理解等能力有差异",
+    other: "通过 OpenAI 兼容接口接入 DSH",
+  },
+  "zcode": {
+    claude: "以 Anthropic 协议写入自定义提供方，需在 ZCode 里选 Niko",
+    gpt: "通过服务适配接入自定义提供方，需在 ZCode 里选 Niko",
+    gemini: "图片理解和深度思考等能力有差异，部分能力可能不可用",
     other: "暂未在该应用验证，部分能力可能不可用",
   },
 };
@@ -100,4 +114,6 @@ export const NATIVE_VENDOR: Record<string, string> = {
   "claude-cli": "Anthropic",
   "grok": "xAI",
   "antigravity": "Google",
+  dsh: "OpenAI",
+  zcode: "Anthropic",
 };

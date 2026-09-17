@@ -356,6 +356,9 @@ fn restore_snapshot_at(
         ("claude-desktop" | "claude-code", "settings.json") => {
             home.join(".claude").join("settings.json")
         }
+        ("dsh", "settings.yaml") => home.join(".dsh").join("settings.yaml"),
+        ("dsh", ".credentials.yaml") => home.join(".dsh").join(".credentials.yaml"),
+        ("zcode", "config.json") => home.join(".zcode").join("v2").join("config.json"),
         _ => return Err(SafeCommandError::invalid_request()),
     };
     let source = backup_dir.join(filename);

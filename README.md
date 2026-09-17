@@ -135,6 +135,14 @@ Niko 可以配置 ChatGPT 桌面端中 Codex 使用的模型和接口。如果�
 
 Niko 可以配置 Claude 桌面端内置的 Claude Code 功能。Claude 普通聊天仍使用用户原有的 Anthropic 账号。
 
+### DSH
+
+Niko 可以把 momotoken 写成 DSH 的自定义网关，并打开 Web 工作台。配置写入后下一个请求生效，不必重启 DSH 进程。
+
+### ZCode
+
+Niko 会在 ZCode 里新增自定义提供方 `Niko / momotoken`，不改智谱登录。打开应用后需要在 ZCode 里选中该提供方。
+
 ## 设计理念
 
 - **简单**：把登录、选模型和写配置放在一个流程里。
@@ -151,6 +159,7 @@ Niko 可以配置 Claude 桌面端内置的 Claude Code 功能。Claude 普通�
 - [x] 用量、充值和设备管理
 - [x] 配置快照、连通性测试和恢复官方默认
 - [x] macOS 与 Windows 安装包
+- [x] DSH 与 ZCode 桌面接入
 - [ ] 支持更多官方 AI 客户端和命令行工具
 - [ ] 完善不同客户端版本的兼容检测
 - [ ] 改进诊断、故障提示和配置恢复
