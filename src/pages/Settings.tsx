@@ -5,6 +5,12 @@ import { isNewApiAuth, stationOrigin } from "../lib/station";
 import { api } from "../api/client";
 import { useNavigate } from "react-router-dom";
 import { BRAND } from "../lib/brand";
+import {
+  downloadPercent,
+  friendlyUpdateError,
+  installAvailableUpdate,
+} from "../lib/appUpdate";
+import { desktopUpdaterAdapter } from "../lib/appUpdateRuntime";
 import Logo from "../components/Logo";
 import {
   ArrowLeftIcon,
@@ -106,6 +112,7 @@ export default function Settings() {
   // 检查更新
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updatePercent, setUpdatePercent] = useState<number | null>(null);
 
   // Codex 会话状态与整理
   const [codexInventory, setCodexInventory] = useState<CodexSessionPage | null>(null);
@@ -237,17 +244,16 @@ export default function Settings() {
   const checkUpdate = async () => {
     setCheckingUpdate(true);
     setUpdateStatus(null);
+    setUpdatePercent(null);
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update?.available) {
-        setUpdateStatus(`发现新版本 ${update.version}，正在下载安装…`);
-        await update.downloadAndInstall();
-      } else {
-        setUpdateStatus("已是最新版本");
-      }
+      await installAvailableUpdate(
+        await desktopUpdaterAdapter(),
+        setUpdateStatus,
+        (progress) => setUpdatePercent(downloadPercent(progress)),
+      );
     } catch (e) {
-      setUpdateStatus(`检查失败：${safeFailure(e).message}`);
+      setUpdateStatus(friendlyUpdateError(e));
+      setUpdatePercent(null);
     } finally {
       setCheckingUpdate(false);
     }
@@ -577,10 +583,25 @@ export default function Settings() {
               disabled={checkingUpdate}
               className={`${SECONDARY_BTN} mt-4`}
             >
-              {checkingUpdate ? "检查中…" : "检查更新"}
+              {checkingUpdate ? "处理中…" : "检查更新"}
             </button>
             {updateStatus && (
-              <p className="nk-muted mt-2">{updateStatus}</p>
+              <p className="nk-muted mt-2" role="status">{updateStatus}</p>
+            )}
+            {updatePercent !== null && (
+              <div
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={updatePercent}
+                aria-label="更新下载进度"
+              >
+                <div
+                  className="h-full rounded-full bg-indigo-600 transition-[width] duration-200"
+                  style={{ width: `${updatePercent}%` }}
+                />
+              </div>
             )}
           </section>
 

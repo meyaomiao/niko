@@ -74,6 +74,7 @@ pub fn run() {
             autostart_enable,
             autostart_disable,
             autostart_is_enabled,
+            relaunch_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -178,4 +179,10 @@ async fn autostart_disable(app: tauri::AppHandle) -> Result<(), String> {
 async fn autostart_is_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// 安装完更新包后重启当前应用。macOS 替换完成后必须重启才会切到新版本。
+#[tauri::command]
+fn relaunch_app(app: tauri::AppHandle) {
+    tauri::process::restart(&app.env());
 }

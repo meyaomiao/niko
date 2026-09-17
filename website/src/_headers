@@ -40,3 +40,7 @@
 
 /og.png
   Cache-Control: public, max-age=86400
+
+/latest.json
+  Cache-Control: public, max-age=60, must-revalidate
+  X-Content-Type-Options: nosniff

@@ -113,7 +113,26 @@ xcrun stapler validate \
 
 - macOS：DMG、`.app.tar.gz`、`.app.tar.gz.sig`、`SHA256SUMS.txt`
 - Windows：MSI、MSI `.sig`、EXE、EXE `.sig`、`SHA256SUMS_win.txt`
-- updater：同时包含 `darwin-universal` 与 `windows-x86_64` 的 `latest.json`
+- updater：同时包含 `darwin-aarch64`、`darwin-x86_64` 与 `windows-x86_64` 的 `latest.json`
+
+### updater 平台键
+
+`tauri-plugin-updater` 按 `{os}-{arch}` 查找平台键，`arch` 只能是 `x86_64`、`aarch64`、`i686`、`armv7`。`darwin-universal` 不是合法键：写成它以后，Apple Silicon 会去找 `darwin-aarch64`、Intel 会去找 `darwin-x86_64`，两者都找不到，设置页「检查更新」会直接失败。
+
+macOS universal 包要把同一个 `Niko.app.tar.gz` 挂在两个架构键上，签名也用同一份：
+
+```json
+{
+  "version": "0.2.4",
+  "platforms": {
+    "darwin-aarch64": { "url": "…/Niko.app.tar.gz", "signature": "<Niko.app.tar.gz.sig 的内容>" },
+    "darwin-x86_64": { "url": "…/Niko.app.tar.gz", "signature": "<Niko.app.tar.gz.sig 的内容>" },
+    "windows-x86_64": { "url": "…/Niko_0.2.4_x64-setup.exe", "signature": "<EXE .sig 的内容>" }
+  }
+}
+```
+
+官网 `https://niko-ai.cc/latest.json` 会把历史清单里的 `darwin-universal` 改写成上述两个键，作为应用内更新的首选地址。GitHub Release 附件仍必须写成合法键，不要依赖代理兜底。
 
 `latest.json` 中的版本、文件名、下载 URL 和签名必须与最终附件逐项一致。先创建 Draft Release，完成双平台安装验证后再发布；不要边修改边反复创建正式 Release。
 
@@ -126,7 +145,8 @@ xcrun stapler validate \
 - [ ] `codesign`、`spctl`、`stapler` 检查通过
 - [ ] macOS 与 Windows 安装包均完成实机安装验证
 - [ ] updater 签名文件和 SHA256 完整
-- [ ] `latest.json` 同时包含两个平台且 URL 可访问
+- [ ] `latest.json` 含 `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64` 三个键且 URL 可访问
+- [ ] macOS 与 Windows 均实测过设置页的「检查更新」，安装后能重启进入新版本
 - [ ] Draft Release 附件检查无误后才正式发布
 
 ## 5. 更新官网首页
