@@ -17,8 +17,7 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
 const releaseTag = `niko-v${version}`;
 const releaseAssets = {
   macDmg: `Niko_${version}_universal.dmg`,
-  windowsExe: `Niko_${version}_x64-setup.exe`,
-  windowsMsi: `Niko_${version}_x64_en-US.msi`
+  windowsExe: `Niko_${version}_x64-setup.exe`
 };
 
 rmSync(output, { recursive: true, force: true });
@@ -89,8 +88,7 @@ const html = readFileSync(indexPath, "utf8")
   .replaceAll("__NIKO_VERSION__", version)
   .replaceAll("__NIKO_RELEASE_TAG__", releaseTag)
   .replaceAll("__NIKO_MAC_DMG__", releaseAssets.macDmg)
-  .replaceAll("__NIKO_WINDOWS_EXE__", releaseAssets.windowsExe)
-  .replaceAll("__NIKO_WINDOWS_MSI__", releaseAssets.windowsMsi);
+  .replaceAll("__NIKO_WINDOWS_EXE__", releaseAssets.windowsExe);
 writeFileSync(indexPath, html);
 for (const required of [
   'src="/assets/niko-wordmark.svg"',

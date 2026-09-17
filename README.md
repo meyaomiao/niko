@@ -82,7 +82,7 @@ Niko 是桌面端接入工具（应用内称「Niko 登录器」）。它不提�
 | 平台 | 系统要求 | 安装包 | 说明 |
 | --- | --- | --- | --- |
 | macOS | macOS 12 或更高版本 | `.dmg` | 支持 Apple Silicon 和 Intel，发布包已签名并公证 |
-| Windows | Windows 10 或更高版本 | `*_setup.exe` / `.msi` | 当前发布包暂未做代码签名 |
+| Windows | Windows 10 或更高版本 | `*_setup.exe` | 当前发布包暂未做代码签名 |
 
 Windows 首次安装时可能出现 SmartScreen 提示。点击「更多信息」，再点击「仍要运行」即可继续安装。
 
