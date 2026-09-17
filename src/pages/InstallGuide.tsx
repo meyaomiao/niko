@@ -158,36 +158,13 @@ export default function InstallGuide() {
                 desc="从 claude.com/download 下载安装。接入的是其内置的 Claude Code 功能。"
               />
               <TargetInstall
-                name="Claude Code CLI"
-                desc="命令行工具，需要 Node.js 18+。终端里运行："
-                command="npm install -g @anthropic-ai/claude-code"
+                name="DSH"
+                desc="DeepSeek Harness 工作台。需要 Node.js 20+，终端里运行："
+                command="npm install -g @deepseek-ai/dsh"
               />
               <TargetInstall
-                name="Grok Build CLI"
-                desc={
-                  platform === "macos"
-                    ? "用 xAI 官方安装器（或 Node.js 20+ 时用 npm）："
-                    : "Windows 用 npm 安装（需要 Node.js 20+）："
-                }
-                command={
-                  platform === "macos"
-                    ? "curl -fsSL https://x.ai/cli/install.sh | bash"
-                    : "npm install -g @xai-official/grok"
-                }
-                altCommand={platform === "macos" ? "npm install -g @xai-official/grok" : undefined}
-              />
-              <TargetInstall
-                name="Antigravity CLI"
-                desc={
-                  platform === "macos"
-                    ? "Google 官方安装器（接入后仅支持 Gemini 系模型）："
-                    : "PowerShell 运行 Google 官方安装器（接入后仅支持 Gemini 系模型）："
-                }
-                command={
-                  platform === "macos"
-                    ? "curl -fsSL https://antigravity.google/cli/install.sh | bash"
-                    : "irm https://antigravity.google/cli/install.ps1 | iex"
-                }
+                name="ZCode"
+                desc="从 zcode.z.ai 下载桌面应用。接入后请在 ZCode 里选择 Niko / momotoken。"
               />
             </div>
           </div>

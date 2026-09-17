@@ -9,6 +9,20 @@ use std::path::{Path, PathBuf};
 use crate::commands::snapshots::save_backup;
 use crate::fsx;
 
+mod dsh;
+mod yamlx;
+mod zcode;
+
+pub(crate) use dsh::{
+    dsh_credentials_path, dsh_drift, dsh_effective, dsh_port_open, dsh_restore, dsh_settings_path,
+    observe_dsh_config, open_dsh_in_browser, spawn_dsh_web, wait_for_dsh_port, DshTarget,
+    DSH_TARGET_ID,
+};
+pub(crate) use zcode::{
+    observe_zcode_config, zcode_app_path, zcode_config_file, zcode_drift, zcode_effective,
+    zcode_restore, ZcodeTarget, ZCODE_TARGET_ID,
+};
+
 // ─── 公共结构 ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,7 +386,7 @@ fn merge_json_env(path: &Path, vars: &[(&str, String)]) -> Result<Vec<String>, S
     Ok(changed)
 }
 
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     user_home_dir()
 }
 
@@ -443,7 +457,7 @@ fn dirs_home() -> PathBuf {
 const CODEX_APP_NAMES: &[&str] = &["ChatGPT.app", "Codex.app", "OpenAI Codex.app"];
 
 #[cfg(target_os = "macos")]
-fn macos_app_exists(names: &[&str]) -> bool {
+pub(crate) fn macos_app_exists(names: &[&str]) -> bool {
     let user_apps = home_dir().join("Applications");
     names.iter().any(|name| {
         Path::new("/Applications").join(name).exists() || user_apps.join(name).exists()
@@ -464,7 +478,7 @@ fn windows_app_exists(candidates: &[(&str, &str)]) -> bool {
 
 /// 已安装 App 的 bundle 路径（用于提取真实应用图标）
 #[cfg(target_os = "macos")]
-fn macos_app_path(names: &[&str]) -> Option<PathBuf> {
+pub(crate) fn macos_app_path(names: &[&str]) -> Option<PathBuf> {
     let user_apps = home_dir().join("Applications");
     names.iter().find_map(|name| {
         let system = Path::new("/Applications").join(name);
@@ -493,6 +507,7 @@ pub fn app_launch_path(target_id: &str) -> Option<PathBuf> {
         match target_id {
             "codex" => macos_app_path(CODEX_APP_NAMES),
             "claude-desktop" => macos_app_path(&["Claude.app"]),
+            "zcode" => zcode_app_path(),
             _ => None,
         }
     }
@@ -506,6 +521,7 @@ pub fn app_launch_path(target_id: &str) -> Option<PathBuf> {
                 ("Codex", "Codex.exe"),
             ]),
             "claude-desktop" => windows_app_path(&[("AnthropicClaude", "claude.exe")]),
+            "zcode" => zcode_app_path(),
             _ => None,
         }
     }
@@ -519,7 +535,7 @@ pub fn app_launch_path(target_id: &str) -> Option<PathBuf> {
 /// 从已安装的 App 里取真实图标，转成 PNG 后以 data URI 返回。
 /// 已安装时优先使用本机应用包里的图标，确保与用户实际安装的版本一致。
 #[cfg(target_os = "macos")]
-fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
+pub(crate) fn macos_app_icon_data_uri(names: &[&str]) -> Option<String> {
     static ICON_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
@@ -676,7 +692,7 @@ pub struct ClaudeDesktopTarget;
 
 /// Claude Code 会自己在 `ANTHROPIC_BASE_URL` 后拼 `/v1/messages`，所以这里必须去掉
 /// 末尾的 `/v1`，否则请求路径变成 `/v1/v1/messages`，上游直接 404。
-fn claude_base_url(base_url: &str) -> String {
+pub(crate) fn claude_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_owned()
 }
@@ -991,7 +1007,7 @@ impl ClaudeCliTarget {
 }
 
 /// 在常见安装位置与 PATH 里找 CLI 可执行文件（claude / grok 等共用）
-fn find_cli_executable(name: &str, extra_candidates: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn find_cli_executable(name: &str, extra_candidates: &[PathBuf]) -> Option<PathBuf> {
     let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
     if let Some(found) = extra_candidates
         .iter()
@@ -1335,6 +1351,9 @@ impl Target for AntigravityTarget {
 
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
+/// 首页与「全部接入」只展示能打开界面的目标。CLI 仍注册在 all_targets，供设置页快照恢复。
+pub const PRODUCT_TARGET_IDS: &[&str] = &["codex", "claude-desktop", "dsh", "zcode"];
+
 pub fn all_targets() -> Vec<Box<dyn Target>> {
     vec![
         Box::new(CodexTarget),
@@ -1342,7 +1361,16 @@ pub fn all_targets() -> Vec<Box<dyn Target>> {
         Box::new(ClaudeCliTarget),
         Box::new(GrokTarget),
         Box::new(AntigravityTarget),
+        Box::new(DshTarget),
+        Box::new(ZcodeTarget),
     ]
+}
+
+pub fn product_targets() -> Vec<Box<dyn Target>> {
+    all_targets()
+        .into_iter()
+        .filter(|target| PRODUCT_TARGET_IDS.contains(&target.id()))
+        .collect()
 }
 
 pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
@@ -1359,6 +1387,8 @@ pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
         }
         "grok" => Ok(vec![grok_config_path()]),
         "antigravity" => Ok(vec![agy_settings_path()]),
+        "dsh" => Ok(vec![dsh_settings_path(), dsh_credentials_path()]),
+        "zcode" => Ok(vec![zcode_config_file()]),
         other => Err(format!("unknown transaction target: {other}")),
     }
 }
@@ -1369,6 +1399,14 @@ pub fn preflight_target_apply(target_id: &str) -> Result<(), String> {
             continue;
         }
         let raw = fs::read_to_string(&path).map_err(|_| "target settings unreadable".to_owned())?;
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+        {
+            yamlx::yaml_mapping_or_err(&raw, "target settings")?;
+            continue;
+        }
         let value: Value = serde_json::from_str(&raw)
             .map_err(|_| "target settings malformed".to_owned())?;
         let object = value
@@ -1487,6 +1525,8 @@ pub fn effective_config(target_id: &str) -> Result<EffectiveConfig, String> {
                 auth_style: "google:gemini".to_owned(),
             })
         }
+        "dsh" => dsh_effective(),
+        "zcode" => zcode_effective(),
         other => Err(format!("未知目标: {other}")),
     }
 }
@@ -1554,7 +1594,7 @@ fn json_model(value: &Value) -> Result<Option<String>, ()> {
     }
 }
 
-fn matchable_target_config(
+pub(crate) fn matchable_target_config(
     target_id: &str,
     endpoint: &str,
     auth_style: &str,
@@ -1859,6 +1899,8 @@ pub(crate) fn observe_active_config_at(
         "claude-cli" => observe_claude_settings(home, target_id),
         "grok" => observe_grok_config(home),
         "antigravity" => observe_agy_config(home),
+        "dsh" => observe_dsh_config(home),
+        "zcode" => observe_zcode_config(home),
         _ => TargetConfigObservation::Unreadable,
     }
 }
@@ -1930,6 +1972,32 @@ pub(crate) fn expected_config_digest_at(
                 &endpoint,
                 "google:gemini",
                 None,
+                &plan.api_key,
+            ))
+        }
+        "dsh" => {
+            let endpoint = format!(
+                "{}/chat/completions",
+                dsh::dsh_openai_base_url(&plan.base_url).trim_end_matches('/')
+            );
+            Ok(crate::active_groups::config_digest(
+                DSH_TARGET_ID,
+                &endpoint,
+                "openai-chat",
+                plan.model.as_deref(),
+                &plan.api_key,
+            ))
+        }
+        "zcode" => {
+            let endpoint = format!(
+                "{}/v1/messages",
+                claude_base_url(&plan.base_url).trim_end_matches('/')
+            );
+            Ok(crate::active_groups::config_digest(
+                ZCODE_TARGET_ID,
+                &endpoint,
+                "anthropic",
+                plan.model.as_deref(),
                 &plan.api_key,
             ))
         }
@@ -2043,6 +2111,12 @@ pub fn restore_defaults(target_id: &str) -> Result<ApplySummary, String> {
                 &path,
                 &["modelProvider"],
             )?);
+        }
+        "dsh" => {
+            changed.append(&mut dsh_restore()?);
+        }
+        "zcode" => {
+            changed.append(&mut zcode_restore()?);
         }
         other => return Err(format!("未知目标: {other}")),
     }
@@ -2233,6 +2307,12 @@ pub(crate) fn check_drift_at(
             }
             // 环境变量不进漂移检测：Niko 进程内读不到用户 shell 的最新值，
             // 误报比漏报更伤体验；以 effective_config 的连通性测试为准
+        }
+        "dsh" => {
+            mismatched.append(&mut dsh_drift(h, plan));
+        }
+        "zcode" => {
+            mismatched.append(&mut zcode_drift(h, plan));
         }
         other => return Err(format!("未知目标: {other}")),
     }

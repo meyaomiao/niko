@@ -8,7 +8,9 @@ use crate::codex_sessions::{
 };
 use crate::commands::codex_sessions::recover_codex_session_storage_since;
 use crate::commands::safe_error::SafeCommandError;
-use crate::targets::{all_targets, preflight_target_apply, transaction_paths, ApplyPlan};
+use crate::targets::{
+    all_targets, preflight_target_apply, product_targets, transaction_paths, ApplyPlan,
+};
 use serde::{de::Deserializer, Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -316,7 +318,10 @@ fn provider_transaction_paths_for_targets(
     let mut paths = Vec::new();
     for target_id in target_ids {
         if target_id != "codex" {
-            if !matches!(target_id.as_str(), "claude-desktop" | "claude-cli" | "grok" | "antigravity") {
+            if !matches!(
+                target_id.as_str(),
+                "claude-desktop" | "claude-cli" | "grok" | "antigravity" | "dsh" | "zcode"
+            ) {
                 return Err(SafeCommandError::invalid_request());
             }
             paths.extend(
@@ -354,8 +359,15 @@ fn validate_provider_transaction_shape(
     }
 
     // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单
-    const CANONICAL_ORDER: &[&str] =
-        &["codex", "claude-desktop", "claude-cli", "grok", "antigravity"];
+    const CANONICAL_ORDER: &[&str] = &[
+        "codex",
+        "claude-desktop",
+        "claude-cli",
+        "grok",
+        "antigravity",
+        "dsh",
+        "zcode",
+    ];
     let valid_target_order = !target_ids.is_empty()
         && target_ids.iter().all(|id| CANONICAL_ORDER.contains(&id.as_str()))
         && {
@@ -674,7 +686,7 @@ fn rollback_provider_transaction(
 #[tauri::command]
 pub async fn list_targets() -> Result<Vec<TargetInfo>, SafeCommandError> {
     let _guard = lock_provider_transaction_readonly()?;
-    let infos = all_targets()
+    let infos = product_targets()
         .iter()
         .map(|t| TargetInfo {
             id: t.id().to_owned(),
@@ -859,67 +871,26 @@ pub async fn apply_all_targets(
         model,
         codex_mixed: codex_mixed.unwrap_or(false),
     };
-    let targets = all_targets();
-    let codex = targets
+    let targets = product_targets();
+    let installed: Vec<_> = targets
         .iter()
-        .find(|target| target.id() == "codex" && target.is_installed());
-    let claude = targets
-        .iter()
-        .find(|target| target.id() == "claude-desktop" && target.is_installed());
-    let claude_cli = targets
-        .iter()
-        .find(|target| target.id() == "claude-cli" && target.is_installed());
-    let grok = targets
-        .iter()
-        .find(|target| target.id() == "grok" && target.is_installed());
-    let antigravity = targets
-        .iter()
-        .find(|target| target.id() == "antigravity" && target.is_installed());
-    if codex.is_none()
-        && claude.is_none()
-        && claude_cli.is_none()
-        && grok.is_none()
-        && antigravity.is_none()
-    {
+        .filter(|target| target.is_installed())
+        .collect();
+    if installed.is_empty() {
         return Ok(Vec::new());
     }
-
-    let mut target_ids = Vec::new();
-    if codex.is_some() {
-        target_ids.push("codex".to_owned());
-    }
-    if claude.is_some() {
-        target_ids.push("claude-desktop".to_owned());
-    }
-    if claude_cli.is_some() {
-        target_ids.push("claude-cli".to_owned());
-    }
-    if grok.is_some() {
-        target_ids.push("grok".to_owned());
-    }
-    if antigravity.is_some() {
-        target_ids.push("antigravity".to_owned());
-    }
+    let target_ids: Vec<String> = installed
+        .iter()
+        .map(|target| target.id().to_owned())
+        .collect();
+    let has_codex = installed.iter().any(|target| target.id() == "codex");
     let records = records_for_plan(&target_ids, &plan)?;
-    let known_codex_transactions = if codex.is_some() {
-        Vec::new()
-    } else {
-        Vec::new()
-    };
-    if claude.is_some() {
-        preflight_target_apply("claude-desktop")
-            .map_err(|_| SafeCommandError::change_failed(false))?;
-    }
-    if claude_cli.is_some() {
-        preflight_target_apply("claude-cli")
-            .map_err(|_| SafeCommandError::change_failed(false))?;
-    }
-    if grok.is_some() {
-        preflight_target_apply("grok").map_err(|_| SafeCommandError::change_failed(false))?;
-    }
-    if antigravity.is_some() {
-        preflight_target_apply("antigravity")
-            .map_err(|_| SafeCommandError::change_failed(false))?;
+    let known_codex_transactions = Vec::new();
+    for target_id in &target_ids {
+        if target_id != "codex" {
+            preflight_target_apply(target_id)
+                .map_err(|_| SafeCommandError::change_failed(false))?;
+        }
     }
 
     let paths = provider_transaction_paths_for_targets(&target_ids)?;
@@ -927,7 +898,7 @@ pub async fn apply_all_targets(
         &provider_transaction_root(),
         &paths,
         known_codex_transactions,
-        Some(target_ids),
+        Some(target_ids.clone()),
     )?;
 
     if let Err(error) = write_active_records(&records) {
@@ -938,8 +909,8 @@ pub async fn apply_all_targets(
         return Err(rollback_provider_transaction(&manifest, error));
     }
 
-    let mut claude_summaries: Vec<_> = Vec::new();
-    for extra_target in [claude, claude_cli, grok, antigravity].into_iter().flatten() {
+    let mut extra_summaries: Vec<_> = Vec::new();
+    for extra_target in installed.iter().filter(|target| target.id() != "codex") {
         let summary = match extra_target.apply(&plan) {
             Ok(summary) => summary,
             Err(_) => {
@@ -949,21 +920,26 @@ pub async fn apply_all_targets(
                 ))
             }
         };
-        claude_summaries.push(summary);
+        extra_summaries.push(summary);
     }
-    if !claude_summaries.is_empty() {
+    if !extra_summaries.is_empty() {
         manifest.phase = ProviderTransactionPhase::ClaudeApplied;
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
     }
 
-    let codex_result = if let Some(codex) = codex {
+    let codex_result = if has_codex {
         manifest.phase = ProviderTransactionPhase::CodexStarted;
         if let Err(error) = persist_provider_manifest(&provider_transaction_root(), &manifest) {
             return Err(rollback_provider_transaction(&manifest, error));
         }
-        let summary = match codex.apply(&plan) {
+        let summary = match installed
+            .iter()
+            .find(|target| target.id() == "codex")
+            .ok_or_else(SafeCommandError::invalid_request)?
+            .apply(&plan)
+        {
             Ok(summary) => summary,
             Err(_) => {
                 return Err(rollback_provider_transaction(
@@ -990,7 +966,7 @@ pub async fn apply_all_targets(
     if let Some(outcome) = codex_result {
         result.push(outcome);
     }
-    for summary in claude_summaries {
+    for summary in extra_summaries {
         result.push(serde_json::json!({
             "id": summary.target_id,
             "ok": true,
@@ -1101,6 +1077,14 @@ pub async fn test_connectivity(target_id: String) -> Result<ConnectivityResult, 
                 "model": model,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}]
+            })),
+        "openai-chat" => client
+            .post(&cfg.endpoint)
+            .header("Authorization", format!("Bearer {}", cfg.api_key))
+            .json(&serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1
             })),
         _ => client
             .post(&cfg.endpoint)

@@ -101,6 +101,9 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
 /// 超时仍在运行则直接放弃启动并报错，避免出现两个实例。
 #[tauri::command]
 pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCommandError> {
+    if target_id == "dsh" {
+        return open_dsh_target();
+    }
     let path = crate::targets::app_launch_path(&target_id)
         .ok_or_else(SafeCommandError::invalid_request)?;
 
@@ -118,6 +121,34 @@ pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCom
 
     // 重启只负责重启目标应用；会话同步由会话管理页显式执行，不能阻塞启动。
     restart_after_close(|| Ok(()), || launch_app(&path).map_err(|_| ()), was_running)
+}
+
+fn open_dsh_target() -> Result<RestartOutcome, SafeCommandError> {
+    use crate::targets::{dsh_port_open, open_dsh_in_browser, spawn_dsh_web, wait_for_dsh_port};
+    let was_running = dsh_port_open();
+    if !was_running {
+        spawn_dsh_web().map_err(|_| SafeCommandError::change_failed(false))?;
+        if !wait_for_dsh_port(40, std::time::Duration::from_millis(250)) {
+            return Ok(RestartOutcome {
+                status: "applied_needs_manual_open",
+                message: "DSH 还没有起来，请手动运行 dsh web 后再打开。",
+            });
+        }
+    }
+    if open_dsh_in_browser().is_err() {
+        return Ok(RestartOutcome {
+            status: "applied_needs_manual_open",
+            message: "设置已保存，请手动打开 DSH 页面。",
+        });
+    }
+    Ok(RestartOutcome {
+        status: "applied",
+        message: if was_running {
+            "已打开 DSH。"
+        } else {
+            "已启动并打开 DSH。"
+        },
+    })
 }
 
 /// 请求目标应用正常退出，不改动应用配置或会话内容。

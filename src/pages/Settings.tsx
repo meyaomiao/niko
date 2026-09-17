@@ -58,9 +58,19 @@ const TARGET_LABELS: Record<string, string> = {
   "claude-cli": "Claude Code CLI",
   "grok": "Grok Build CLI",
   "antigravity": "Antigravity CLI",
+  dsh: "DSH",
+  zcode: "ZCode",
 };
 
-const ALL_TARGET_IDS = ["codex", "claude-desktop", "claude-cli", "grok", "antigravity"];
+const ALL_TARGET_IDS = [
+  "codex",
+  "claude-desktop",
+  "dsh",
+  "zcode",
+  "claude-cli",
+  "grok",
+  "antigravity",
+];
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString("zh-CN", {

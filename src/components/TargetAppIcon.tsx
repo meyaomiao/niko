@@ -32,6 +32,14 @@ const TARGET_FALLBACKS: Record<string, { icon?: string; label: string; className
     label: "✦",
     className: "bg-[var(--nk-info-soft)] text-[var(--nk-info)]",
   },
+  dsh: {
+    label: "D",
+    className: "bg-[var(--nk-info-soft)] text-[var(--nk-info)]",
+  },
+  zcode: {
+    label: "Z",
+    className: "bg-[var(--nk-warning-soft)] text-[var(--nk-accent)]",
+  },
 };
 
 export default function TargetAppIcon({
