@@ -19,6 +19,11 @@ import {
 } from "../src/js/desktop-verification.js";
 import { ApiError, friendlyApiError, isRetryableApiError } from "../src/js/api.js";
 
+test("desktop updater endpoint is short-cached JSON", () => {
+  const headers = readFileSync(new URL("../src/_headers", import.meta.url), "utf8");
+  assert.match(headers, /\/latest\.json\n\s+Cache-Control: public, max-age=60/);
+});
+
 test("website error copy hides server details and gives one next step", () => {
   assert.equal(
     friendlyApiError(new ApiError("HTTP 401: API Key invalid", { status: 401, code: "SESSION_EXPIRED" })),

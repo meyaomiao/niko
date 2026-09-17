@@ -567,7 +567,7 @@ sequenceDiagram
 
 ### 11.3 自动更新
 
-用 Tauri 内置 updater，更新源放 momotoken 自己的静态资源，签名用 Tauri 的 minisign 密钥对（与平台代码签名无关，Windows 未签名也能安全校验更新包完整性）。`min_supported_version` 触发强制更新，其余走静默检查加提示。
+用 Tauri 内置 updater。设置页「检查更新」在应用内完成检查、下载、安装并重启；强制升级页同样走这条路径，失败时才打开官网。更新清单首选 `https://niko-ai.cc/latest.json`，GitHub Release 的 `latest.json` 作为后备。签名用 Tauri 的 minisign 密钥对（与平台代码签名无关，Windows 未签名也能安全校验更新包完整性）。清单平台键必须是 `{os}-{arch}`（macOS universal 包同时挂 `darwin-aarch64` 与 `darwin-x86_64`），`darwin-universal` 不是合法键。`min_supported_version` 触发强制更新。
 
 ## 12. Epic 与子 Issue
 

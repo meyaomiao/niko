@@ -11,6 +11,8 @@
 
 浏览器不会直接请求 momotoken，也不会持有上游 `session_token`。Niko 不保存用户、余额、订单或账单副本。
 
+桌面端应用内更新读取 `https://niko-ai.cc/latest.json`。该地址由 Pages Function 代理 GitHub 最新清单，并把历史发布里的 `darwin-universal` 改写成 `darwin-aarch64` / `darwin-x86_64`，供 Tauri updater 查找。
+
 ## 本地运行
 
 ```bash
