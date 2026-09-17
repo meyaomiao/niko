@@ -18,6 +18,51 @@ import {
   verificationCallbackUrl,
 } from "../src/js/desktop-verification.js";
 import { ApiError, friendlyApiError, isRetryableApiError } from "../src/js/api.js";
+import { usageCopy } from "../src/js/ops.js";
+
+test("ops page stays out of search and robots", () => {
+  const robots = readFileSync(new URL("../src/robots.txt", import.meta.url), "utf8");
+  const opsPage = readFileSync(new URL("../src/ops/index.html", import.meta.url), "utf8");
+  assert.match(robots, /Disallow: \/ops\//);
+  assert.match(opsPage, /noindex, nofollow/);
+});
+
+test("ops page uses a dedicated dashboard layout instead of account chrome", () => {
+  const opsPage = readFileSync(new URL("../src/ops/index.html", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../src/account.css", import.meta.url), "utf8");
+  assert.match(opsPage, /class="ops-gate"/);
+  assert.match(opsPage, /class="ops-metrics"/);
+  assert.doesNotMatch(opsPage, /account-overview|profile-strip|auth-panel|trust-points|option-list/);
+  assert.match(styles, /\.ops-gate \{/);
+  assert.match(styles, /width: min\(420px, 100%\)/);
+});
+
+test("ops usage copy summarizes live devices and installer downloads", () => {
+  const copy = usageCopy({
+    online: {
+      total: 3,
+      macos: 2,
+      windows: 1,
+      linux: 0,
+      by_version: { "0.2.2": 3 },
+    },
+    downloads: {
+      installers: 9,
+      macos: 4,
+      windows: 5,
+      by_release: [{ tag: "niko-v0.2.2", installers: 9, macos: 4, windows: 5 }],
+    },
+    generated_at: "2026-09-16T00:00:00.000Z",
+    window_seconds: 180,
+  });
+  assert.equal(copy.onlineTotal, "3");
+  assert.equal(copy.downloadTotal, "9");
+  assert.equal(copy.window, "3 分钟");
+  assert.match(copy.onlineBreakdown, /macOS 2/);
+  assert.match(copy.downloadBreakdown, /不含自动更新文件/);
+  assert.deepEqual(copy.versions, ["v0.2.2 3 台"]);
+  assert.equal(copy.releases[0]?.tag, "niko-v0.2.2");
+});
 
 test("desktop updater endpoint is short-cached JSON", () => {
   const headers = readFileSync(new URL("../src/_headers", import.meta.url), "utf8");

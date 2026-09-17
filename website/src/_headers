@@ -20,6 +20,10 @@
 /account/*
   Cache-Control: public, max-age=0, must-revalidate
 
+/ops/*
+  Cache-Control: no-store
+  X-Robots-Tag: noindex, nofollow
+
 /payment/*
   Cache-Control: public, max-age=0, must-revalidate
 

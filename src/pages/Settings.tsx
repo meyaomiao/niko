@@ -11,6 +11,7 @@ import {
   installAvailableUpdate,
 } from "../lib/appUpdate";
 import { desktopUpdaterAdapter } from "../lib/appUpdateRuntime";
+import { usageSummary, type UsageStats } from "../lib/usageStats";
 import Logo from "../components/Logo";
 import {
   ArrowLeftIcon,
@@ -113,6 +114,14 @@ export default function Settings() {
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updatePercent, setUpdatePercent] = useState<number | null>(null);
+
+  // 使用情况：连点版本号 7 次后解锁
+  const [versionClicks, setVersionClicks] = useState(0);
+  const [usageUnlocked, setUsageUnlocked] = useState(false);
+  const [opsSecret, setOpsSecret] = useState("");
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
 
   // Codex 会话状态与整理
   const [codexInventory, setCodexInventory] = useState<CodexSessionPage | null>(null);
@@ -241,6 +250,33 @@ export default function Settings() {
     }
   };
 
+  const revealUsage = () => {
+    const next = versionClicks + 1;
+    setVersionClicks(next);
+    if (next >= 7) {
+      setUsageUnlocked(true);
+    }
+  };
+
+  const loadUsageStats = async () => {
+    const secret = opsSecret.trim();
+    if (secret.length < 16) {
+      setUsageError("请输入有效的访问口令。");
+      return;
+    }
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const stats = await invoke<UsageStats>("fetch_usage_stats", { secret });
+      setUsageStats(stats);
+    } catch (e) {
+      setUsageStats(null);
+      setUsageError(safeFailure(e).message);
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
   const checkUpdate = async () => {
     setCheckingUpdate(true);
     setUpdateStatus(null);
@@ -319,6 +355,7 @@ export default function Settings() {
   };
 
   const hasAnySnapshot = Object.keys(snapshots).length > 0;
+  const usageView = usageStats ? usageSummary(usageStats) : null;
 
   return (
     <div className="nk-shell">
@@ -572,9 +609,14 @@ export default function Settings() {
             <div className="flex items-center gap-2">
               <Logo size={24} />
               <div>
-                <p className="text-xs text-gray-700 dark:text-gray-200">
+                <button
+                  type="button"
+                  onClick={revealUsage}
+                  className="text-left text-xs text-gray-700 dark:text-gray-200"
+                  aria-label={`登录器 v${BRAND.version}`}
+                >
                   登录器 v{BRAND.version}
-                </p>
+                </button>
                 <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-500">{BRAND.tagline}</p>
               </div>
             </div>
@@ -604,6 +646,51 @@ export default function Settings() {
               </div>
             )}
           </section>
+
+          {usageUnlocked && (
+            <section className={CARD}>
+              <h2 className={`mb-3 ${OVERLINE}`}>使用情况</h2>
+              <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                正在使用按最近三分钟内的匿名心跳统计；已下载只计 GitHub 安装包次数。
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={opsSecret}
+                  onChange={(e) => setOpsSecret(e.target.value)}
+                  className="nk-input min-w-0 flex-1 text-xs"
+                  placeholder="访问口令"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => void loadUsageStats()}
+                  disabled={usageLoading}
+                  className="nk-btn-primary"
+                >
+                  {usageLoading ? "读取中…" : "查看"}
+                </button>
+              </div>
+              {usageError && (
+                <p className="nk-alert-danger mt-3" role="alert">{usageError}</p>
+              )}
+              {usageView && (
+                <div className="mt-4 space-y-3 text-sm text-gray-700 dark:text-gray-300">
+                  <p>
+                    正在使用 <span className="text-gray-900 dark:text-white">{usageView.onlineTotal}</span> 台
+                    <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{usageView.onlineBreakdown}</span>
+                  </p>
+                  <p>
+                    安装包下载 <span className="text-gray-900 dark:text-white">{usageView.downloadTotal}</span> 次
+                    <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{usageView.downloadBreakdown}</span>
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {usageView.windowMinutes} 分钟窗口 · 更新于 {usageView.generatedAt}
+                  </p>
+                </div>
+              )}
+            </section>
+          )}
 
         </div>
       </main>

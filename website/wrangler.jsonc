@@ -8,5 +8,11 @@
     "NIKO_TURNSTILE_SITE_KEY": "0x4AAAAAAD_7tPGZn65hZ-Ov",
     "NIKO_PAYMENT_ALLOWED_ORIGINS": "https://api.kyrenpay.com",
     "NIKO_PAYMENT_REDIRECT_ORIGINS": "https://payment.kyren.io"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "NIKO_PRESENCE",
+      "id": "f15147c8798a44c0b94012f07aef26b2"
+    }
+  ]
 }

@@ -19,6 +19,7 @@
     "test:sessions": "node --experimental-strip-types --test tests/codexSessions.test.ts",
     "test:station": "node --experimental-strip-types --test tests/station.test.ts tests/newapi.test.ts",
     "test:update": "node --experimental-strip-types --test tests/appUpdate.test.ts",
+    "test:usage": "node --experimental-strip-types --test tests/usageStats.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
