@@ -75,8 +75,9 @@ fn find_dsh_executable() -> Option<PathBuf> {
             list.push(PathBuf::from(local).join("dsh").join("dsh.exe"));
         }
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            list.push(PathBuf::from(appdata).join("npm").join("dsh.cmd"));
-            list.push(PathBuf::from(appdata).join("npm").join("dsh.exe"));
+            let npm = PathBuf::from(appdata).join("npm");
+            list.push(npm.join("dsh.cmd"));
+            list.push(npm.join("dsh.exe"));
         }
         list
     };
