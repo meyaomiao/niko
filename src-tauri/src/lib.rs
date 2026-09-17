@@ -4,6 +4,7 @@ mod commands;
 mod credentials;
 mod fsx;
 mod logx;
+mod presence;
 mod providers;
 mod targets;
 
@@ -22,6 +23,7 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
             fit_main_window_to_screen(app);
+            crate::presence::spawn_heartbeat();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -71,6 +73,7 @@ pub fn run() {
             commands::codex_sessions::normalize_codex_session_storage,
             commands::codex_sessions::normalize_codex_session_storage_selected,
             commands::codex_sessions::open_codex_thread,
+            crate::presence::fetch_usage_stats,
             autostart_enable,
             autostart_disable,
             autostart_is_enabled,

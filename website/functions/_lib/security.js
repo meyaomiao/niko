@@ -12,7 +12,7 @@ export class HttpError extends Error {
   }
 }
 
-function bytesToHex(bytes) {
+export function bytesToHex(bytes) {
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
@@ -64,7 +64,7 @@ export function clearCsrfCookie() {
   return `${CSRF_COOKIE}=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax`;
 }
 
-function constantTimeEqual(left, right) {
+export function constantTimeEqual(left, right) {
   if (typeof left !== "string" || typeof right !== "string" || left.length !== right.length) {
     return false;
   }
@@ -114,7 +114,7 @@ export function sessionMaxAge(env, upstreamPayload) {
   return clampInteger(source?.session_expires_in, configured, 300, configured);
 }
 
-async function sha256Hex(value) {
+export async function sha256Hex(value) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
   return bytesToHex(new Uint8Array(digest));
 }

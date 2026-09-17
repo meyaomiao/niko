@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /ops/
 
 Sitemap: https://niko-ai.cc/sitemap.xml

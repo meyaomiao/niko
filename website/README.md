@@ -39,6 +39,11 @@ npm run dev
 - `NIKO_SESSION_COOKIE_MAX_AGE`：Cookie 最长秒数，默认 7 天，上限 30 天；不会延长上游 Session。
 - `NIKO_UPSTREAM_TIMEOUT_MS`：上游超时，默认 10 秒，范围 2–20 秒。
 - `NIKO_LOCAL_TURNSTILE_DISABLED`：仅 `localhost` 本地页面 Mock 使用，生产域名无效。
+- `NIKO_OPS_SECRET`：使用情况看板口令，至少 16 字节，必须使用 Pages Secret。桌面端设置页连点版本号 7 次后也可输入同一口令查看。
+
+KV 绑定：
+
+- `NIKO_PRESENCE`：匿名心跳存储。本项目用 `wrangler pages deploy`，绑定写在 `wrangler.jsonc` 的 `kv_namespaces`，Dashboard Bindings 页不能新增。未绑定时代码会返回「使用情况尚未完成配置」，不影响账户 BFF。
 
 ## 浏览器会话
 
@@ -96,6 +101,11 @@ npm run dev
 - `GET /api/niko/v1/wallet/topup-orders/:order_id`
 
 另有仅由 BFF 提供的 `GET /api/niko/v1/config`，用于初始化 CSRF Cookie 和公开 Turnstile Site Key。
+
+使用情况接口不经过 momotoken，由本站 Pages Functions 直接处理：
+
+- `POST /api/presence/heartbeat`：桌面端匿名心跳。只接受 `install_id`、`platform`、`app_version`。服务端把安装标识哈希后写入 KV，TTL 180 秒。
+- `GET /api/presence/stats`：下载次数与正在使用人数。需要 `Authorization: Bearer <NIKO_OPS_SECRET>`。下载次数来自 GitHub Releases 的 DMG / EXE / MSI，不含自动更新文件。
 
 ## 数据契约
 
