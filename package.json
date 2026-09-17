@@ -17,6 +17,7 @@
     "test:smoke": "node --experimental-strip-types --test tests/renderSmoke.test.ts",
     "test:registration": "node --experimental-strip-types --test tests/registration.test.ts",
     "test:sessions": "node --experimental-strip-types --test tests/codexSessions.test.ts",
+    "test:station": "node --experimental-strip-types --test tests/station.test.ts tests/newapi.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -55,6 +55,15 @@ export function friendlyDesktopError(value: unknown): string {
 export function friendlyLoginError(value: unknown): string {
   const { code, message } = errorParts(value);
   const text = `${code} ${message}`.toLowerCase();
+  if (code === "need_user_id" || /need_user_id|my-api-user|new-api-user|用户\s*id/.test(text)) {
+    return "该中转站还需要填写数字用户 ID。可在控制台个人中心查看。";
+  }
+  if (code === "not_newapi" || /不像 new-api|不是 new-api/.test(text)) {
+    return "这个地址不像 new-api 中转站，请确认站点地址后重试。";
+  }
+  if (code === "auth" || /系统访问令牌|access.?token 无效/.test(text)) {
+    return "系统访问令牌无效或已过期，请到中转站控制台重新生成。";
+  }
   if (/设备.*上限|device.?limit|too many devices/.test(text)) {
     return "登录设备已达到上限，请退出不再使用的设备后再试。";
   }

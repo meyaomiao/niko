@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, saveAuth } from "../store/auth";
+import { isNewApiAuth, stationOrigin } from "../lib/station";
 import { api, type PayMethod, type TopUpInfo, type TopUpRecord } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { ArrowLeftIcon } from "../components/Icons";
@@ -133,6 +134,11 @@ export default function TopUp() {
       navigate("/login", { replace: true });
       return;
     }
+    if (isNewApiAuth(auth)) {
+      setLoading(false);
+      setHistoryLoading(false);
+      return;
+    }
     (async () => {
       try {
         const data = await api.topupInfo(token);
@@ -209,6 +215,33 @@ export default function TopUp() {
       setSubmitting(false);
     }
   };
+
+  if (isNewApiAuth(auth)) {
+    return (
+      <div className="nk-shell">
+        <header className="nk-header">
+          <button
+            onClick={() => navigate("/home")}
+            aria-label="返回首页"
+            className="nk-btn-ghost px-2.5"
+          >
+            <ArrowLeftIcon />
+          </button>
+          <h1 className={TITLE}>充值</h1>
+        </header>
+        <main className="nk-page">
+          <div className="mx-auto max-w-3xl">
+            <div className={CARD}>
+              <p className={TITLE}>请到中转站控制台充值</p>
+              <p className={`mt-1 ${SUBTLE}`}>
+                当前连接的是第三方 new-api 站点，Niko 不会代收或代下单。请打开 {stationOrigin(auth)} 完成充值。
+              </p>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="nk-shell">

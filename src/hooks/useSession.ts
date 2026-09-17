@@ -22,12 +22,18 @@ export function useSession() {
       const data = await api.bootstrap(auth.accessToken);
       refreshAuthMeta({ quota: data.user.quota, defaultGroup: data.user.group });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      // 401 / token 失效时踢出
-      if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("未登录") || msg.includes("token")) {
+      const payload = err && typeof err === "object" ? err as { code?: string; message?: string } : {};
+      const msg = `${payload.code ?? ""} ${payload.message ?? (err instanceof Error ? err.message : "")}`.toLowerCase();
+      if (
+        payload.code === "auth"
+        || msg.includes("401")
+        || msg.includes("unauthorized")
+        || msg.includes("未登录")
+        || msg.includes("令牌无效")
+        || msg.includes("已过期")
+      ) {
         handleSessionExpired();
       }
-      // 网络错误等不踢出，下次重试
     }
   }, [handleSessionExpired]);
 

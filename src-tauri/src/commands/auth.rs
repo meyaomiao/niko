@@ -50,3 +50,29 @@ pub fn load_remembered_login() -> Option<RememberedLogin> {
 pub fn clear_remembered_login() -> Result<(), String> {
     crate::credentials::CredentialStore::delete(REMEMBER_ACCOUNT)
 }
+
+const REMEMBER_STATION: &str = "remembered-station";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RememberedStation {
+    pub origin: String,
+    pub access_token: String,
+    pub user_id: Option<i64>,
+}
+
+#[tauri::command]
+pub fn save_remembered_station(station: RememberedStation) -> Result<(), String> {
+    let payload = serde_json::to_string(&station).map_err(|e| e.to_string())?;
+    crate::credentials::CredentialStore::set(REMEMBER_STATION, &payload)
+}
+
+#[tauri::command]
+pub fn load_remembered_station() -> Option<RememberedStation> {
+    let raw = crate::credentials::CredentialStore::get(REMEMBER_STATION).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+#[tauri::command]
+pub fn clear_remembered_station() -> Result<(), String> {
+    crate::credentials::CredentialStore::delete(REMEMBER_STATION)
+}

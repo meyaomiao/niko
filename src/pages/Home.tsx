@@ -45,8 +45,7 @@ import {
   friendlyDesktopError,
 } from "../lib/copy";
 import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
-
-const RELAY_BASE_URL = "https://momotoken.win/v1";
+import { isNewApiAuth, relayBaseUrl, stationOrigin } from "../lib/station";
 const DESKTOP_APPLY_TIMEOUT_MS = 30_000;
 
 function withDesktopApplyTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -104,6 +103,9 @@ const PRIMARY_BTN = "nk-btn-primary";
 export default function Home() {
   const navigate = useNavigate();
   const auth = loadAuth();
+  const relayUrl = relayBaseUrl(auth);
+  const connectedOrigin = stationOrigin(auth);
+  const newApi = isNewApiAuth(auth);
   const { handleSessionExpired } = useSession();
   const { theme, toggle } = useTheme();
 
@@ -638,7 +640,7 @@ export default function Home() {
           samples: { ttft_ms: number | null; error: string | null }[];
         }>("benchmark_group", {
           // Tauri v2：Rust snake_case 参数在 JS 侧必须传 camelCase
-          baseUrl: RELAY_BASE_URL,
+          baseUrl: relayUrl,
           apiKey,
           model,
           samples: 3,
@@ -732,7 +734,7 @@ export default function Home() {
         >(
           "apply_all_targets",
           {
-            baseUrl: RELAY_BASE_URL,
+            baseUrl: relayUrl,
             apiKey,
             modelGroup: group,
             model: model || null,
@@ -772,7 +774,7 @@ export default function Home() {
         const applied = await withDesktopApplyTimeout(invoke<{ changed: string[]; warning?: string }>("apply_target", {
           req: {
             target_id: targetId,
-            base_url: RELAY_BASE_URL,
+            base_url: relayUrl,
             api_key: apiKey,
             model_group: group || null,
             model: model || null,
@@ -891,6 +893,7 @@ export default function Home() {
     }
     try {
       await invoke("clear_remembered_login");
+      await invoke("clear_remembered_station");
     } catch {
       /* ignore */
     }
@@ -974,6 +977,9 @@ export default function Home() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className={`${LABEL} truncate`}>{auth?.username ?? "已登录"}</p>
+                  {newApi && (
+                    <p className={`mt-0.5 truncate text-[11px] ${SUBTLE}`}>{connectedOrigin}</p>
+                  )}
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <p className="text-xl font-semibold text-gray-900 dark:text-white" aria-live="polite">
                       {formatBalanceUSD(balance.snapshot)}
@@ -1005,14 +1011,17 @@ export default function Home() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
-                    充值
-                  </button>
+                  {!newApi && (
+                    <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
+                      充值
+                    </button>
+                  )}
                   <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
                     使用明细
                   </button>
                 </div>
               </div>
+              {!newApi && (
               <div className="mt-2 flex items-center justify-between gap-2 border-t pt-2 [border-color:var(--nk-line)]">
                 <button
                   onClick={() => setDevicesOpen(true)}
@@ -1026,6 +1035,7 @@ export default function Home() {
                   </span>
                 </button>
               </div>
+              )}
             </section>
 
             {/* 接入应用（先选应用，再按应用推荐模型） */}

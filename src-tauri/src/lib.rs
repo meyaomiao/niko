@@ -4,6 +4,7 @@ mod commands;
 mod credentials;
 mod fsx;
 mod logx;
+mod providers;
 mod targets;
 
 use tauri::Manager;
@@ -26,9 +27,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::login,
             commands::auth::logout,
+            providers::newapi::newapi_connect,
+            providers::newapi::newapi_bootstrap,
+            providers::newapi::newapi_provision,
+            providers::newapi::newapi_pricing,
+            providers::newapi::newapi_status,
+            providers::newapi::newapi_usage,
             commands::auth::save_remembered_login,
             commands::auth::load_remembered_login,
             commands::auth::clear_remembered_login,
+            commands::auth::save_remembered_station,
+            commands::auth::load_remembered_station,
+            commands::auth::clear_remembered_station,
             commands::registration::start_registration_challenge,
             commands::registration::registration_challenge_status,
             commands::registration::cancel_registration_challenge,

@@ -1,9 +1,31 @@
 // momotoken 登录器 API 客户端
 
+import { invoke } from "@tauri-apps/api/core";
 import { APP_VERSION } from "../lib/version";
+import {
+  assembleNewApiBootstrap,
+  assembleNewApiPricingMeta,
+  mapNewApiLogs,
+  summarizeNewApiLogs,
+  type NewApiSnapshot,
+} from "../lib/newapi";
+import { currentDeviceName, isNewApiAuth, MOMOTOKEN_ORIGIN } from "../lib/station";
+import { loadAuth } from "../store/auth";
 
-const BASE_URL = "https://momotoken.win";
+const BASE_URL = MOMOTOKEN_ORIGIN;
 const API_REQUEST_TIMEOUT_MS = 10_000;
+
+function newApiSession() {
+  const auth = loadAuth();
+  if (!isNewApiAuth(auth) || !auth?.origin) {
+    throw new Error("尚未连接中转站");
+  }
+  return {
+    origin: auth.origin,
+    access_token: auth.accessToken,
+    user_id: auth.userId,
+  };
+}
 
 export interface SiteConfig {
   system_name: string;
@@ -269,11 +291,19 @@ export interface EpayOrder {
 }
 
 export const api = {
-  status(): Promise<StatusData> {
+  async status(): Promise<StatusData> {
+    if (isNewApiAuth(loadAuth())) {
+      const data = await invoke<StatusData>("newapi_status", { origin: newApiSession().origin });
+      return data;
+    }
     return get<StatusData>("/status");
   },
   /** 公开定价接口：厂商表 + 全部分组说明与倍率（无需登录，模型列表按账号过滤故忽略） */
   async pricingMeta(): Promise<PricingMeta> {
+    if (isNewApiAuth(loadAuth())) {
+      const json = await invoke<unknown>("newapi_pricing", { origin: newApiSession().origin });
+      return assembleNewApiPricingMeta(json);
+    }
     const res = await fetch(`${BASE_URL}/api/pricing`);
     if (!res.ok) throw new Error(`pricing ${res.status}`);
     const json = (await res.json()) as {
@@ -289,6 +319,27 @@ export const api = {
   },
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");
+  },
+  connectNewApi(params: {
+    origin: string;
+    accessToken: string;
+    userId?: number;
+  }): Promise<{
+    origin: string;
+    user_id: number;
+    username: string;
+    quota: number;
+    group: string;
+    quota_per_unit?: number | string;
+    system_name: string;
+  }> {
+    return invoke("newapi_connect", {
+      req: {
+        origin: params.origin,
+        access_token: params.accessToken,
+        user_id: params.userId ?? null,
+      },
+    });
   },
   login(params: {
     username: string;
@@ -320,27 +371,60 @@ export const api = {
     });
   },
   logout(token: string): Promise<void> {
+    if (isNewApiAuth(loadAuth())) return Promise.resolve();
     return post<void>("/client/logout", {}, token);
   },
-  bootstrap(token: string): Promise<BootstrapData> {
+  async bootstrap(token: string): Promise<BootstrapData> {
+    if (isNewApiAuth(loadAuth())) {
+      const snapshot = await invoke<NewApiSnapshot>("newapi_bootstrap", { req: newApiSession() });
+      return assembleNewApiBootstrap(snapshot);
+    }
     return get<BootstrapData>("/client/bootstrap", token);
   },
-  provision(token: string, group: string): Promise<{ api_key: string; token_id: number; group: string }> {
+  async provision(token: string, group: string): Promise<{ api_key: string; token_id: number; group: string }> {
+    if (isNewApiAuth(loadAuth())) {
+      return invoke("newapi_provision", {
+        req: {
+          ...newApiSession(),
+          group,
+          device_name: currentDeviceName(),
+        },
+      });
+    }
     return post("/client/provision", { group }, token);
   },
   listDevices(token: string): Promise<DeviceItem[]> {
+    if (isNewApiAuth(loadAuth())) return Promise.resolve([]);
     return get<DeviceItem[]>("/client/devices", token);
   },
-  usage(
+  async usage(
     token: string,
     params: UsageQuery = {}
   ): Promise<{ items: UsageLogItem[] | null; total?: number }> {
+    if (isNewApiAuth(loadAuth())) {
+      const payload = await invoke<unknown>("newapi_usage", {
+        req: {
+          ...newApiSession(),
+          page: params.page,
+          page_size: params.pageSize,
+          start_timestamp: params.startTimestamp,
+          end_timestamp: params.endTimestamp,
+          group: params.group,
+          model_name: params.modelName ?? params.models?.[0],
+        },
+      });
+      return mapNewApiLogs(payload);
+    }
     return get<{ items: UsageLogItem[] | null; total?: number }>(
       `/client/usage?type=2&${usageQueryString(params)}`,
       token
     );
   },
-  usageSummary(token: string, params: UsageQuery = {}): Promise<UsageSummary> {
+  async usageSummary(token: string, params: UsageQuery = {}): Promise<UsageSummary> {
+    if (isNewApiAuth(loadAuth())) {
+      const logs = await this.usage(token, { ...params, pageSize: params.pageSize ?? 100 });
+      return summarizeNewApiLogs(logs.items);
+    }
     return get<UsageSummary>(`/client/usage/summary?${usageQueryString(params)}`, token);
   },
   topupInfo(token: string): Promise<TopUpInfo> {
