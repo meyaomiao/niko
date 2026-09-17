@@ -25,7 +25,7 @@ reqwest = { version = "0.12", features = ["json"] }
 sysinfo = "0.33"
 cookie = "0.18"
 getrandom = "0.3"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["macros", "time"] }
 zeroize = "1"
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 zstd = "0.13"

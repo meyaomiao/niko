@@ -21,6 +21,14 @@ test("maps common failures to one clear next step", () => {
   assert.equal(friendlyConnectivityDetail("配置里没有默认模型，请先点击启用"), "接入还没有生效，请先接入到应用后再检查。");
   assert.equal(friendlyLoginError("账号或密码错误"), "账号或密码不正确，请检查后再试。");
   assert.equal(
+    friendlyLoginError({ code: "need_user_id", message: "未提供 My-Api-User" }),
+    "该中转站还需要填写数字用户 ID。可在控制台个人中心查看。",
+  );
+  assert.equal(
+    friendlyLoginError({ code: "not_newapi", message: "not a new-api station" }),
+    "这个地址不像 new-api 中转站，请确认站点地址后重试。",
+  );
+  assert.equal(
     friendlyLoginError("Username or password is incorrect, or user has been banned"),
     "账号或密码不正确，请检查后再试。",
   );

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth } from "../store/auth";
+import { relayBaseUrl } from "../lib/station";
 import { api, type BootstrapData, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS } from "../lib/vendor";
@@ -287,7 +288,7 @@ export default function Models() {
     setBenchDone(0);
     setBenchTotal(groupsToRun.length);
     setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
-    const RELAY_BASE_URL = "https://momotoken.win/v1";
+    const RELAY_BASE_URL = relayBaseUrl(auth);
     let done = 0;
     const runId = ++benchRunRef.current;
     for (const g of groupsToRun) {

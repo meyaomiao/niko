@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth, clearAuth } from "../store/auth";
+import { isNewApiAuth, stationOrigin } from "../lib/station";
 import { api } from "../api/client";
 import { useNavigate } from "react-router-dom";
 import { BRAND } from "../lib/brand";
@@ -73,7 +74,7 @@ export default function Settings() {
   const navigate = useNavigate();
 
   // 连通性检测
-  const [pingUrl, setPingUrl] = useState("https://momotoken.win");
+  const [pingUrl, setPingUrl] = useState(stationOrigin(auth));
   const [pingResult, setPingResult] = useState<DiagPingResult | null>(null);
   const [pinging, setPinging] = useState(false);
 
@@ -293,6 +294,7 @@ export default function Settings() {
     }
     try {
       await invoke("clear_remembered_login");
+      await invoke("clear_remembered_station");
     } catch {
       /* ignore */
     }
@@ -324,6 +326,9 @@ export default function Settings() {
             <h2 className={`mb-3 ${OVERLINE}`}>当前账户</h2>
             <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
               <p>用户名：<span className="text-gray-900 dark:text-white">{auth?.username ?? "—"}</span></p>
+              {isNewApiAuth(auth) && (
+                <p>中转站：<span className="text-gray-900 dark:text-white">{stationOrigin(auth)}</span></p>
+              )}
               <p>推荐的模型服务：<span className="text-gray-900 dark:text-white">{auth?.defaultGroup ?? "—"}</span></p>
             </div>
             <button
