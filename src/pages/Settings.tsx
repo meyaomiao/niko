@@ -350,6 +350,7 @@ export default function Settings() {
     } catch {
       /* ignore */
     }
+    api.clearCatalog();
     clearAuth();
     navigate("/login", { replace: true });
   };

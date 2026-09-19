@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assembleNewApiBootstrap,
+  assembleNewApiCatalog,
   assembleNewApiPricingMeta,
   mapNewApiLogs,
   summarizeNewApiLogs,
@@ -51,6 +52,26 @@ test("assembles bootstrap from new-api status, groups, models and pricing", () =
   assert.equal(bootstrap.user.group, "claude");
   assert.equal(bootstrap.pricing[0]?.enable_groups?.[0], "claude");
   assert.deepEqual(bootstrap.models, ["claude-sonnet-4-6", "gpt-5"]);
+});
+
+test("assembles catalog pricing meta from the same snapshot", () => {
+  const catalog = assembleNewApiCatalog({
+    origin: "https://relay.example.com",
+    status: { quota_per_unit: 500000 },
+    user: { id: 1, quota: 10, group: "claude" },
+    groups: { claude: { desc: "Claude 分组", ratio: 0.4 } },
+    models: ["claude-sonnet-4-6"],
+    pricing: {
+      data: [{ model_name: "claude-sonnet-4-6", enable_groups: ["claude"], vendor_id: 2 }],
+      vendors: [{ id: 2, name: "Anthropic" }],
+      usable_group: { claude: "Claude 分组" },
+      group_ratio: { claude: 0.4 },
+    },
+  });
+  assert.equal(catalog.bootstrap.user.group, "claude");
+  assert.equal(catalog.pricingMeta.vendors[0]?.name, "Anthropic");
+  assert.equal(catalog.pricingMeta.usableGroup.claude, "Claude 分组");
+  assert.equal(catalog.pricingMeta.groupRatio.claude, 0.4);
 });
 
 test("splits comma-separated user groups into account groups", () => {

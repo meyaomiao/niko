@@ -8,7 +8,17 @@ export type DesktopErrorKind =
   | "generic";
 
 function errorParts(value: unknown): { code: string; message: string } {
-  if (typeof value === "string") return { code: "", message: value };
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        return errorParts(JSON.parse(trimmed));
+      } catch {
+        /* 不是 JSON 错误体，按原文处理 */
+      }
+    }
+    return { code: "", message: value };
+  }
   if (value && typeof value === "object") {
     const candidate = value as Record<string, unknown>;
     return {
@@ -19,21 +29,43 @@ function errorParts(value: unknown): { code: string; message: string } {
   return { code: "", message: "" };
 }
 
+function looksLikeNameConflict(text: string): boolean {
+  return /名称已存在|already exist|duplicate/.test(text);
+}
+
 export function classifyDesktopError(value: unknown): DesktopErrorKind {
   const { code, message } = errorParts(value);
   const text = `${code} ${message}`.toLowerCase();
-  if (/401|403|unauthor|登录.*失效|未登录|过期|session|access.?token/.test(text)) return "session";
+  if (looksLikeNameConflict(text)) return "generic";
+  if (code === "auth" || /401|403|unauthor|登录.*失效|未登录|session|access.?token/.test(text)) return "session";
+  if (/过期/.test(text) && /登录|令牌|token/.test(text) && !looksLikeNameConflict(text)) return "session";
   if (/余额|quota|insufficient|balance/.test(text)) return "balance";
   if (/未安装|找不到.*应用|未找到|no such file|not found/.test(text)) return "not_installed";
   if (/尚未接入|未启用|缺少.*配置|没有默认模型|配置.*生效|请先点击启用|请先接入/.test(text)) {
     return "not_configured";
   }
-  if (/network|连接|超时|timeout|fetch|dns|offline|代理/.test(text)) return "network";
+  if (code === "network" || /network|连接|超时|timeout|fetch|dns|offline|代理/.test(text)) return "network";
   if (/429|5\d\d|server|服务端|上游|temporarily unavailable/.test(text)) return "service";
   return "generic";
 }
 
+function passThroughStationMessage(code: string, message: string): string | null {
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 80) return null;
+  if (!/[\u4e00-\u9fff]/.test(trimmed)) return null;
+  if (code === "failed" || code === "network" || code === "invalid_request" || code === "auth") {
+    return trimmed;
+  }
+  return null;
+}
+
 export function friendlyDesktopError(value: unknown): string {
+  const { code, message } = errorParts(value);
+  if (looksLikeNameConflict(`${code} ${message}`.toLowerCase())) {
+    return "这个分组的密钥已存在，正在尝试复用；请再点一次接入。";
+  }
+  const passed = passThroughStationMessage(code, message);
+  if (passed && classifyDesktopError(value) !== "session") return passed;
   switch (classifyDesktopError(value)) {
     case "session":
       return "登录状态已过期，请重新登录后再试。";

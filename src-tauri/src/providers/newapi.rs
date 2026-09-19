@@ -10,18 +10,19 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const TOKEN_PAGE_SIZE: u32 = 100;
-const TOKEN_PAGE_CAP: u32 = 20;
+const TOKEN_PAGE_CAP: u32 = 3;
 const DEVICE_NAME_MAX: usize = 40;
+const TOKEN_NAME_MAX: usize = 50;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NewApiError {
     pub code: &'static str,
-    pub message: &'static str,
+    pub message: String,
 }
 
 impl std::fmt::Display for NewApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message)
+        f.write_str(&self.message)
     }
 }
 
@@ -31,44 +32,68 @@ impl NewApiError {
     fn invalid() -> Self {
         Self {
             code: "invalid_request",
-            message: "站点地址或访问令牌无效，请检查后再试。",
+            message: "站点地址或访问令牌无效，请检查后再试。".to_string(),
         }
     }
 
     fn network() -> Self {
         Self {
             code: "network",
-            message: "无法连接该中转站，请检查地址和网络后重试。",
+            message: "无法连接该中转站，请检查地址和网络后重试。".to_string(),
         }
     }
 
     fn auth() -> Self {
         Self {
             code: "auth",
-            message: "系统访问令牌无效或已过期，请到中转站控制台重新生成。",
+            message: "系统访问令牌无效或已过期，请到中转站控制台重新生成。".to_string(),
         }
     }
 
     fn need_user() -> Self {
         Self {
             code: "need_user_id",
-            message: "该中转站还需要填写数字用户 ID。可在控制台个人中心查看。",
+            message: "该中转站还需要填写数字用户 ID。可在控制台个人中心查看。".to_string(),
         }
     }
 
     fn not_newapi() -> Self {
         Self {
             code: "not_newapi",
-            message: "这个地址不像 new-api 中转站，请确认站点地址后重试。",
+            message: "这个地址不像 new-api 中转站，请确认站点地址后重试。".to_string(),
         }
     }
 
     fn failed() -> Self {
         Self {
             code: "failed",
-            message: "中转站暂时无法完成操作，请稍后重试。",
+            message: "中转站暂时无法完成操作，请稍后重试。".to_string(),
         }
     }
+
+    fn failed_with(message: &str) -> Self {
+        Self {
+            code: "failed",
+            message: sanitize_station_message(message),
+        }
+    }
+}
+
+fn sanitize_station_message(message: &str) -> String {
+    let redacted = crate::logx::redact_line(message);
+    let trimmed = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.is_empty() {
+        return NewApiError::failed().message;
+    }
+    let clipped: String = trimmed.chars().take(80).collect();
+    let has_cjk = clipped.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    if has_cjk {
+        return clipped;
+    }
+    if looks_name_conflict(&clipped) {
+        return "这个分组已有密钥，请再点一次接入。".to_string();
+    }
+    NewApiError::failed().message
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,10 +228,13 @@ fn envelope_success(value: &Value) -> Result<&Value, NewApiError> {
         if needs_user_id(message) {
             return Err(NewApiError::need_user());
         }
+        if looks_name_conflict(message) {
+            return Err(NewApiError::failed_with(message));
+        }
         if looks_unauthorized(message) {
             return Err(NewApiError::auth());
         }
-        return Err(NewApiError::failed());
+        return Err(NewApiError::failed_with(message));
     }
     Ok(value.get("data").unwrap_or(value))
 }
@@ -219,14 +247,31 @@ fn needs_user_id(message: &str) -> bool {
         || text.contains("与登录用户不匹配")
 }
 
-fn looks_unauthorized(message: &str) -> bool {
+fn looks_name_conflict(message: &str) -> bool {
     let text = message.to_ascii_lowercase();
-    text.contains("无权")
-        || text.contains("未登录")
-        || text.contains("token")
+    text.contains("名称已存在")
+        || text.contains("already exist")
+        || text.contains("duplicate")
+        || (text.contains("已存在")
+            && (text.contains("令牌") || text.contains("token") || text.contains("name")))
+}
+
+fn looks_unauthorized(message: &str) -> bool {
+    if looks_name_conflict(message) {
+        return false;
+    }
+    let text = message.to_ascii_lowercase();
+    if text.contains("无权") && !(text.contains("未登录") || text.contains("token") || text.contains("令牌"))
+    {
+        return false;
+    }
+    text.contains("未登录")
         || text.contains("unauthorized")
-        || text.contains("invalid")
-        || text.contains("过期")
+        || text.contains("invalid token")
+        || text.contains("invalid access")
+        || text.contains("access token")
+        || (text.contains("过期")
+            && (text.contains("token") || text.contains("登录") || text.contains("令牌")))
 }
 
 fn looks_like_status(value: &Value) -> bool {
@@ -248,6 +293,9 @@ async fn read_json(response: reqwest::Response) -> Result<Value, NewApiError> {
         if needs_user_id(message) {
             return Err(NewApiError::need_user());
         }
+        if looks_name_conflict(message) {
+            return Err(NewApiError::failed_with(message));
+        }
         return Err(NewApiError::auth());
     }
     if !status.is_success() {
@@ -255,7 +303,7 @@ async fn read_json(response: reqwest::Response) -> Result<Value, NewApiError> {
         if needs_user_id(message) {
             return Err(NewApiError::need_user());
         }
-        return Err(NewApiError::failed());
+        return Err(NewApiError::failed_with(message));
     }
     envelope_success(&value).cloned()
 }
@@ -347,36 +395,220 @@ async fn resolve_user(
     }
 }
 
+fn ascii_slug(input: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if ch == '-' || ch == '_' {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn token_name(device_name: Option<&str>, group: &str) -> String {
-    let device = device_name.unwrap_or("Niko").trim();
-    let device = if device.is_empty() { "Niko" } else { device };
-    let truncated: String = device.chars().take(DEVICE_NAME_MAX).collect();
-    format!("Niko · {truncated} · {group}")
+    let device = ascii_slug(device_name.unwrap_or("macOS"), "macOS");
+    let truncated_device: String = device.chars().take(DEVICE_NAME_MAX).collect();
+    let group_slug = ascii_slug(group, "default");
+    let prefix = format!("Niko-{truncated_device}-");
+    let prefix_len = prefix.chars().count();
+    if prefix_len >= TOKEN_NAME_MAX {
+        return prefix.chars().take(TOKEN_NAME_MAX).collect();
+    }
+    let remain = TOKEN_NAME_MAX - prefix_len;
+    let truncated_group: String = group_slug.chars().take(remain).collect();
+    format!("{prefix}{truncated_group}")
+}
+
+fn with_sk_prefix(key: &str) -> String {
+    if key.starts_with("sk-") {
+        key.to_string()
+    } else {
+        format!("sk-{key}")
+    }
 }
 
 fn extract_key(value: &Value) -> Option<String> {
-    value
-        .get("key")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("api_key").and_then(Value::as_str))
-        .filter(|key| !key.is_empty())
-        .map(|key| {
-            if key.starts_with("sk-") {
-                key.to_string()
-            } else {
-                format!("sk-{key}")
-            }
-        })
+    let candidates = [
+        value.get("key").and_then(Value::as_str),
+        value.get("api_key").and_then(Value::as_str),
+        value.get("token").and_then(Value::as_str),
+        value.pointer("/data/key").and_then(Value::as_str),
+        value.pointer("/data/api_key").and_then(Value::as_str),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|key| !key.is_empty())
+        .map(with_sk_prefix)
 }
 
 fn token_items(value: &Value) -> Vec<Value> {
     if let Some(items) = value.get("items").and_then(Value::as_array) {
         return items.clone();
     }
+    if let Some(items) = value.get("records").and_then(Value::as_array) {
+        return items.clone();
+    }
+    if let Some(data) = value.get("data") {
+        if let Some(items) = data.as_array() {
+            return items.clone();
+        }
+        if let Some(items) = data.get("items").and_then(Value::as_array) {
+            return items.clone();
+        }
+        if let Some(items) = data.get("records").and_then(Value::as_array) {
+            return items.clone();
+        }
+    }
     if let Some(items) = value.as_array() {
         return items.clone();
     }
     Vec::new()
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn token_id_from_value(value: &Value) -> Option<i64> {
+    value
+        .get("id")
+        .and_then(|item| item.as_i64().or_else(|| item.as_u64().map(|n| n as i64)))
+        .filter(|id| *id > 0)
+}
+
+fn match_token_item(item: &Value, group: &str, name: &str) -> Option<(i64, Option<String>)> {
+    let item_name = item.get("name").and_then(Value::as_str).unwrap_or("");
+    let item_group = item.get("group").and_then(Value::as_str).unwrap_or("");
+    let status = item.get("status").and_then(Value::as_i64).unwrap_or(1);
+    if status != 1 {
+        return None;
+    }
+    let group_ok = item_group.eq_ignore_ascii_case(group);
+    let name_ok = item_name == name
+        || item_name.starts_with("Niko-")
+        || item_name.starts_with("Niko ·")
+        || item_name.contains("Niko");
+    if group_ok && name_ok {
+        let id = token_id_from_value(item)?;
+        return Some((id, extract_key(item)));
+    }
+    None
+}
+
+fn match_any_group_token(item: &Value, group: &str) -> Option<(i64, Option<String>)> {
+    let item_group = item.get("group").and_then(Value::as_str).unwrap_or("");
+    let status = item.get("status").and_then(Value::as_i64).unwrap_or(1);
+    if status != 1 || !item_group.eq_ignore_ascii_case(group) {
+        return None;
+    }
+    let id = token_id_from_value(item)?;
+    Some((id, extract_key(item)))
+}
+
+async fn search_tokens_by_keyword(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    keyword: &str,
+) -> Result<Vec<Value>, NewApiError> {
+    let encoded = percent_encode(keyword);
+    let urls = [
+        api_url(origin, &format!("/token/?keyword={encoded}")),
+        api_url(origin, &format!("/token/search?keyword={encoded}")),
+        api_url(origin, &format!("/token/?search={encoded}")),
+    ];
+    for url in urls {
+        if let Ok(value) = get_json(client, &url, token, Some(user_id)).await {
+            let items = token_items(&value);
+            if !items.is_empty() {
+                return Ok(items);
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+async fn list_tokens_page(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    page: u32,
+) -> Result<Value, NewApiError> {
+    let with_slash = format!(
+        "{}?p={page}&size={TOKEN_PAGE_SIZE}",
+        api_url(origin, "/token/")
+    );
+    match get_json(client, &with_slash, token, Some(user_id)).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.code == "failed" && page <= 1 => {
+            let without_slash = format!(
+                "{}?p={page}&size={TOKEN_PAGE_SIZE}",
+                api_url(origin, "/token")
+            );
+            get_json(client, &without_slash, token, Some(user_id)).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn collect_token_pages(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    name: &str,
+) -> Result<Vec<Value>, NewApiError> {
+    let mut items = search_tokens_by_keyword(client, origin, token, user_id, name)
+        .await
+        .unwrap_or_default();
+    if items.is_empty() {
+        items = search_tokens_by_keyword(client, origin, token, user_id, "Niko")
+            .await
+            .unwrap_or_default();
+    }
+    for page in 0..=TOKEN_PAGE_CAP {
+        let data = match list_tokens_page(client, origin, token, user_id, page).await {
+            Ok(value) => value,
+            Err(error) if error.code == "failed" && page <= 1 => break,
+            Err(error) if error.code == "auth" => return Err(error),
+            Err(_) => break,
+        };
+        let page_items = token_items(&data);
+        if page_items.is_empty() {
+            if page == 0 {
+                continue;
+            }
+            break;
+        }
+        items.extend(page_items.iter().cloned());
+        if page_items.len() < TOKEN_PAGE_SIZE as usize {
+            break;
+        }
+    }
+    Ok(items)
 }
 
 async fn find_existing_token(
@@ -387,40 +619,41 @@ async fn find_existing_token(
     group: &str,
     name: &str,
 ) -> Result<Option<(i64, Option<String>)>, NewApiError> {
-    for page in 1..=TOKEN_PAGE_CAP {
-        let list_url = format!(
-            "{}?p={page}&size={TOKEN_PAGE_SIZE}",
-            api_url(origin, "/token/")
-        );
-        let data = match get_json(client, &list_url, token, Some(user_id)).await {
-            Ok(value) => value,
-            Err(error) if error.code == "failed" && page == 1 => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let items = token_items(&data);
-        if items.is_empty() {
-            return Ok(None);
+    let items = collect_token_pages(client, origin, token, user_id, name).await?;
+    for item in &items {
+        if let Some(found) = match_token_item(item, group, name) {
+            return Ok(Some(found));
         }
-        for item in &items {
-            let item_name = item.get("name").and_then(Value::as_str).unwrap_or("");
-            let item_group = item.get("group").and_then(Value::as_str).unwrap_or("");
-            let status = item.get("status").and_then(Value::as_i64).unwrap_or(1);
-            if status != 1 {
-                continue;
-            }
-            if item_group == group && (item_name == name || item_name.contains("Niko")) {
-                let id = item
-                    .get("id")
-                    .and_then(Value::as_i64)
-                    .ok_or(NewApiError::failed())?;
-                return Ok(Some((id, extract_key(item))));
-            }
-        }
-        if items.len() < TOKEN_PAGE_SIZE as usize {
-            break;
+    }
+    for item in &items {
+        if let Some(found) = match_any_group_token(item, group) {
+            return Ok(Some(found));
         }
     }
     Ok(None)
+}
+
+async fn resolve_token_key(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    id: i64,
+    key: Option<String>,
+) -> Option<String> {
+    if let Some(api_key) = key {
+        return Some(api_key);
+    }
+    match fetch_token_key(client, origin, token, user_id, id).await {
+        Ok(api_key) => Some(api_key),
+        Err(error) => {
+            crate::logx::append(
+                "newapi_provision",
+                &format!("token {id} key missing: {}", error.message),
+            );
+            None
+        }
+    }
 }
 
 async fn fetch_token_key(
@@ -430,21 +663,30 @@ async fn fetch_token_key(
     user_id: i64,
     token_id: i64,
 ) -> Result<String, NewApiError> {
-    let url = api_url(origin, &format!("/token/{token_id}/key"));
-    match get_json(client, &url, token, Some(user_id)).await {
-        Ok(value) => extract_key(&value).ok_or(NewApiError::failed()),
-        Err(_) => {
-            let search = api_url(origin, &format!("/token/search?keyword={token_id}"));
-            let value = get_json(client, &search, token, Some(user_id)).await?;
-            extract_key(&value)
-                .or_else(|| {
-                    token_items(&value)
-                        .into_iter()
-                        .find_map(|item| extract_key(&item))
-                })
-                .ok_or(NewApiError::failed())
+    let urls = [
+        api_url(origin, &format!("/token/{token_id}/key")),
+        api_url(origin, &format!("/token/{token_id}")),
+    ];
+    for url in urls {
+        if let Ok(value) = get_json(client, &url, token, Some(user_id)).await {
+            if let Some(key) = extract_key(&value).or_else(|| {
+                token_items(&value)
+                    .into_iter()
+                    .find_map(|item| extract_key(&item))
+            }) {
+                return Ok(key);
+            }
         }
     }
+    let search = api_url(origin, &format!("/token/search?keyword={token_id}"));
+    let value = get_json(client, &search, token, Some(user_id)).await?;
+    extract_key(&value)
+        .or_else(|| {
+            token_items(&value)
+                .into_iter()
+                .find_map(|item| extract_key(&item))
+        })
+        .ok_or(NewApiError::failed())
 }
 
 pub async fn connect(req: ConnectRequest) -> Result<ConnectResult, NewApiError> {
@@ -533,7 +775,11 @@ pub async fn bootstrap(req: AuthenticatedRequest) -> Result<Value, NewApiError> 
             {
                 Ok(response) => {
                     let bytes = response.bytes().await.unwrap_or_default();
-                    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+                    if bytes.len() > MAX_BODY_BYTES {
+                        Value::Null
+                    } else {
+                        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+                    }
                 }
                 Err(_) => Value::Null,
             }
@@ -579,6 +825,88 @@ pub async fn status(origin: String) -> Result<Value, NewApiError> {
     read_json(response).await
 }
 
+fn provision_ok(api_key: String, token_id: i64, group: &str) -> ProvisionResult {
+    ProvisionResult {
+        api_key,
+        token_id,
+        group: group.to_string(),
+    }
+}
+
+async fn try_reuse_existing(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    group: &str,
+    name: &str,
+) -> Result<Option<ProvisionResult>, NewApiError> {
+    let Some((id, key)) = find_existing_token(client, origin, token, user_id, group, name).await?
+    else {
+        return Ok(None);
+    };
+    if let Some(api_key) = resolve_token_key(client, origin, token, user_id, id, key).await {
+        crate::logx::append(
+            "newapi_provision",
+            &format!("reused token {id} group={group}"),
+        );
+        return Ok(Some(provision_ok(api_key, id, group)));
+    }
+    Ok(None)
+}
+
+fn create_bodies(name: &str, group: &str) -> Vec<Value> {
+    // 只创建一把无限额度密钥。站点若拒无限额度，再退回有额度的请求体。
+    vec![
+        json!({
+            "name": name,
+            "remain_quota": 0,
+            "expired_time": -1,
+            "unlimited_quota": true,
+            "group": group,
+        }),
+        json!({
+            "name": name,
+            "remain_quota": 500_000,
+            "expired_time": -1,
+            "unlimited_quota": false,
+            "group": group,
+        }),
+    ]
+}
+
+async fn create_token(
+    client: &reqwest::Client,
+    origin: &str,
+    token: &str,
+    user_id: i64,
+    body: Value,
+) -> Result<Value, NewApiError> {
+    let urls = [
+        api_url(origin, "/token/"),
+        api_url(origin, "/token"),
+        api_url(origin, "/user/token"),
+    ];
+    let mut last = NewApiError::failed();
+    for url in urls {
+        match request_json(
+            client,
+            reqwest::Method::POST,
+            &url,
+            token,
+            Some(user_id),
+            Some(body.clone()),
+        )
+        .await
+        {
+            Ok(value) => return Ok(value),
+            Err(error) if error.code == "auth" => return Err(error),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 pub async fn provision(req: ProvisionRequest) -> Result<ProvisionResult, NewApiError> {
     let origin = normalize_origin(&req.origin)?;
     let group = req.group.trim();
@@ -588,99 +916,68 @@ pub async fn provision(req: ProvisionRequest) -> Result<ProvisionResult, NewApiE
     let client = http_client()?;
     let token = req.access_token.trim();
     let name = token_name(req.device_name.as_deref(), group);
-    if let Some((id, key)) =
-        find_existing_token(&client, &origin, token, req.user_id, group, &name).await?
+    crate::logx::append(
+        "newapi_provision",
+        &format!("start group={group} name={name} user={}", req.user_id),
+    );
+
+    if let Some(result) =
+        try_reuse_existing(&client, &origin, token, req.user_id, group, &name).await?
     {
-        if let Some(api_key) = key {
-            return Ok(ProvisionResult {
-                api_key,
-                token_id: id,
-                group: group.to_string(),
-            });
-        }
-        if let Ok(api_key) = fetch_token_key(&client, &origin, token, req.user_id, id).await {
-            return Ok(ProvisionResult {
-                api_key,
-                token_id: id,
-                group: group.to_string(),
-            });
+        return Ok(result);
+    }
+
+    let mut last_error = NewApiError::failed();
+    for body in create_bodies(&name, group) {
+        match create_token(&client, &origin, token, req.user_id, body).await {
+            Ok(created) => {
+                let token_id = token_id_from_value(&created)
+                    .or_else(|| created.get("data").and_then(token_id_from_value))
+                    .unwrap_or(0);
+                crate::logx::append(
+                    "newapi_provision",
+                    &format!("created token {token_id} group={group}"),
+                );
+                if let Some(api_key) = resolve_token_key(
+                    &client,
+                    &origin,
+                    token,
+                    req.user_id,
+                    token_id,
+                    extract_key(&created),
+                )
+                .await
+                {
+                    return Ok(provision_ok(api_key, token_id, group));
+                }
+                // 站点已经建成功，只是响应里没带回密钥：立刻复用，禁止再创建。
+                if let Some(result) =
+                    try_reuse_existing(&client, &origin, token, req.user_id, group, &name).await?
+                {
+                    return Ok(result);
+                }
+                last_error = NewApiError::failed_with("中转站创建了密钥但没有返回可用内容");
+                break;
+            }
+            Err(error) => {
+                crate::logx::append(
+                    "newapi_provision",
+                    &format!("create failed: {}", error.message),
+                );
+                last_error = error;
+                if last_error.code == "auth" {
+                    return Err(last_error);
+                }
+            }
         }
     }
 
-    let create_body = json!({
-        "name": name,
-        "remain_quota": 0,
-        "expired_time": -1,
-        "unlimited_quota": true,
-        "group": group,
-    });
-    let created = match request_json(
-        &client,
-        reqwest::Method::POST,
-        &api_url(&origin, "/token/"),
-        token,
-        Some(req.user_id),
-        Some(create_body.clone()),
-    )
-    .await
+    if let Some(result) =
+        try_reuse_existing(&client, &origin, token, req.user_id, group, &name).await?
     {
-        Ok(value) => value,
-        Err(_) => {
-            request_json(
-                &client,
-                reqwest::Method::POST,
-                &api_url(&origin, "/token"),
-                token,
-                Some(req.user_id),
-                Some(create_body),
-            )
-            .await?
-        }
-    };
-    let token_id = created
-        .get("id")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            created
-                .get("data")
-                .and_then(|data| data.get("id"))
-                .and_then(Value::as_i64)
-        })
-        .unwrap_or(0);
-    if let Some(api_key) = extract_key(&created) {
-        return Ok(ProvisionResult {
-            api_key,
-            token_id,
-            group: group.to_string(),
-        });
+        return Ok(result);
     }
-    if token_id > 0 {
-        if let Ok(api_key) = fetch_token_key(&client, &origin, token, req.user_id, token_id).await {
-            return Ok(ProvisionResult {
-                api_key,
-                token_id,
-                group: group.to_string(),
-            });
-        }
-    }
-    if let Some((id, key)) =
-        find_existing_token(&client, &origin, token, req.user_id, group, &name).await?
-    {
-        if let Some(api_key) = key {
-            return Ok(ProvisionResult {
-                api_key,
-                token_id: id,
-                group: group.to_string(),
-            });
-        }
-        let api_key = fetch_token_key(&client, &origin, token, req.user_id, id).await?;
-        return Ok(ProvisionResult {
-            api_key,
-            token_id: id,
-            group: group.to_string(),
-        });
-    }
-    Err(NewApiError::failed())
+    Err(last_error)
 }
 
 pub async fn usage(req: UsageRequest) -> Result<Value, NewApiError> {
@@ -783,8 +1080,21 @@ mod tests {
 
     #[test]
     fn token_names_include_device_and_group() {
-        assert_eq!(token_name(Some("macOS"), "claude"), "Niko · macOS · claude");
-        assert_eq!(token_name(Some("  "), "default"), "Niko · Niko · default");
+        assert_eq!(token_name(Some("macOS"), "claude"), "Niko-macOS-claude");
+        assert_eq!(token_name(Some("  "), "default"), "Niko-macOS-default");
+        let long = token_name(Some("macOS"), &"g".repeat(80));
+        assert!(long.chars().count() <= TOKEN_NAME_MAX);
+        assert!(long.starts_with("Niko-macOS-"));
+        assert_eq!(ascii_slug("Claude 分组", "default"), "Claude");
+    }
+
+    #[test]
+    fn create_bodies_prefer_unlimited_and_do_not_spam() {
+        let bodies = create_bodies("Niko-macOS-gpt", "gpt");
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["unlimited_quota"], json!(true));
+        assert_eq!(bodies[0]["remain_quota"], json!(0));
+        assert_eq!(bodies[1]["unlimited_quota"], json!(false));
     }
 
     #[test]
@@ -797,6 +1107,37 @@ mod tests {
             extract_key(&json!({"key": "sk-abc"})).as_deref(),
             Some("sk-abc")
         );
+        assert_eq!(
+            extract_key(&json!({"data": {"api_key": "xyz"}})).as_deref(),
+            Some("sk-xyz")
+        );
+    }
+
+    #[test]
+    fn token_items_read_common_envelopes() {
+        assert_eq!(
+            token_items(&json!({"items": [{"id": 1}]})).len(),
+            1
+        );
+        assert_eq!(
+            token_items(&json!({"data": {"items": [{"id": 2}, {"id": 3}]}})).len(),
+            2
+        );
+        assert_eq!(token_items(&json!([{"id": 4}])).len(), 1);
+        assert_eq!(
+            token_items(&json!({"data": {"records": [{"id": 5}]}})).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn name_conflicts_are_not_auth_errors() {
+        assert!(looks_name_conflict("令牌名称已存在"));
+        assert!(!looks_unauthorized("令牌名称已存在"));
+        assert!(looks_unauthorized("系统访问令牌无效或已过期"));
+        assert!(!looks_unauthorized("余额不足"));
+        assert!(!looks_unauthorized("无权进行此操作"));
+        assert!(looks_unauthorized("无权进行此操作，未登录"));
     }
 
     #[test]
