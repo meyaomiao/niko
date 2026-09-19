@@ -3,12 +3,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { APP_VERSION } from "../lib/version";
 import {
-  assembleNewApiBootstrap,
+  assembleNewApiCatalog,
   assembleNewApiPricingMeta,
   mapNewApiLogs,
   summarizeNewApiLogs,
   type NewApiSnapshot,
 } from "../lib/newapi";
+import {
+  catalogCacheKey,
+  clearCatalogCache,
+  EMPTY_PRICING_META,
+  loadCatalogCached,
+  peekCatalogCache,
+  type CatalogSnapshot,
+} from "../lib/catalogCache";
 import { currentDeviceName, isNewApiAuth, MOMOTOKEN_ORIGIN } from "../lib/station";
 import { loadAuth } from "../store/auth";
 
@@ -24,6 +32,45 @@ function newApiSession() {
     origin: auth.origin,
     access_token: auth.accessToken,
     user_id: auth.userId,
+  };
+}
+
+function catalogKeyForAuth(): string | null {
+  const auth = loadAuth();
+  if (!auth?.accessToken) return null;
+  const origin = isNewApiAuth(auth) ? (auth.origin ?? "newapi") : MOMOTOKEN_ORIGIN;
+  return catalogCacheKey(origin, auth.accessToken);
+}
+
+async function fetchCatalogSnapshot(token: string): Promise<Omit<CatalogSnapshot, "at">> {
+  const auth = loadAuth();
+  if (isNewApiAuth(auth)) {
+    const snapshot = await invoke<NewApiSnapshot>("newapi_bootstrap", { req: newApiSession() });
+    return assembleNewApiCatalog(snapshot);
+  }
+  const [bootstrap, pricingMeta] = await Promise.all([
+    get<BootstrapData>("/client/bootstrap", token),
+    fetchPublicPricingMeta().catch(() => EMPTY_PRICING_META),
+  ]);
+  return { bootstrap, pricingMeta };
+}
+
+async function fetchPublicPricingMeta(): Promise<PricingMeta> {
+  if (isNewApiAuth(loadAuth())) {
+    const json = await invoke<unknown>("newapi_pricing", { origin: newApiSession().origin });
+    return assembleNewApiPricingMeta(json);
+  }
+  const res = await fetch(`${BASE_URL}/api/pricing`);
+  if (!res.ok) throw new Error(`pricing ${res.status}`);
+  const json = (await res.json()) as {
+    vendors?: VendorMeta[];
+    usable_group?: Record<string, string>;
+    group_ratio?: Record<string, number>;
+  };
+  return {
+    vendors: json.vendors ?? [],
+    usableGroup: json.usable_group ?? {},
+    groupRatio: json.group_ratio ?? {},
   };
 }
 
@@ -298,24 +345,20 @@ export const api = {
     }
     return get<StatusData>("/status");
   },
-  /** 公开定价接口：厂商表 + 全部分组说明与倍率（无需登录，模型列表按账号过滤故忽略） */
+  /** 公开定价接口：厂商表 + 全部分组说明与倍率。登录后优先复用目录缓存，避免再拉一份超大 pricing。 */
   async pricingMeta(): Promise<PricingMeta> {
-    if (isNewApiAuth(loadAuth())) {
-      const json = await invoke<unknown>("newapi_pricing", { origin: newApiSession().origin });
-      return assembleNewApiPricingMeta(json);
+    const key = catalogKeyForAuth();
+    if (key) {
+      const hit = peekCatalogCache(key);
+      if (hit) return hit.pricingMeta;
+      try {
+        const auth = loadAuth();
+        return (await loadCatalogCached(key, () => fetchCatalogSnapshot(auth?.accessToken ?? ""))).pricingMeta;
+      } catch {
+        /* 缓存 miss 时仍走公开接口 */
+      }
     }
-    const res = await fetch(`${BASE_URL}/api/pricing`);
-    if (!res.ok) throw new Error(`pricing ${res.status}`);
-    const json = (await res.json()) as {
-      vendors?: VendorMeta[];
-      usable_group?: Record<string, string>;
-      group_ratio?: Record<string, number>;
-    };
-    return {
-      vendors: json.vendors ?? [],
-      usableGroup: json.usable_group ?? {},
-      groupRatio: json.group_ratio ?? {},
-    };
+    return fetchPublicPricingMeta();
   },
   getSite(): Promise<SiteConfig> {
     return get<SiteConfig>("/client/site");
@@ -374,12 +417,20 @@ export const api = {
     if (isNewApiAuth(loadAuth())) return Promise.resolve();
     return post<void>("/client/logout", {}, token);
   },
-  async bootstrap(token: string): Promise<BootstrapData> {
-    if (isNewApiAuth(loadAuth())) {
-      const snapshot = await invoke<NewApiSnapshot>("newapi_bootstrap", { req: newApiSession() });
-      return assembleNewApiBootstrap(snapshot);
-    }
-    return get<BootstrapData>("/client/bootstrap", token);
+  async bootstrap(token: string, options?: { force?: boolean }): Promise<BootstrapData> {
+    const auth = loadAuth();
+    const origin = isNewApiAuth(auth) ? (auth?.origin ?? "newapi") : MOMOTOKEN_ORIGIN;
+    const key = catalogCacheKey(origin, token);
+    const snapshot = await loadCatalogCached(key, () => fetchCatalogSnapshot(token), options?.force === true);
+    return snapshot.bootstrap;
+  },
+  async catalog(token: string, options?: { force?: boolean }): Promise<CatalogSnapshot> {
+    const auth = loadAuth();
+    const origin = isNewApiAuth(auth) ? (auth?.origin ?? "newapi") : MOMOTOKEN_ORIGIN;
+    return loadCatalogCached(catalogCacheKey(origin, token), () => fetchCatalogSnapshot(token), options?.force === true);
+  },
+  clearCatalog(): void {
+    clearCatalogCache();
   },
   async provision(token: string, group: string): Promise<{ api_key: string; token_id: number; group: string }> {
     if (isNewApiAuth(loadAuth())) {

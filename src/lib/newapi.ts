@@ -26,6 +26,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function unwrapData(value: unknown): unknown {
   const record = asRecord(value);
   if (!record || !("data" in record)) return value;
+  // Rust 侧 get_json 已经拆过 envelope；前端再遇到 success:false 才当成失败。
   if (record.success === false) {
     const message = typeof record.message === "string" && record.message.trim()
       ? record.message
@@ -157,10 +158,24 @@ function modelsFromSnapshot(models: unknown, groups: GroupOption[]): string[] {
   return [...new Set(Object.values(record).flatMap((value) => stringList(value)))];
 }
 
+export function assembleNewApiCatalog(snapshot: NewApiSnapshot): {
+  bootstrap: BootstrapData;
+  pricingMeta: PricingMeta;
+} {
+  const priced = pricingFromSnapshot(snapshot.pricing);
+  return {
+    bootstrap: assembleNewApiBootstrapFromParts(snapshot, priced.items),
+    pricingMeta: priced.meta,
+  };
+}
+
 export function assembleNewApiBootstrap(snapshot: NewApiSnapshot): BootstrapData {
+  return assembleNewApiBootstrapFromParts(snapshot, pricingFromSnapshot(snapshot.pricing).items);
+}
+
+function assembleNewApiBootstrapFromParts(snapshot: NewApiSnapshot, pricing: PricingItem[]): BootstrapData {
   const status = asRecord(unwrapData(snapshot.status)) ?? asRecord(snapshot.status) ?? {};
   const user = asRecord(unwrapData(snapshot.user)) ?? {};
-  const { items: pricing } = pricingFromSnapshot(snapshot.pricing);
   let groups = groupsFromSnapshot(snapshot.groups, snapshot.models);
   const models = modelsFromSnapshot(snapshot.models, groups);
   const userGroups = asString(user.group)

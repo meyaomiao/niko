@@ -46,6 +46,7 @@ import {
 } from "../lib/copy";
 import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
 import { isNewApiAuth, relayBaseUrl, stationOrigin } from "../lib/station";
+import { peekCurrentCatalog } from "../lib/catalogCache";
 const DESKTOP_APPLY_TIMEOUT_MS = 30_000;
 
 function withDesktopApplyTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -109,12 +110,13 @@ export default function Home() {
   const { handleSessionExpired } = useSession();
   const { theme, toggle } = useTheme();
 
-  const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cachedCatalog = peekCurrentCatalog();
+  const [bootstrap, setBootstrap] = useState<BootstrapData | null>(cachedCatalog?.bootstrap ?? null);
+  const [loading, setLoading] = useState(!cachedCatalog);
   // 用户用量聚合（厂家内排名用），驱动「常用 / 性价比」标签
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   // 服务端厂商目录 + 分组说明（公开接口）
-  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(null);
+  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(cachedCatalog?.pricingMeta ?? null);
   const initialBalance = parseBalanceSnapshot(
     auth?.quota,
     auth?.quotaPerUnit,
@@ -225,14 +227,15 @@ export default function Home() {
     const request = (async (): Promise<BootstrapData | null> => {
       let data: BootstrapData | null = null;
       try {
-        const [bootstrapResult, statusResult] = await Promise.allSettled([
-          api.bootstrap(auth.accessToken),
+        const [catalogResult, statusResult] = await Promise.allSettled([
+          api.catalog(auth.accessToken),
           api.status(),
         ]);
-        if (bootstrapResult.status === "rejected") throw bootstrapResult.reason;
+        if (catalogResult.status === "rejected") throw catalogResult.reason;
 
-        data = bootstrapResult.value;
+        data = catalogResult.value.bootstrap;
         setBootstrap(data);
+        setPricingMeta(catalogResult.value.pricingMeta);
         const quotaPerUnit =
           data.site.quota_per_unit ??
           (statusResult.status === "fulfilled" ? statusResult.value.quota_per_unit : undefined);
@@ -263,17 +266,14 @@ export default function Home() {
       })
       .finally(() => setLoading(false));
 
-    // 常用/性价比标签：取当前账号用量聚合，按厂家内排名判定；失败静默
-    api
-      .usageSummary(auth.accessToken)
-      .then((s) => setUsage(s))
-      .catch(() => undefined);
-
-    // 厂商目录 + 全部分组说明：公开接口，失败时回退到本地启发式
-    api
-      .pricingMeta()
-      .then((meta) => setPricingMeta(meta))
-      .catch(() => undefined);
+    // 常用/性价比标签：取当前账号用量聚合，按厂家内排名判定；失败静默。
+    // 第三方中转站的用量接口容易拖住页面，不阻塞目录。
+    if (!isNewApiAuth(auth)) {
+      api
+        .usageSummary(auth.accessToken)
+        .then((s) => setUsage(s))
+        .catch(() => undefined);
+    }
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
     void loadTargets();
@@ -897,6 +897,7 @@ export default function Home() {
     } catch {
       /* ignore */
     }
+    api.clearCatalog();
     handleSessionExpired();
   };
 

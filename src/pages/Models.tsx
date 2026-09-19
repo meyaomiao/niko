@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { loadAuth } from "../store/auth";
-import { relayBaseUrl } from "../lib/station";
+import { isNewApiAuth, relayBaseUrl } from "../lib/station";
 import { api, type BootstrapData, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
 import { VENDORS } from "../lib/vendor";
@@ -16,8 +16,9 @@ import { compareModelsByRelease } from "../lib/modelOrder";
 import { buildModelCatalog } from "../lib/catalog";
 import { computeTags, vendorPriceLevels, vendorUsageRanks, type ModelTag } from "../lib/modelTags";
 import { VendorIcon } from "../components/VendorIcon";
-import { ArrowLeftIcon } from "../components/Icons";
+import { ArrowLeftIcon, RefreshCwIcon } from "../components/Icons";
 import { friendlyDesktopError } from "../lib/copy";
+import { peekCurrentCatalog } from "../lib/catalogCache";
 
 const CARD = "nk-card";
 const SUBTLE = "nk-muted";
@@ -100,14 +101,17 @@ export default function Models() {
   const auth = loadAuth();
   const token = auth?.accessToken;
 
-  const [data, setData] = useState<BootstrapData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = peekCurrentCatalog();
+  const [data, setData] = useState<BootstrapData | null>(cached?.bootstrap ?? null);
+  const [loading, setLoading] = useState(!cached);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [bench, setBench] = useState<Record<string, BenchEntry>>({});
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [vendorMetas] = useState<VendorMeta[]>([]);
-  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(null);
+  const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(cached?.pricingMeta ?? null);
+  const loadGen = useRef(0);
   const [activeVendor, setActiveVendor] = useState<string>("全部");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedGroup, setSelectedGroup] = useState<string>("");
@@ -135,29 +139,43 @@ export default function Models() {
     setBench(loadBenchCache());
   }, [selectedModel]);
 
-  useEffect(() => {
-    setBench(loadBenchCache());
+  const loadCatalog = useCallback(async (force = false) => {
     if (!token) {
       navigate("/login", { replace: true });
       return;
     }
-    api
-      .bootstrap(token)
-      .then((res) => {
-        setData(res);
-        // 用户自己的用量聚合 → 厂家内排名的「常用 / 性价比」；失败静默，不阻塞目录
+    const generation = ++loadGen.current;
+    if (force) setRefreshing(true);
+    else if (!data) setLoading(true);
+    setError("");
+    try {
+      const snapshot = await api.catalog(token, { force });
+      if (loadGen.current !== generation) return;
+      setData(snapshot.bootstrap);
+      setPricingMeta(snapshot.pricingMeta);
+      // 第三方中转站的用量接口容易拖住页面，不阻塞目录展示
+      if (!isNewApiAuth(loadAuth())) {
         api
           .usageSummary(token)
-          .then((s) => setUsage(s))
+          .then((s) => {
+            if (loadGen.current === generation) setUsage(s);
+          })
           .catch(() => undefined);
-        // 厂商目录 + 全部分组说明（公开接口）；失败时回退本地启发式
-        api
-          .pricingMeta()
-          .then((meta) => setPricingMeta(meta))
-          .catch(() => undefined);
-      })
-      .catch((e) => setError(friendlyDesktopError(e)))
-      .finally(() => setLoading(false));
+      }
+    } catch (e) {
+      if (loadGen.current !== generation) return;
+      setError(friendlyDesktopError(e));
+    } finally {
+      if (loadGen.current === generation) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [token, navigate, data]);
+
+  useEffect(() => {
+    setBench(loadBenchCache());
+    void loadCatalog(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups = data?.groups ?? [];
@@ -195,8 +213,7 @@ export default function Models() {
       const price = priceByName.get(name) ?? null;
       const level = levels.get(name);
       const release = releaseDate(data.model_metadata?.[name], pricingIndex.get(name)?.release_date);
-      const enableGroups =
-        data.pricing?.find((item) => item.model_name === name)?.enable_groups ?? [];
+      const enableGroups = pricingIndex.get(name)?.enable_groups ?? [];
       return {
         name,
         release,
@@ -363,20 +380,31 @@ export default function Models() {
 
   return (
     <div className="nk-shell">
-      <header className="nk-header">
-        <button onClick={() => navigate("/home")} aria-label="返回首页" className="nk-btn-ghost px-2.5">
-          <ArrowLeftIcon />
+      <header className="nk-header justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <button onClick={() => navigate("/home")} aria-label="返回首页" className="nk-btn-ghost px-2.5">
+            <ArrowLeftIcon />
+          </button>
+          <h1 className={TITLE}>模型与价格</h1>
+        </div>
+        <button
+          onClick={() => void loadCatalog(true)}
+          disabled={loading || refreshing}
+          className="nk-btn-ghost px-2.5"
+          aria-label="刷新模型目录"
+          title="刷新模型目录"
+        >
+          <RefreshCwIcon className={refreshing ? "animate-spin motion-reduce:animate-none" : ""} />
         </button>
-        <h1 className={TITLE}>模型与价格</h1>
       </header>
 
       {/* 与首页一致：桌面端锁住外层高度（overflow-hidden），三列各自内部滚动 */}
       <main className="flex min-h-0 flex-1 overflow-y-auto px-4 py-4 md:overflow-hidden md:px-5">
         <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-3">
-          {loading && <p className={CARD}>正在加载模型目录…</p>}
+          {loading && !data && <p className={CARD}>正在加载模型目录…</p>}
           {error && <p className={`${CARD} text-red-500`}>{error}</p>}
 
-          {!loading && !error && (
+          {!loading && data && (
             <div className="grid min-h-0 flex-1 gap-3 overflow-hidden md:grid-cols-[11rem_minmax(0,1fr)_17rem]">
               {/* 第一列：厂家 */}
               <div className={`${CARD} flex min-h-0 flex-col overflow-hidden`}>
@@ -549,7 +577,7 @@ export default function Models() {
           )}
 
           {/* 目录诊断：服务端到底下发了哪些字段，一眼可查（排查分组/厂商数据用） */}
-          {!loading && !error && (
+          {data && (
             <p className={`shrink-0 px-1 text-[10px] ${SUBTLE}`}>
               目录诊断：可用模型 {cards.length}（来源 {catalog.source}） · 定价 {data?.pricing?.length ?? 0} · 含令牌分组{" "}
               {cards.filter((c) => c.hasTokenGroups).length} · 账号分组 {groups.length} · 厂商表{" "}

@@ -708,6 +708,7 @@ export default function Login() {
         // 钥匙串不可用时不阻断登录
       }
     }
+    api.clearCatalog();
     try {
       const [bootstrap, status] = await Promise.all([
         api.bootstrap(token),
@@ -787,6 +788,7 @@ export default function Login() {
         origin: connected.origin,
       };
       saveAuth(session);
+      api.clearCatalog();
       try {
         const bootstrap = await api.bootstrap(session.accessToken);
         const group = bootstrap.user.group || connected.group;

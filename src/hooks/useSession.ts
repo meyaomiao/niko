@@ -11,6 +11,7 @@ export function useSession() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleSessionExpired = useCallback(() => {
+    api.clearCatalog();
     clearAuth();
     navigate("/login", { replace: true });
   }, [navigate]);
@@ -30,7 +31,7 @@ export function useSession() {
         || msg.includes("unauthorized")
         || msg.includes("未登录")
         || msg.includes("令牌无效")
-        || msg.includes("已过期")
+        || (msg.includes("已过期") && !msg.includes("名称已存在"))
       ) {
         handleSessionExpired();
       }

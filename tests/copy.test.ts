@@ -10,6 +10,22 @@ import {
 
 const FORBIDDEN_USER_TERMS = ["provider", "profile", "base url", "api key", "quota", "journal", "wal", "sqlite", "custom"];
 
+test("token name conflicts are not treated as expired sessions", () => {
+  assert.equal(classifyDesktopError("令牌名称已存在"), "generic");
+  assert.equal(
+    friendlyDesktopError("令牌名称已存在"),
+    "这个分组的密钥已存在，正在尝试复用；请再点一次接入。",
+  );
+  assert.equal(
+    friendlyDesktopError({ code: "failed", message: "中转站暂时无法完成操作，请稍后重试。" }),
+    "中转站暂时无法完成操作，请稍后重试。",
+  );
+  assert.equal(
+    friendlyDesktopError('{"code":"network","message":"无法连接该中转站，请检查地址和网络后重试。"}'),
+    "无法连接该中转站，请检查地址和网络后重试。",
+  );
+});
+
 test("maps common failures to one clear next step", () => {
   assert.equal(classifyDesktopError({ code: "UNAUTHORIZED", message: "401" }), "session");
   assert.equal(friendlyDesktopError({ code: "UNAUTHORIZED", message: "401" }), "登录状态已过期，请重新登录后再试。");
