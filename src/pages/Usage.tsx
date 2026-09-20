@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { loadAuth } from "../store/auth";
 import {
@@ -10,31 +10,31 @@ import {
   type UsageDimension,
   type UsageDayBucket,
 } from "../api/client";
+import { summarizeNewApiLogs } from "../lib/newapi";
+import { usageRange, usageTrend, UsageLoadError } from "../lib/usageLedger";
+import { isNewApiAuth } from "../lib/station";
 import { VENDORS, vendorOfGroup, vendorOfModel, type Vendor } from "../lib/vendor";
 import { ArrowLeftIcon } from "../components/Icons";
 import { friendlyDesktopError } from "../lib/copy";
-import { fmtQuotaUSD, quotaPerUnitOf } from "../lib/pricing";
+import { fmtQuotaUSD } from "../lib/pricing";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
 const TITLE = "nk-title";
 const SELECT = "nk-select";
+const PAGE_SIZE = 50;
 
 const RANGES = [
-  { id: "today", label: "今天", days: 0 },
-  { id: "7d", label: "近 7 天", days: 7 },
-  { id: "30d", label: "近 30 天", days: 30 },
-  { id: "all", label: "全部", days: -1 },
+  { id: "today", label: "今天" },
+  { id: "7d", label: "近 7 天" },
+  { id: "30d", label: "近 30 天" },
+  { id: "all", label: "全部" },
 ] as const;
 
 type RangeId = (typeof RANGES)[number]["id"] | "custom";
 
 function modelName(item: BootstrapModel): string {
   return typeof item === "string" ? item : (item.name ?? item.model_name ?? item.id ?? "");
-}
-
-function usd(quota: number, quotaPerUnit: number): string {
-  return fmtQuotaUSD(quota, quotaPerUnit);
 }
 
 function num(n: number): string {
@@ -52,20 +52,6 @@ function toDateInput(ts: number): string {
   const m = `${d.getMonth() + 1}`.padStart(2, "0");
   const day = `${d.getDate()}`.padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
-}
-
-function rangeToTimestamps(range: RangeId, from: string, to: string): [number, number] {
-  const now = new Date();
-  if (range === "custom") {
-    const start = from ? dayStart(new Date(`${from}T00:00:00`)) : 0;
-    const end = to ? dayStart(new Date(`${to}T00:00:00`)) + 86399 : 0;
-    return [start, end];
-  }
-  const conf = RANGES.find((r) => r.id === range);
-  if (!conf || conf.days < 0) return [0, 0];
-  if (conf.days === 0) return [dayStart(now), dayStart(now) + 86399];
-  const start = dayStart(new Date(now.getTime() - (conf.days - 1) * 86400_000));
-  return [start, dayStart(now) + 86399];
 }
 
 // 卡片内嵌的迷你折线：按所选时间周期展示该指标的逐日变化
@@ -122,7 +108,7 @@ function Sparkline({
   );
 }
 
-function DimensionList({ title, items, quotaPerUnit }: { title: string; items: UsageDimension[]; quotaPerUnit: number }) {
+function DimensionList({ title, items, money }: { title: string; items: UsageDimension[]; money: (q: number) => string }) {
   if (items.length === 0) return null;
   const max = Math.max(...items.map((i) => i.quota), 1);
   return (
@@ -134,7 +120,7 @@ function DimensionList({ title, items, quotaPerUnit }: { title: string; items: U
             <div className="flex items-baseline justify-between gap-3 text-xs">
               <span className="truncate font-mono text-gray-700 dark:text-gray-300">{item.name}</span>
               <span className="shrink-0 text-gray-500 dark:text-gray-400">
-                {num(item.requests)} 次 · {usd(item.quota, quotaPerUnit)}
+                {num(item.requests)} 次 · {money(item.quota)}
               </span>
             </div>
             <div className="mt-1 h-1 rounded-full bg-black/5 dark:bg-white/10">
@@ -152,9 +138,9 @@ function DimensionList({ title, items, quotaPerUnit }: { title: string; items: U
 
 export default function Usage() {
   const auth = loadAuth();
-  const quotaPerUnit = quotaPerUnitOf(auth?.quotaPerUnit);
   const navigate = useNavigate();
   const token = auth?.accessToken;
+  const stationKindNewApi = isNewApiAuth(auth);
 
   const [groups, setGroups] = useState<GroupOption[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
@@ -166,9 +152,26 @@ export default function Usage() {
   const [vendor, setVendor] = useState<Vendor | "">("");
 
   const [summary, setSummary] = useState<UsageSummary | null>(null);
-  const [logs, setLogs] = useState<UsageLogItem[]>([]);
+  const [tableItems, setTableItems] = useState<UsageLogItem[]>([]);
+  const [allRecords, setAllRecords] = useState<UsageLogItem[] | null>(null);
+  const [tableMode, setTableMode] = useState<"server" | "local" | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageLoading, setPageLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // 金额单位：本地已有就直接用；缺失时向站点补拉一次，仍缺失就不展示金额，
+  // 避免用错误单位把消费算少一半。
+  const [unit, setUnit] = useState<number | null>(() => {
+    const parsed = Number(auth?.quotaPerUnit);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  });
+  const [unitError, setUnitError] = useState<string | null>(null);
+  const money = useMemo(() => {
+    if (unit === null) return (_: number) => "—";
+    return (quota: number) => fmtQuotaUSD(quota, unit);
+  }, [unit]);
 
   useEffect(() => {
     if (!token) {
@@ -184,43 +187,163 @@ export default function Usage() {
       .catch(() => undefined);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [startTimestamp, endTimestamp] = useMemo(
-    () => rangeToTimestamps(range, from, to),
-    [range, from, to]
-  );
+  useEffect(() => {
+    if (!token || unit !== null) return;
+    let active = true;
+    api
+      .status()
+      .then((status) => {
+        if (!active) return;
+        const parsed = Number((status as { quota_per_unit?: number | string }).quota_per_unit);
+        if (Number.isFinite(parsed) && parsed > 0) setUnit(parsed);
+        else setUnitError("无法确认站点的金额单位，金额暂不展示。");
+      })
+      .catch(() => {
+        if (active) setUnitError("金额单位暂时无法读取，金额暂不展示。");
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, unit]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 厂商筛选转成模型名列表交给后端聚合；日志列表侧在本地按厂商过滤
+  const rangeCalc = useMemo(() => {
+    try {
+      const [start, end] = usageRange(range === "custom" ? "custom" : range, from, to);
+      return { start, end, error: null as string | null };
+    } catch (err) {
+      return {
+        start: 0,
+        end: 0,
+        error: err instanceof UsageLoadError ? err.message : "所选时间范围无效。",
+      };
+    }
+  }, [range, from, to]);
+  const { start: startTimestamp, end: endTimestamp } = rangeCalc;
+
+  // 厂商筛选转成模型名列表交给后端聚合；后端不支持时由本地完整账本兜底
   const vendorModels = useMemo(
     () => (vendor ? allModels.filter((m) => vendorOfModel(m) === vendor) : []),
     [vendor, allModels]
   );
+  const vendorEmpty = vendor !== "" && vendorModels.length === 0;
 
+  const tzOffset = -new Date().getTimezoneOffset();
+  const queryKey = `${token ?? ""}|${startTimestamp}|${endTimestamp}|${group}|${vendor}|${vendorModels.join(",")}`;
+  const versionRef = useRef(0);
+  const firstPageKeyRef = useRef<string>("");
+  // 当前筛选的账本是否已落地：翻页只能在账本就绪后进行，
+  // 否则切换筛选瞬间会带着上一轮的分页模式多发请求、互相覆盖
+  const ledgerKeyRef = useRef<string>("");
+
+  // 主加载：换筛选就整体作废上一轮结果，旧请求晚到也不允许覆盖新选择；
+  // 失败时清空数据，绝不把上一个范围的数字当成当前范围展示。
   useEffect(() => {
-    if (!token) return;
+    if (!token || rangeCalc.error) return;
+    const version = ++versionRef.current;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
+    ledgerKeyRef.current = "";
+    setSummary(null);
+    setTableItems([]);
+    setAllRecords(null);
+    setTableMode(null);
+    setTotal(0);
+    setPage(1);
+    firstPageKeyRef.current = "";
+
+    if (vendorEmpty) {
+      setSummary(summarizeNewApiLogs([]));
+      setAllRecords([]);
+      setTableMode("local");
+      ledgerKeyRef.current = queryKey;
+      setLoading(false);
+      return;
+    }
+
     const query = {
       startTimestamp: startTimestamp || undefined,
       endTimestamp: endTimestamp || undefined,
       group: group || undefined,
       models: vendor ? vendorModels : undefined,
+      tz: tzOffset,
     };
-    Promise.all([
-      api.usageSummary(token, query),
-      api.usage(token, { ...query, pageSize: 100 }),
-    ])
-      .then(([s, l]) => {
-        setSummary(s);
-        setLogs(l.items ?? []);
-      })
-      .catch((e) => setError(friendlyDesktopError(e)))
-      .finally(() => setLoading(false));
-  }, [token, startTimestamp, endTimestamp, group, vendor, vendorModels]);
+    // 第三方没有服务端汇总；本站选了厂商时旧服务端不认 models，也走本地完整账本，
+    // 保证概览和明细永远来自同一批记录。
+    const useLocalLedger = stationKindNewApi || vendor !== "";
+    (async () => {
+      try {
+        if (useLocalLedger) {
+          const records = await api.usageRecords(token, query, controller.signal);
+          if (versionRef.current !== version) return;
+          setSummary(summarizeNewApiLogs(records));
+          setAllRecords(records);
+          setTableMode("local");
+          setTotal(records.length);
+        } else {
+          const [summaryData, firstPage] = await Promise.all([
+            api.usageSummary(token, query),
+            api.usage(token, { ...query, page: 1, pageSize: PAGE_SIZE }),
+          ]);
+          if (versionRef.current !== version) return;
+          setSummary(summaryData);
+          setTableMode("server");
+          const pageTotal = firstPage.total ?? firstPage.items?.length ?? 0;
+          setTotal(pageTotal);
+          setTableItems(firstPage.items ?? []);
+          firstPageKeyRef.current = queryKey;
+        }
+        ledgerKeyRef.current = queryKey;
+      } catch (err) {
+        if (versionRef.current !== version || controller.signal.aborted) return;
+        setError(err instanceof UsageLoadError ? err.message : friendlyDesktopError(err));
+        setSummary(null);
+        setTableItems([]);
+        setAllRecords(null);
+        setTableMode(null);
+        setTotal(0);
+      } finally {
+        if (versionRef.current === version) setLoading(false);
+      }
+    })();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryKey, rangeCalc.error, vendorEmpty]);
 
-  const visibleLogs = useMemo(
-    () => (vendor ? logs.filter((l) => vendorOfModel(l.model_name) === vendor) : logs),
-    [logs, vendor]
-  );
+  // 翻页：本地账本直接切片；服务端分页按页取，且同样不允许旧页覆盖新页。
+  useEffect(() => {
+    if (!token || rangeCalc.error || ledgerKeyRef.current !== queryKey || tableMode === null) return;
+    if (tableMode === "local") {
+      setTableItems(allRecords?.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) ?? []);
+      return;
+    }
+    if (page === 1 && firstPageKeyRef.current === queryKey) return;
+    const version = versionRef.current;
+    setPageLoading(true);
+    api
+      .usage(token, {
+        startTimestamp: startTimestamp || undefined,
+        endTimestamp: endTimestamp || undefined,
+        group: group || undefined,
+        models: vendor ? vendorModels : undefined,
+        tz: tzOffset,
+        page,
+        pageSize: PAGE_SIZE,
+      })
+      .then((result) => {
+        if (versionRef.current !== version) return;
+        setTableItems(result.items ?? []);
+      })
+      .catch((err) => {
+        if (versionRef.current !== version) return;
+        setTableItems([]);
+        setError(err instanceof UsageLoadError ? err.message : friendlyDesktopError(err));
+      })
+      .finally(() => {
+        if (versionRef.current === version) setPageLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, queryKey, tableMode, allRecords]);
 
   const groupOptions = useMemo(() => {
     const list = vendor ? groups.filter((g) => vendorOfGroup(g.name) === vendor) : groups;
@@ -229,22 +352,16 @@ export default function Usage() {
 
   const tokensTotal = (summary?.prompt_tokens ?? 0) + (summary?.completion_tokens ?? 0);
   const requests = summary?.requests ?? 0;
-  const avgCost = requests > 0 ? usd(summary!.quota / requests, quotaPerUnit) : "—";
+  const avgCost = requests > 0 ? money(summary!.quota / requests) : "—";
   const streamRate = requests > 0 ? `${Math.round((summary!.stream_requests / requests) * 100)}%` : "—";
 
   // 折线图按所选周期补齐没有消费的日期，避免时间轴被压缩
-  const trendBuckets = useMemo(() => {
-    const raw = summary?.by_day ?? [];
-    if (!startTimestamp || !endTimestamp) return raw;
-    const byDate = new Map(raw.map((d) => [d.date, d]));
-    const out: UsageDayBucket[] = [];
-    for (let ts = dayStart(new Date(startTimestamp * 1000)); ts <= endTimestamp; ts += 86400) {
-      const date = toDateInput(ts);
-      out.push(byDate.get(date) ?? { date, quota: 0, tokens: 0, requests: 0 });
-      if (out.length > 366) break;
-    }
-    return out;
-  }, [summary, startTimestamp, endTimestamp]);
+  const trendBuckets = useMemo(
+    () => usageTrend(summary?.by_day ?? [], startTimestamp, endTimestamp),
+    [summary, startTimestamp, endTimestamp]
+  );
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="nk-shell">
@@ -341,7 +458,9 @@ export default function Usage() {
             </div>
           </div>
 
+          {rangeCalc.error && <p className="nk-alert-danger text-center text-sm">{rangeCalc.error}</p>}
           {error && <p className="nk-alert-danger text-center text-sm">{error}</p>}
+          {unitError && <p className="nk-alert-danger text-center text-sm">{unitError}</p>}
           {loading && (
             <div
               role="status"
@@ -359,10 +478,10 @@ export default function Usage() {
                 <div className={CARD}>
                   <p className={LABEL}>累计花费</p>
                   <p className="mt-1 text-xl font-semibold text-gray-900 dark:text-white">
-                    {usd(summary.quota, quotaPerUnit)}
+                    {money(summary.quota)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">平均每次 {avgCost}</p>
-                  <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={(q) => usd(q, quotaPerUnit)} />
+                  <Sparkline buckets={trendBuckets} pick={(b) => b.quota} format={money} />
                 </div>
                 <div className={CARD}>
                   <p className={LABEL}>累计文字量</p>
@@ -388,21 +507,24 @@ export default function Usage() {
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
-                <DimensionList title="模型使用排行" items={summary.by_model ?? []} quotaPerUnit={quotaPerUnit} />
-                <DimensionList title="模型服务使用排行" items={summary.by_group ?? []} quotaPerUnit={quotaPerUnit} />
+                <DimensionList title="模型使用排行" items={summary.by_model ?? []} money={money} />
+                <DimensionList title="模型服务使用排行" items={summary.by_group ?? []} money={money} />
               </div>
             </>
           )}
 
-          {!loading && !error && (
+          {!loading && !error && !rangeCalc.error && (
             <div className={CARD}>
-              <p className={TITLE}>使用明细</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className={TITLE}>使用明细</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">共 {num(total)} 条记录</p>
+              </div>
               {/* Claude Code / Codex 是 agent，一次提问内部会分成读文件、调工具、生成标题等多次
                   独立请求，条数远多于用户感知的对话轮数，不说明会被当成重复计费 */}
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 一次提问通常对应多条记录：Claude Code 与 Codex 会在后台拆成读文件、调用工具等多次模型调用，各自单独计费。
               </p>
-              {visibleLogs.length === 0 ? (
+              {tableItems.length === 0 ? (
                 <p className="nk-empty mt-3">
                   当前筛选条件下暂无使用记录
                 </p>
@@ -420,14 +542,16 @@ export default function Usage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleLogs.map((l) => (
-                      <tr key={l.id}>
+                    {tableItems.map((l, i) => (
+                      <tr key={`${l.created_at}-${l.id}-${i}`}>
                         <td className="whitespace-nowrap text-gray-500 dark:text-gray-400">
                           {new Date(l.created_at * 1000).toLocaleString("zh-CN", {
                             month: "2-digit",
                             day: "2-digit",
                             hour: "2-digit",
                             minute: "2-digit",
+                            second: "2-digit",
+                            hour12: false,
                           })}
                         </td>
                         <td className="font-mono">{l.model_name}</td>
@@ -435,7 +559,7 @@ export default function Usage() {
                         <td className="text-right">{num(l.prompt_tokens)}</td>
                         <td className="text-right">{num(l.completion_tokens)}</td>
                         <td className="text-right font-semibold text-indigo-600 dark:text-indigo-400">
-                          {usd(l.quota, quotaPerUnit)}
+                          {money(l.quota)}
                         </td>
                       </tr>
                     ))}
@@ -443,6 +567,27 @@ export default function Usage() {
                 </table>
                 </div>
               )}
+              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <span>
+                  第 {page} / {totalPages} 页
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1 || pageLoading}
+                    className="nk-btn nk-btn-secondary"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages || pageLoading}
+                    className="nk-btn nk-btn-secondary"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
