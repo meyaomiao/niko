@@ -20,6 +20,7 @@
     "test:station": "node --experimental-strip-types --test tests/station.test.ts tests/newapi.test.ts tests/copy.test.ts tests/catalogCache.test.ts",
     "test:update": "node --experimental-strip-types --test tests/appUpdate.test.ts",
     "test:usage": "node --experimental-strip-types --test tests/usageStats.test.ts",
+    "test:ledger": "node --experimental-strip-types --test tests/usageLedger.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -1,3 +1,4 @@
+import { localDate, UsageLoadError } from "./usageLedger.ts";
 import type {
   BootstrapData,
   GroupOption,
@@ -225,18 +226,19 @@ export function mapNewApiLogs(payload: unknown): { items: UsageLogItem[]; total?
       ? record.items
       : Array.isArray(record?.data)
         ? record.data
-        : [];
+        : record?.items === null ? [] : null;
+  if (!rows) throw new UsageLoadError("站点返回的用量记录格式无效。");
   const items: UsageLogItem[] = [];
   for (const row of rows) {
     const item = asRecord(row);
-    if (!item) continue;
+    if (!item) throw new UsageLoadError("站点返回的用量记录格式无效。");
     items.push({
       id: asNumber(item.id),
-      created_at: asNumber(item.created_at ?? item.createdAt),
+      created_at: asNumber(item.created_at ?? item.createdAt, NaN),
       model_name: asString(item.model_name ?? item.modelName),
       prompt_tokens: asNumber(item.prompt_tokens ?? item.promptTokens),
       completion_tokens: asNumber(item.completion_tokens ?? item.completionTokens),
-      quota: asNumber(item.quota),
+      quota: asNumber(item.quota, NaN),
       group: asString(item.group) || undefined,
       use_time: item.use_time == null && item.useTime == null
         ? undefined
@@ -249,8 +251,8 @@ export function mapNewApiLogs(payload: unknown): { items: UsageLogItem[]; total?
     });
   }
   const total = record && (record.total != null || record.Total != null)
-    ? asNumber(record.total ?? record.Total, items.length)
-    : items.length;
+    ? asNumber(record.total ?? record.Total, NaN)
+    : undefined;
   return { items, total };
 }
 
@@ -289,7 +291,7 @@ export function summarizeNewApiLogs(items: UsageLogItem[] | null | undefined): U
     }
 
     if (item.created_at) {
-      const date = new Date(item.created_at * 1000).toISOString().slice(0, 10);
+      const date = localDate(item.created_at);
       const day = byDay.get(date) ?? { quota: 0, tokens: 0, requests: 0 };
       day.quota += item.quota;
       day.tokens += item.prompt_tokens + item.completion_tokens;
@@ -305,8 +307,8 @@ export function summarizeNewApiLogs(items: UsageLogItem[] | null | undefined): U
     requests: list.length,
     stream_requests: stream,
     total_use_time: useTime,
-    by_model: [...byModel.entries()].map(([name, value]) => ({ name, ...value })),
-    by_group: [...byGroup.entries()].map(([name, value]) => ({ name, ...value })),
-    by_day: [...byDay.entries()].map(([date, value]) => ({ date, ...value })),
+    by_model: [...byModel.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.quota - a.quota),
+    by_group: [...byGroup.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.quota - a.quota),
+    by_day: [...byDay.entries()].map(([date, value]) => ({ date, ...value })).sort((a, b) => a.date.localeCompare(b.date)),
   };
 }

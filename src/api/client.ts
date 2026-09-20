@@ -18,6 +18,7 @@ import {
   type CatalogSnapshot,
 } from "../lib/catalogCache";
 import { currentDeviceName, isNewApiAuth, MOMOTOKEN_ORIGIN } from "../lib/station";
+import { collectUsage } from "../lib/usageLedger";
 import { loadAuth } from "../store/auth";
 
 const BASE_URL = MOMOTOKEN_ORIGIN;
@@ -288,6 +289,8 @@ export interface UsageQuery {
   /** 按厂商筛选时传入该厂商的模型名列表，日志列表侧只取第一个模型精确匹配 */
   models?: string[];
   modelName?: string;
+  /** 客户端时区偏移（分钟，东八区为 480），供服务端按用户本地日期分桶 */
+  tz?: number;
 }
 
 function usageQueryString(params: UsageQuery): string {
@@ -299,6 +302,7 @@ function usageQueryString(params: UsageQuery): string {
   if (params.group) q.set("group", params.group);
   if (params.modelName) q.set("model_name", params.modelName);
   if (params.models?.length) q.set("models", params.models.join(","));
+  if (params.tz !== undefined) q.set("tz", String(params.tz));
   return q.toString();
 }
 
@@ -461,7 +465,7 @@ export const api = {
           start_timestamp: params.startTimestamp,
           end_timestamp: params.endTimestamp,
           group: params.group,
-          model_name: params.modelName ?? params.models?.[0],
+          model_name: params.modelName,
         },
       });
       return mapNewApiLogs(payload);
@@ -471,10 +475,14 @@ export const api = {
       token
     );
   },
+  /** Collect once for both cards and the paginated table, including legacy servers. */
+  async usageRecords(token: string, params: UsageQuery = {}, signal?: AbortSignal): Promise<UsageLogItem[]> {
+    return collectUsage((query) => this.usage(token, query), params, signal);
+  },
   async usageSummary(token: string, params: UsageQuery = {}): Promise<UsageSummary> {
+    if (params.models?.length === 0) return summarizeNewApiLogs([]);
     if (isNewApiAuth(loadAuth())) {
-      const logs = await this.usage(token, { ...params, pageSize: params.pageSize ?? 100 });
-      return summarizeNewApiLogs(logs.items);
+      return summarizeNewApiLogs(await this.usageRecords(token, params));
     }
     return get<UsageSummary>(`/client/usage/summary?${usageQueryString(params)}`, token);
   },
