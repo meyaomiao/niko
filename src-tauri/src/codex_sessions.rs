@@ -1377,23 +1377,36 @@ fn history_capability_status(tables: &BTreeMap<String, BTreeSet<String>>) -> Cap
     }
 }
 
+/// Codex 的辅助库（不含 thread 状态与分页历史）允许出现的表。
+///
+/// 这张名单必须跟着 Codex 版本更新：漏登记一张新表，整个库就会被判成
+/// 未知 schema 并升级为全局 blocker，「恢复到官方 / 同步会话」会直接拒绝执行。
+/// 新增辅助表时：确认它不携带 thread 的 model_provider 状态，然后登记到
+/// `tests/codex_sessions.rs::recognizes_current_codex_auxiliary_databases`。
 fn is_known_auxiliary_schema(tables: &BTreeMap<String, BTreeSet<String>>) -> bool {
     const KNOWN_TABLES: &[&str] = &[
         "_sqlx_migrations",
         "app_server_history_snapshots",
         "automations",
         "automation_runs",
+        "codex_schema_migrations",
+        "consolidation_progress",
         "external_agent_config_imports",
         "inbox_items",
         "jobs",
+        "live_visualization_suggestions",
         "logs",
         "local_app_server_feature_enablement",
         "local_thread_catalog",
         "local_thread_catalog_hosts",
         "local_thread_catalog_metadata",
+        "local_thread_catalog_scan_checkpoints",
+        "local_thread_catalog_scan_entries",
         "local_thread_catalog_sync_state",
         "memories",
         "memory_usage",
+        "queued_items",
+        "queued_thread_revisions",
         "remote_control_enrollments",
         "stage1_outputs",
         "thread_timeline_ledger",
