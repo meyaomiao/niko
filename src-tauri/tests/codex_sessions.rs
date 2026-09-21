@@ -787,6 +787,38 @@ fn recognizes_current_codex_auxiliary_databases() {
              CREATE TABLE local_thread_catalog_metadata (
                  id INTEGER PRIMARY KEY,
                  catalog_revision INTEGER NOT NULL
+             );
+             CREATE TABLE codex_schema_migrations (
+                 id TEXT PRIMARY KEY,
+                 predecessor_id TEXT,
+                 checksum TEXT NOT NULL,
+                 applied_at INTEGER NOT NULL,
+                 app_version TEXT NOT NULL,
+                 build_flavor TEXT NOT NULL,
+                 build_commit TEXT NOT NULL
+             );
+             CREATE TABLE live_visualization_suggestions (
+                 id TEXT PRIMARY KEY,
+                 account_id TEXT,
+                 user_id TEXT,
+                 host_id TEXT,
+                 thread_id TEXT,
+                 title TEXT NOT NULL,
+                 description TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 submission TEXT
+             );
+             CREATE TABLE local_thread_catalog_scan_checkpoints (
+                 host_id TEXT NOT NULL,
+                 checkpoint TEXT NOT NULL,
+                 failed_at INTEGER,
+                 PRIMARY KEY (host_id, checkpoint)
+             );
+             CREATE TABLE local_thread_catalog_scan_entries (
+                 host_id TEXT NOT NULL,
+                 thread_id TEXT NOT NULL,
+                 removed INTEGER NOT NULL,
+                 PRIMARY KEY (host_id, thread_id)
              );",
         )
         .unwrap();
@@ -810,13 +842,64 @@ fn recognizes_current_codex_auxiliary_databases() {
         .unwrap();
     drop(snapshots);
 
+    // Codex 会把 memories / queue 库同时放在 ~/.codex 与 ~/.codex/sqlite 下，
+    // 顶层那份比 sqlite/ 下的多出若干表；两份都必须识别为辅助库。
+    let memories = Connection::open(codex_home.join("memories_1.sqlite")).unwrap();
+    memories
+        .execute_batch(
+            "CREATE TABLE _sqlx_migrations (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             );
+             CREATE TABLE consolidation_progress (
+                 singleton INTEGER PRIMARY KEY,
+                 max_thread_count INTEGER NOT NULL
+             );
+             CREATE TABLE jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+             CREATE TABLE stage1_outputs (id TEXT PRIMARY KEY, payload TEXT NOT NULL);",
+        )
+        .unwrap();
+    drop(memories);
+
+    let queue = Connection::open(codex_home.join("queue_1.sqlite")).unwrap();
+    queue
+        .execute_batch(
+            "CREATE TABLE _sqlx_migrations (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             );
+             CREATE TABLE queued_items (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 thread_id TEXT NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 queue_order INTEGER NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE queued_thread_revisions (
+                 revision INTEGER NOT NULL,
+                 thread_id TEXT NOT NULL,
+                 PRIMARY KEY (revision, thread_id)
+             );",
+        )
+        .unwrap();
+    drop(queue);
+
     let report = scan_codex_sessions(&ScanRequest::new(&codex_home)).unwrap();
     assert!(
         !report.is_blocked(),
         "diagnostics: {:#?}",
         report.diagnostics
     );
-    assert_eq!(report.sqlite_databases.len(), 2);
+    assert_eq!(report.sqlite_databases.len(), 4);
     assert!(report
         .sqlite_databases
         .iter()
