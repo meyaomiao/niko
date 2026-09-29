@@ -45,6 +45,19 @@ impl SafeCommandError {
         )
     }
 
+    /// 会话同步前要求退出 ChatGPT（Codex）桌面端：它持有 codex app-server 进程，
+    /// 规划与迁移期间继续写会话会让事务以「源已变化」拒绝。此前该场景被映射成
+    /// busy/change_failed，用户看到「另一个操作正在进行」或「操作未完成」，
+    /// 不知道要去关应用。
+    pub const fn codex_running() -> Self {
+        Self::new(
+            "codex_running",
+            "请先退出 ChatGPT（Codex）应用后重试；同步期间它不能在后台写会话。",
+            true,
+            Some("retry"),
+        )
+    }
+
     pub const fn change_failed(retryable: bool) -> Self {
         Self::new(
             "change_failed",
@@ -74,6 +87,7 @@ mod tests {
             SafeCommandError::invalid_request(),
             SafeCommandError::read_failed(),
             SafeCommandError::busy(),
+            SafeCommandError::codex_running(),
             SafeCommandError::change_failed(false),
             SafeCommandError::change_failed(true),
             SafeCommandError::open_failed(),

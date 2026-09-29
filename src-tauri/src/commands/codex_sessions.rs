@@ -1,6 +1,6 @@
 use crate::codex_sessions::{ migrate_codex_sessions_transactional_with_progress, recover_codex_migration_since, recover_codex_session_migrations,
-    scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationErrorKind,
-    MigrationOptions, MigrationOutcome, MigrationProgress, MigrationProgressPhase,
+    scan_codex_sessions, CodexMigrationInput, CodexProcessPolicy, DiagnosticLevel, MigrationError,
+    MigrationErrorKind, MigrationOptions, MigrationOutcome, MigrationProgress, MigrationProgressPhase,
     MigrationProviderTarget, MigrationRequest, ScanReport, ScanRequest,
     ThreadInventory, MIGRATION_ROOT_MARKER, MIGRATION_ROOT_MARKER_CONTENT,
 };
@@ -629,14 +629,25 @@ fn map_migration_error(kind: MigrationErrorKind, retryable: bool) -> SafeCommand
         | MigrationErrorKind::CorruptStorage
         | MigrationErrorKind::PermissionDenied
         | MigrationErrorKind::RootNotAuthorized => SafeCommandError::change_failed(false),
+        // Codex 桌面端还在运行：给出能看懂的指引，而不是伪装成「有别的操作在进行」。
+        MigrationErrorKind::CodexRunning => SafeCommandError::codex_running(),
         MigrationErrorKind::NikoLocked
         | MigrationErrorKind::NikoLockUnverifiable
         | MigrationErrorKind::ProviderSyncLocked
-        | MigrationErrorKind::CodexRunning
         | MigrationErrorKind::FileOccupied
         | MigrationErrorKind::SqliteBusy => SafeCommandError::busy(),
         _ => SafeCommandError::change_failed(retryable),
     }
+}
+
+/// 统一记录会话迁移失败原因（kind+code 均为静态字面量，脱敏安全），再映射成
+/// 用户可见错误。此前失败完全不落日志，线上排查只能靠猜。
+fn migration_failure(context: &str, error: &MigrationError) -> SafeCommandError {
+    crate::logx::append(
+        "codex_session_normalize",
+        &format!("{context} failed kind={:?} code={}", error.kind, error.code),
+    );
+    map_migration_error(error.kind, error.retryable)
 }
 
 
@@ -732,7 +743,7 @@ pub(crate) fn normalize_codex_session_storage_with_input_and_progress(
                 report.changed_artifacts,
             ))
         }
-        Err(error) => Err(map_migration_error(error.kind, error.retryable)),
+        Err(error) => Err(migration_failure(&target_provider, &error)),
     }
 }
 
@@ -817,7 +828,7 @@ pub(crate) fn normalize_codex_session_storage_selected_with_progress(
                 report.changed_artifacts,
             ))
         }
-        Err(error) => Err(map_migration_error(error.kind, error.retryable)),
+        Err(error) => Err(migration_failure(&target_provider, &error)),
     }
 }
 
@@ -828,7 +839,7 @@ pub(crate) fn recover_codex_session_storage_since(
     let request = mutation_request(None);
     recover_codex_migration_since(&request, known_ids)
         .map(|outcome| outcome.map(|value| value == MigrationOutcome::Committed))
-        .map_err(|error| map_migration_error(error.kind, error.retryable))
+        .map_err(|error| migration_failure("recover_since", &error))
 }
 
 pub(crate) fn recover_codex_session_storage() -> Result<(), SafeCommandError> {
@@ -837,7 +848,7 @@ pub(crate) fn recover_codex_session_storage() -> Result<(), SafeCommandError> {
     }
     recover_codex_session_migrations(&mutation_request(None))
         .map(|_| ())
-        .map_err(|error| map_migration_error(error.kind, error.retryable))
+        .map_err(|error| migration_failure("recover", &error))
 }
 
 #[tauri::command]

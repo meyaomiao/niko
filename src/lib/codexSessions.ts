@@ -13,6 +13,9 @@ const SAFE_ERRORS: Record<string, ReadonlyArray<{
   invalid_request: [{ message: "请求无效，请重新检查。", retryable: false }],
   read_failed: [{ message: "会话暂时无法读取。", retryable: true, action: "retry" }],
   busy: [{ message: "另一个操作正在进行，请稍后再试。", retryable: true, action: "retry" }],
+  codex_running: [
+    { message: "请先退出 ChatGPT（Codex）应用后重试；同步期间它不能在后台写会话。", retryable: true, action: "retry" },
+  ],
   change_failed: [
     { message: "操作未完成，原有内容保持可用。", retryable: false },
     { message: "操作未完成，原有内容保持可用。", retryable: true, action: "retry" },

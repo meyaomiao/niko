@@ -18,6 +18,14 @@ import {
 test("accepts only the versioned bounded safe error contract", () => {
   const safe = { version: 1, code: "busy", message: "另一个操作正在进行，请稍后再试。", retryable: true, action: "retry" };
   assert.deepEqual(parseSafeCommandError(safe), safe);
+  const codexRunning = {
+    version: 1,
+    code: "codex_running",
+    message: "请先退出 ChatGPT（Codex）应用后重试；同步期间它不能在后台写会话。",
+    retryable: true,
+    action: "retry",
+  };
+  assert.deepEqual(parseSafeCommandError(codexRunning), codexRunning);
   for (const rejection of [
     new Error("/Users/alice/.codex/config.toml"),
     "auth.json journal WAL SQLite custom lock sk-key API token",

@@ -4,10 +4,11 @@
 //! intentionally a Rust API only: no production Tauri command invokes it yet.
 
 use super::{
-    build_fixture_thread_proofs, digest_hex, read_rollout_logical, rewrite_config_provider,
-    rewrite_rollout_header_provider, scan_codex_sessions, shift_fixture_proof_offsets,
-    FixtureMutationError, FixtureProviderTarget, FixtureThreadProof, RolloutArtifact, ScanReport,
-    ScanRequest, CUSTOM_PROVIDER, OFFICIAL_PROVIDER,
+    build_fixture_thread_proofs, build_fixture_thread_proofs_with_progress, digest_hex,
+    read_rollout_logical, rewrite_config_provider, rewrite_rollout_header_provider,
+    scan_codex_sessions, shift_fixture_proof_offsets, FixtureMutationError,
+    FixtureProviderTarget, FixtureThreadProof, RolloutArtifact, ScanReport, ScanRequest,
+    CUSTOM_PROVIDER, OFFICIAL_PROVIDER,
 };
 use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
@@ -508,7 +509,13 @@ pub fn migrate_codex_sessions_transactional_with_faults_and_progress(
         }
     }
 
-    let plan = build_migration_plan(request, target)?;
+    // Codex 必须在开始规划前就停止：规划要读取全部会话文件构建校验证明，重型
+    // 会话库上这一步以分钟计；期间应用继续写会话会让规划结果立刻过期，执行前
+    // verify_source_hashes 会以 SourceChanged 拒绝（旧顺序下停机检查在 preflight、
+    // 即规划之后才生效，等于必败）。preflight 里的停机检查保留为执行前复验。
+    ensure_codex_stopped(&request.options, &roots)?;
+
+    let plan = build_migration_plan_with_progress(request, target, progress)?;
     let changed_artifacts = plan
         .entries
         .iter()
@@ -598,6 +605,17 @@ fn build_migration_plan(
     request: &MigrationRequest,
     target: MigrationProviderTarget,
 ) -> Result<MigrationPlan, MigrationError> {
+    build_migration_plan_with_progress(request, target, &mut |_| {})
+}
+
+/// 与 [build_migration_plan] 相同，但读取全部 rollout 构建证明时会持续上报
+/// Preparing 进度。大会话库（上千文件、数 GB）上这一步以分钟计，不报进度
+/// 调用方会一直停在起点，看起来像卡死。
+fn build_migration_plan_with_progress(
+    request: &MigrationRequest,
+    target: MigrationProviderTarget,
+    progress: &mut dyn FnMut(MigrationProgress),
+) -> Result<MigrationPlan, MigrationError> {
     let roots = approve_roots(&request.scan)?;
     let report = scan_codex_sessions(&request.scan).map_err(|_| {
         migration_error(
@@ -631,7 +649,15 @@ fn build_migration_plan(
     let target_provider = target_provider(target).to_owned();
     let auth_path = report.codex_home.join("auth.json");
     let auth_payload = stage_auth(&auth_path, target, request.codex.as_ref())?;
-    let before_proofs = build_fixture_thread_proofs(&report).map_err(redact_fixture_error)?;
+    let before_proofs =
+        build_fixture_thread_proofs_with_progress(&report, &mut |completed, total| {
+            progress(MigrationProgress {
+                phase: MigrationProgressPhase::Preparing,
+                completed,
+                total,
+            });
+        })
+        .map_err(redact_fixture_error)?;
     let mut expected_proofs = before_proofs.clone();
     let mut rollout_deltas = BTreeMap::<String, i64>::new();
     let mut entries = Vec::new();
@@ -1839,8 +1865,9 @@ fn codex_process_running() -> bool {
 fn request_codex_normal_exit() -> Result<(), MigrationError> {
     #[cfg(target_os = "macos")]
     {
+        let script = macos_codex_quit_script();
         let status = Command::new("osascript")
-            .args(["-e", "tell application \"Codex\" to quit"])
+            .args(["-e", &script])
             .status()
             .map_err(|error| {
                 classify_io(
@@ -1861,8 +1888,9 @@ fn request_codex_normal_exit() -> Result<(), MigrationError> {
     }
     #[cfg(target_os = "windows")]
     {
+        let image = windows_codex_task_image();
         let status = Command::new("taskkill")
-            .args(["/IM", "Codex.exe"])
+            .args(["/IM", &image])
             .status()
             .map_err(|error| {
                 classify_io(
@@ -1890,6 +1918,81 @@ fn request_codex_normal_exit() -> Result<(), MigrationError> {
     ));
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     Ok(())
+}
+
+/// 桌面端真身的退出脚本。Codex 桌面端在 macOS 上叫 ChatGPT.app（bundle id 恒为
+/// com.openai.codex）；按名字找 "Codex" 只会命中应用包内框架里的同名 helper，
+/// 真正持有 codex app-server 进程的桌面端不会被停掉。优先按 bundle id 寻址，
+/// 其次按应用显示名，最后保留旧名字兜底（老版本独立 Codex.app）。
+#[cfg(target_os = "macos")]
+fn macos_codex_quit_script() -> String {
+    crate::targets::app_launch_path("codex")
+        .map(|path| macos_quit_script_for_app(&path))
+        .unwrap_or_else(|| "tell application \"Codex\" to quit".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_quit_script_for_app(app: &Path) -> String {
+    if let Some(bundle_id) = read_bundle_identifier(app) {
+        return format!("tell application id \"{bundle_id}\" to quit");
+    }
+    match app.file_stem().and_then(|name| name.to_str()) {
+        Some(name) => format!("quit app \"{name}\""),
+        None => "tell application \"Codex\" to quit".to_owned(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_bundle_identifier(app: &Path) -> Option<String> {
+    let plist = fs::read_to_string(app.join("Contents").join("Info.plist")).ok()?;
+    let key = plist.find("<key>CFBundleIdentifier</key>")?;
+    let rest = &plist[key..];
+    let start = rest.find("<string>")? + "<string>".len();
+    let end = rest[start..].find("</string>")? + start;
+    let value = rest[start..end].trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// Windows 上桌面端的真实进程名是 ChatGPT.exe（老版本才叫 Codex.exe）；
+/// 用已解析出的安装路径取文件名，解析不到时保留旧名字兜底。
+#[cfg(target_os = "windows")]
+fn windows_codex_task_image() -> String {
+    crate::targets::app_launch_path("codex")
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "Codex.exe".to_owned())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod quit_script_tests {
+    use super::*;
+
+    #[test]
+    fn quit_script_prefers_bundle_identifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ChatGPT.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(
+            app.join("Contents/Info.plist"),
+            "<?xml version=\"1.0\"?><plist><dict><key>CFBundleName</key><string>ChatGPT</string>\
+             <key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>",
+        )
+        .unwrap();
+        assert_eq!(
+            macos_quit_script_for_app(&app),
+            "tell application id \"com.openai.codex\" to quit"
+        );
+    }
+
+    #[test]
+    fn quit_script_falls_back_to_app_name_without_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Codex.app");
+        assert_eq!(macos_quit_script_for_app(&app), "quit app \"Codex\"");
+    }
 }
 
 fn execute_plan(
