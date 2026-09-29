@@ -2590,8 +2590,18 @@ fn rewrite_config_provider(
 fn build_fixture_thread_proofs(
     report: &ScanReport,
 ) -> Result<Vec<FixtureThreadProof>, FixtureMutationError> {
+    build_fixture_thread_proofs_with_progress(report, &mut |_, _| {})
+}
+
+/// 读取全部 rollout 构建线程证明；大会话库（上千个文件、数 GB）上耗时以分钟
+/// 计，progress 按（已完成, 总数）持续上报，避免调用方看起来像卡死。
+pub(crate) fn build_fixture_thread_proofs_with_progress(
+    report: &ScanReport,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<FixtureThreadProof>, FixtureMutationError> {
+    let total = report.rollouts.len();
     let mut proofs = Vec::new();
-    for rollout in &report.rollouts {
+    for (index, rollout) in report.rollouts.iter().enumerate() {
         let logical = read_rollout_logical(rollout)?;
         let records = rollout_records(&logical, &rollout.path)?;
         let header = records.first().ok_or_else(|| {
@@ -2659,6 +2669,9 @@ fn build_fixture_thread_proofs(
             provider_neutral_digest: digest_hex(neutral_hasher.finalize().as_slice()),
             history,
         });
+        if (index + 1) % 20 == 0 || index + 1 == total {
+            progress(index + 1, total);
+        }
     }
     proofs.sort_by(|left, right| left.thread_id.cmp(&right.thread_id));
     Ok(proofs)
