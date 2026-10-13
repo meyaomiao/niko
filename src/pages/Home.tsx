@@ -61,6 +61,8 @@ function withDesktopApplyTimeout<T>(promise: Promise<T>): Promise<T> {
 const TARGET_STORAGE_KEY = "niko_last_target";
 /// 应用选择里代表「全部已安装应用」的哨兵值
 const ALL_TARGETS = "__all__";
+/// 没有界面进程、接入后重开终端才生效的目标。与后端 targets::MANUAL_OPEN_TARGET_IDS 一致。
+const MANUAL_OPEN_TARGETS = new Set(["claude-cli", "grok", "antigravity"]);
 /// 记住 Codex 是否用混用模式（有 ChatGPT 订阅时保留官方登录态）
 const CODEX_MIXED_STORAGE_KEY = "niko_codex_mixed";
 
@@ -495,6 +497,13 @@ export default function Home() {
   const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
   const targetLabel =
     targetId === ALL_TARGETS ? `${installedTargets.length} 个应用` : selectedTarget?.name ?? "";
+  // 没有界面进程的目标（Claude Code CLI / Grok CLI / Antigravity CLI）：接入后重开终端生效，
+  // 没有可重启的进程，按钮只作为提示，不给用户一个会失败的「重启」。
+  const manualOpenOnly = targetId !== ALL_TARGETS && MANUAL_OPEN_TARGETS.has(targetId);
+  const manualOpenAll =
+    targetId === ALL_TARGETS &&
+    installedTargets.length > 0 &&
+    installedTargets.every((t) => MANUAL_OPEN_TARGETS.has(t.id));
   // 兼容等级按所选应用判断；选「全部」时以第一个已装应用为准
   const compatTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id ?? "" : targetId;
   const compatOf = (name: string) => (compatTargetId ? baselineFor(compatTargetId, name) : null);
@@ -1534,29 +1543,49 @@ export default function Home() {
                     </button>
                     <button
                       onClick={restartTargets}
-                      disabled={provisioning || testing || restoring || restarting || !targetId}
-                      title={
-                        targetId === "dsh" ||
-                        (targetId === ALL_TARGETS && installedTargets.every((t) => t.id === "dsh"))
-                          ? "打开 DSH 工作台。配置写入后无需重启进程。"
-                          : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
-                            ? "打开 DSH，并启动或重启其他已接入应用"
-                            : targetLabel
-                              ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效`
-                              : "选择应用后可打开"
+                      disabled={
+                        provisioning ||
+                        testing ||
+                        restoring ||
+                        restarting ||
+                        !targetId ||
+                        manualOpenOnly ||
+                        manualOpenAll
                       }
-                      aria-label={targetId === "dsh" ? "打开 DSH" : "打开或重启应用"}
+                      title={
+                        manualOpenOnly
+                          ? `${targetLabel} 没有界面进程：配置写入后重开终端即可生效。`
+                          : manualOpenAll
+                            ? "所选应用都没有界面进程：配置写入后重开终端即可生效。"
+                            : targetId === "dsh" ||
+                                (targetId === ALL_TARGETS && installedTargets.every((t) => t.id === "dsh"))
+                              ? "打开 DSH 工作台。配置写入后无需重启进程。"
+                              : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
+                                ? "打开 DSH，并启动或重启其他已接入应用"
+                                : targetLabel
+                                  ? `启动 / 重启 ${targetLabel}，让刚接入的设置生效`
+                                  : "选择应用后可打开"
+                      }
+                      aria-label={
+                        manualOpenOnly || manualOpenAll
+                          ? "重开终端后生效"
+                          : targetId === "dsh"
+                            ? "打开 DSH"
+                            : "打开或重启应用"
+                      }
                       className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px]`}
                     >
-                      {restarting
-                        ? targetId === "dsh"
-                          ? "打开中…"
-                          : "处理中…"
-                        : targetId === "dsh"
-                          ? "打开"
-                          : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
+                      {manualOpenOnly || manualOpenAll
+                        ? "重开终端"
+                        : restarting
+                          ? targetId === "dsh"
+                            ? "打开中…"
+                            : "处理中…"
+                          : targetId === "dsh"
                             ? "打开"
-                            : "重启"}
+                            : targetId === ALL_TARGETS && installedTargets.some((t) => t.id === "dsh")
+                              ? "打开"
+                              : "重启"}
                     </button>
                     <button
                       onClick={testConnectivity}

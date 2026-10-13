@@ -166,6 +166,18 @@ export default function InstallGuide() {
                 name="ZCode"
                 desc="从 zcode.z.ai 下载桌面应用。接入后请在 ZCode 里选择 Niko / momotoken。"
               />
+              <TargetInstall
+                name="Claude Code CLI"
+                desc="Anthropic 的 Claude Code 命令行工具。按官方文档装好 claude 命令后回到首页接入，再重开终端生效。"
+              />
+              <TargetInstall
+                name="Grok CLI"
+                desc="xAI 的 Grok 命令行工具。按官方文档装好 grok 命令后回到首页接入，再重开终端生效。"
+              />
+              <TargetInstall
+                name="Antigravity CLI"
+                desc="Google 的 Antigravity 命令行工具。按官方文档装好 agy 命令后回到首页接入，再重开终端生效。"
+              />
             </div>
           </div>
         </div>

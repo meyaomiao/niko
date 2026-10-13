@@ -49,11 +49,11 @@
 | --- | --- |
 | 顶栏 | 切换主题，进入「设置」「ChatGPT 会话」「模型」，以及退出。 |
 | 左上账户卡 | 显示用户名和可用余额，可刷新。Niko 账号显示「充值」「使用明细」和「登录设备」；中转站连接只显示站点地址，充值跳到该站控制台。 |
-| 右侧「接入应用」 | 胶囊列出 ChatGPT 桌面端、Claude 桌面端、DSH、ZCode；未安装的灰色不可点。装了多个时出现「全部」。旁边是「安装指引」。 |
-| 当前应用说明 | ChatGPT 可选「未订阅 / 已订阅」。Claude、DSH、ZCode 各有一句接入范围说明。 |
+| 右侧「接入应用」 | 胶囊列出 ChatGPT 桌面端、Claude 桌面端、DSH、ZCode、Claude Code CLI、Grok CLI、Antigravity CLI；未安装的灰色不可点。装了多个时出现「全部」。旁边是「安装指引」。 |
+| 当前应用说明 | ChatGPT 可选「未订阅 / 已订阅」。Claude、DSH、ZCode 与三个 CLI 目标各有一句接入范围说明。 |
 | 已生效 | 接入成功后显示厂家 · 模型 · 分组。 |
 | 厂家 → 模型 → 分组 | 先选厂家（原生组合会标「原生」），再选模型（默认同厂家内按发布时间新到旧，可点搜索），再选分组（倍率、参考价，可测速）。 |
-| 底部四个按钮 | 「接入」写入配置。「重启」打开或重启桌面应用；选中 DSH 时变成「打开」。「检查」测连通性。「恢复」需再点一次确认，移除 Niko 写入的设置。 |
+| 底部四个按钮 | 「接入」写入配置。「重启」打开或重启桌面应用；选中 DSH 时变成「打开」；选中的目标没有界面进程时按钮变为不可点的「重开终端」提示。「检查」测连通性。「恢复」需再点一次确认，移除 Niko 写入的设置。 |
 
 ### 安装与首次使用
 
@@ -65,7 +65,7 @@
   <sub>针对 macOS 与 Windows 提供分步安装指引，解释系统安全提示，并给出安装包校验方式。</sub>
 </p>
 
-「安装指引」页说明 Niko 自己的安装包、Gatekeeper / SmartScreen，以及要接入的应用：ChatGPT 桌面端、Claude 桌面端、DSH、ZCode。Niko 不替代这些应用。
+「安装指引」页说明 Niko 自己的安装包、Gatekeeper / SmartScreen，以及要接入的应用：ChatGPT 桌面端、Claude 桌面端、DSH、ZCode，以及 Claude Code CLI、Grok CLI、Antigravity CLI 三个命令行工具。Niko 不替代这些应用。
 
 ## 关于 Niko
 
@@ -128,8 +128,11 @@ Windows 首次安装时可能出现 SmartScreen 提示。点击「更多信息�
 | Claude 桌面端 | 仅作用于内置 Claude Code 面板，桌面端普通对话仍用 Anthropic 账号。 |
 | DSH | 写入自定义网关 `momotoken`，点「打开」进入工作台即可使用，不必重启 DSH 进程。 |
 | ZCode | 写入自定义提供方，打开 ZCode 后请选择 `Niko / momotoken`，不改智谱登录。 |
+| Claude Code CLI | 写入 `~/.claude/settings.json`，终端里的 `claude` 直接生效。 |
+| Grok CLI | 写入 `~/.grok/config.toml` 的 `model.momotoken` 段。 |
+| Antigravity CLI | 仅支持 Gemini 系模型；环境变量写入后需重开终端生效。 |
 
-没有一键打开界面的命令行工具，不会出现在首页。
+没有界面进程的命令行工具（Claude Code CLI、Grok CLI、Antigravity CLI）接入后需要重开终端生效，首页不给「重启」，改为提示重开终端。
 
 模型区按厂家列出，当前应用的原生厂家带「原生」标记。模型默认同厂家内按发布时间从新到旧；没有发布日期时按服务端顺序。标签包括常用、性价比、刚上新。分组只列出当前模型可用的项，显示倍率、参考价，以及可选的首字测速。
 
@@ -177,6 +180,7 @@ Niko 不提供聊天、MCP 编排或本地代理。会话检查与同步只支�
 - [x] 登录页注册与安全验证
 - [x] DSH 与 ZCode 接入
 - [x] 登录页「中转站」（new-api 系统访问令牌）
+- [x] Claude Code CLI、Grok CLI、Antigravity CLI 接入
 - [ ] 支持更多能打开界面的客户端
 - [ ] 完善不同客户端版本的兼容检测
 - [ ] 改进诊断、故障提示和配置恢复
