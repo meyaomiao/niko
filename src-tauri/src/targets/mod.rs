@@ -1351,8 +1351,46 @@ impl Target for AntigravityTarget {
 
 // ─── 目标注册表 ─────────────────────────────────────────────────────────────
 
-/// 首页与「全部接入」只展示能打开界面的目标。CLI 仍注册在 all_targets，供设置页快照恢复。
-pub const PRODUCT_TARGET_IDS: &[&str] = &["codex", "claude-desktop", "dsh", "zcode"];
+/// 首页与「全部接入」展示的目标。GUI 目标可以打开 / 重启；CLI 目标（`claude-cli` /
+/// `grok` / `antigravity`）没有界面进程，接入后重开终端才生效，所以只给引导不做重启。
+/// 未安装的目标前端显示为不可点，「全部接入」只写已安装的目标。
+pub const PRODUCT_TARGET_IDS: &[&str] = &[
+    "codex",
+    "claude-desktop",
+    "dsh",
+    "zcode",
+    "claude-cli",
+    "grok",
+    "antigravity",
+];
+
+/// 没有界面进程、接入后需要用户自己重开终端的目标。
+pub const MANUAL_OPEN_TARGET_IDS: &[&str] = &["claude-cli", "grok", "antigravity"];
+
+/// Provider 事务写盘的规范目标顺序。恢复逻辑按这个顺序重建路径清单，校验也要求目标
+/// 以它递增出现，所以写事务前必须排序：首页展示顺序可以按体验调整，事务顺序不能。
+///
+/// Claude 系必须排在 DSH / ZCode 之前：路径清单以第一个非 Codex 目标的路径开头，而校验
+/// 要求那一条是 `settings.json`。
+pub const PROVIDER_TRANSACTION_TARGET_ORDER: &[&str] = &[
+    "codex",
+    "claude-desktop",
+    "claude-cli",
+    "grok",
+    "antigravity",
+    "dsh",
+    "zcode",
+];
+
+/// 按事务规范顺序原地排序目标 id。稳定排序：未知 id 保持相对顺序并排在最后，由校验另行拒绝。
+pub fn sort_targets_for_transaction(target_ids: &mut [String]) {
+    target_ids.sort_by_key(|target_id| {
+        PROVIDER_TRANSACTION_TARGET_ORDER
+            .iter()
+            .position(|candidate| candidate == target_id)
+            .unwrap_or(usize::MAX)
+    });
+}
 
 pub fn all_targets() -> Vec<Box<dyn Target>> {
     vec![
@@ -1371,6 +1409,11 @@ pub fn product_targets() -> Vec<Box<dyn Target>> {
         .into_iter()
         .filter(|target| PRODUCT_TARGET_IDS.contains(&target.id()))
         .collect()
+}
+
+/// 该目标没有界面进程：接入后由用户重开终端生效，既不显示「重启」，也不需要重启。
+pub fn is_manual_open_target(target_id: &str) -> bool {
+    MANUAL_OPEN_TARGET_IDS.contains(&target_id)
 }
 
 pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
@@ -2327,6 +2370,87 @@ pub(crate) fn check_drift_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 产品目标集合包含 GUI 与 CLI 两类目标，且无界面目标都取自 MANUAL_OPEN_TARGET_IDS。
+    /// 这条不变量同时被首页胶囊、`list_targets` 与「全部接入」依赖。
+    #[test]
+    fn product_targets_cover_gui_and_cli_targets() {
+        let ids: Vec<&str> = product_targets().iter().map(|target| target.id()).collect();
+
+        for expected in [
+            "codex",
+            "claude-desktop",
+            "dsh",
+            "zcode",
+            "claude-cli",
+            "grok",
+            "antigravity",
+        ] {
+            assert!(ids.contains(&expected), "产品目标缺少 {expected}");
+        }
+
+        for manual in MANUAL_OPEN_TARGET_IDS {
+            assert!(ids.contains(manual), "无界面目标 {manual} 必须同时在产品目标里");
+            assert!(is_manual_open_target(manual), "{manual} 应判定为无界面目标");
+        }
+
+        for gui in ["codex", "claude-desktop", "dsh", "zcode"] {
+            assert!(!is_manual_open_target(gui), "{gui} 有界面进程，不该走重开终端引导");
+        }
+    }
+
+    /// 事务目标顺序与首页展示顺序解耦：写事务前必须排回规范顺序。
+    /// 校验要求目标按规范顺序递增出现，且路径清单首条在含 Claude 系时必须是 settings.json。
+    #[test]
+    fn transaction_targets_are_sorted_into_canonical_order() {
+        let mut scrambled: Vec<String> = [
+            "zcode",
+            "dsh",
+            "antigravity",
+            "claude-cli",
+            "grok",
+            "claude-desktop",
+            "codex",
+        ]
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+        sort_targets_for_transaction(&mut scrambled);
+
+        let expected: Vec<String> = PROVIDER_TRANSACTION_TARGET_ORDER
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect();
+        assert_eq!(scrambled, expected);
+
+        let ranks: Vec<usize> = scrambled
+            .iter()
+            .map(|id| {
+                PROVIDER_TRANSACTION_TARGET_ORDER
+                    .iter()
+                    .position(|candidate| candidate == id)
+                    .expect("排序后的目标都在规范顺序里")
+            })
+            .collect();
+        assert!(
+            ranks.windows(2).all(|pair| pair[0] < pair[1]),
+            "排序后必须严格递增：{ranks:?}"
+        );
+
+        // 首页展示顺序本身不是规范顺序，排序必须能纠正它（Claude 系要排在 DSH / ZCode 之前）
+        let mut displayed: Vec<String> = PRODUCT_TARGET_IDS
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect();
+        sort_targets_for_transaction(&mut displayed);
+        assert_eq!(
+            displayed,
+            PROVIDER_TRANSACTION_TARGET_ORDER
+                .iter()
+                .map(|id| (*id).to_owned())
+                .collect::<Vec<String>>()
+        );
+    }
 
     fn tmp_path(name: &str) -> PathBuf {
         // 并行测试下时间戳精度不足会撞到同一目录，用递增序号保证互不干扰

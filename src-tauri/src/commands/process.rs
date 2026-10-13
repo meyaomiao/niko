@@ -95,6 +95,26 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
     }
 }
 
+/// 没有界面进程的目标（Claude Code CLI / Grok CLI / Antigravity CLI）：接入后由用户
+/// 重开终端生效。返回 None 表示该目标有界面进程，走正常重启路径。
+///
+/// 这些目标此前会落到 `app_launch_path` 的 `invalid_request` 分支，用户看到的是失败提示；
+/// 现在给一条明确的下一步引导。
+fn manual_open_outcome(target_id: &str) -> Option<RestartOutcome> {
+    if !crate::targets::is_manual_open_target(target_id) {
+        return None;
+    }
+    let message = match target_id {
+        "claude-cli" => "配置已写入 ~/.claude/settings.json，重开终端后 claude 生效。",
+        "grok" => "配置已写入 ~/.grok/config.toml，重开终端后 grok 生效。",
+        _ => "配置已写入，重开终端后生效。",
+    };
+    Some(RestartOutcome {
+        status: "applied_needs_manual_open",
+        message,
+    })
+}
+
 /// 关闭并重新启动目标应用。配置只在应用启动时读取一次，所以改完配置必须重启才生效。
 ///
 /// 先请求应用正常退出（保留它自己的会话/草稿处理），轮询确认进程消失后再启动；
@@ -103,6 +123,9 @@ pub async fn check_process(target_id: String) -> ProcessStatus {
 pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCommandError> {
     if target_id == "dsh" {
         return open_dsh_target();
+    }
+    if let Some(outcome) = manual_open_outcome(&target_id) {
+        return Ok(outcome);
     }
     let path = crate::targets::app_launch_path(&target_id)
         .ok_or_else(SafeCommandError::invalid_request)?;
@@ -305,6 +328,26 @@ mod tests {
     fn launch_failure_reports_committed_manual_open_state() {
         let outcome = restart_after_close(|| Ok(()), || Err(()), true).unwrap();
         assert_eq!(outcome.status, "applied_needs_manual_open");
+    }
+
+    #[test]
+    fn cli_targets_get_a_manual_open_hint_instead_of_an_error() {
+        for target_id in ["claude-cli", "grok", "antigravity"] {
+            let outcome = manual_open_outcome(target_id)
+                .unwrap_or_else(|| panic!("{target_id} 应该返回重开终端引导"));
+            assert_eq!(outcome.status, "applied_needs_manual_open");
+            assert!(!outcome.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn gui_targets_still_go_through_the_restart_path() {
+        for target_id in ["codex", "claude-desktop", "dsh", "zcode"] {
+            assert!(
+                manual_open_outcome(target_id).is_none(),
+                "{target_id} 不应该被当成无界面目标"
+            );
+        }
     }
 
     #[test]

@@ -358,16 +358,10 @@ fn validate_provider_transaction_shape(
         return Err(SafeCommandError::change_failed(false));
     }
 
-    // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单
-    const CANONICAL_ORDER: &[&str] = &[
-        "codex",
-        "claude-desktop",
-        "claude-cli",
-        "grok",
-        "antigravity",
-        "dsh",
-        "zcode",
-    ];
+    // 目标必须唯一且按规范顺序出现；恢复逻辑依赖这个顺序重建路径清单。
+    // 顺序来源统一在 targets::PROVIDER_TRANSACTION_TARGET_ORDER，写事务前用
+    // targets::sort_targets_for_transaction 排好，避免展示顺序与事务顺序分叉。
+    const CANONICAL_ORDER: &[&str] = crate::targets::PROVIDER_TRANSACTION_TARGET_ORDER;
     let valid_target_order = !target_ids.is_empty()
         && target_ids.iter().all(|id| CANONICAL_ORDER.contains(&id.as_str()))
         && {
@@ -879,10 +873,13 @@ pub async fn apply_all_targets(
     if installed.is_empty() {
         return Ok(Vec::new());
     }
-    let target_ids: Vec<String> = installed
+    let mut target_ids: Vec<String> = installed
         .iter()
         .map(|target| target.id().to_owned())
         .collect();
+    // 首页展示顺序按体验排，事务写盘必须回到规范顺序：校验要求目标递增出现，且路径清单
+    // 首条在含 Claude 系时必须是 settings.json。
+    crate::targets::sort_targets_for_transaction(&mut target_ids);
     let has_codex = installed.iter().any(|target| target.id() == "codex");
     let records = records_for_plan(&target_ids, &plan)?;
     let known_codex_transactions = Vec::new();
