@@ -1,4 +1,4 @@
-export type AuthKind = "momotoken" | "newapi";
+export type AuthKind = "deepclub" | "momotoken" | "newapi";
 
 export interface AuthState {
   accessToken: string;
@@ -13,9 +13,9 @@ export interface AuthState {
   /** 分组申请得到的 apiKey 所属分组；与账户默认推荐分组分开保存。 */
   apiKeyGroup?: string;
   remember: boolean;
-  /** 缺省视为 momotoken，兼容旧会话。 */
+  /** 缺省视为 deepclub */
   kind?: AuthKind;
-  /** new-api 中转站 origin，例如 https://relay.example.com */
+  /** origin，例如 https://deepclub.net */
   origin?: string;
 }
 

@@ -11,8 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const ZCODE_TARGET_ID: &str = "zcode";
-const ZCODE_PROVIDER_ID: &str = "custom:momotoken";
-const ZCODE_PROVIDER_NAME: &str = "Niko / momotoken";
+const ZCODE_PROVIDER_ID: &str = "custom:deepclub";
+const ZCODE_PROVIDER_NAME: &str = "Niko / 深云 DeepClub";
 #[cfg(target_os = "macos")]
 const ZCODE_APP_NAMES: &[&str] = &["ZCode.app"];
 
@@ -166,15 +166,15 @@ fn zcode_effective_at(home: &Path) -> Result<EffectiveConfig, String> {
     let options = provider
         .get("options")
         .and_then(Value::as_object)
-        .ok_or("custom:momotoken 缺少 options")?;
+        .ok_or("custom:deepclub 缺少 options")?;
     let base_url = options
         .get("baseURL")
         .and_then(Value::as_str)
-        .ok_or("custom:momotoken 缺少 baseURL")?;
+        .ok_or("custom:deepclub 缺少 baseURL")?;
     let api_key = options
         .get("apiKey")
         .and_then(Value::as_str)
-        .ok_or("custom:momotoken 缺少 apiKey")?;
+        .ok_or("custom:deepclub 缺少 apiKey")?;
     let model = provider
         .get("models")
         .and_then(Value::as_object)

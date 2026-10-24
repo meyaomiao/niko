@@ -164,7 +164,7 @@ export default function InstallGuide() {
               />
               <TargetInstall
                 name="ZCode"
-                desc="从 zcode.z.ai 下载桌面应用。接入后请在 ZCode 里选择 Niko / momotoken。"
+                desc="从 zcode.z.ai 下载桌面应用。接入后请在 ZCode 里选择 Niko / 深云 DeepClub。"
               />
             </div>
           </div>

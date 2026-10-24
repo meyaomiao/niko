@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, DeviceLimitError, type DeviceItem } from "../api/client";
 import { parseBalanceSnapshot } from "../lib/balance";
 import { saveAuth, shouldPersistAuthSession } from "../store/auth";
-import { normalizeStationOrigin, parseOptionalUserId } from "../lib/station";
+
 import { BRAND } from "../lib/brand";
 import {
   getTargetRenderState,
@@ -461,7 +461,7 @@ function TargetPreparation({
 
 export default function Login() {
   const navigate = useNavigate();
-  const [stage, setStage] = useState<Stage>("login");
+  const [stage, setStage] = useState<Stage>("station");
   const [pendingToken, setPendingToken] = useState("");
 
   const [username, setUsername] = useState("");
@@ -477,10 +477,8 @@ export default function Login() {
 
   const [remember, setRemember] = useState(false);
   const [credentialSource, setCredentialSource] = useState<CredentialSource>("login");
-  const [stationOrigin, setStationOrigin] = useState("");
-  const [stationToken, setStationToken] = useState("");
-  const [stationUserId, setStationUserId] = useState("");
-  const [rememberStation, setRememberStation] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [rememberKey, setRememberKey] = useState(true);
 
   const [targets, setTargets] = useState<LoginTarget[]>(() => mapLoginTargets([]));
   const [detectionStatus, setDetectionStatus] = useState<DetectionStatus>("checking");
@@ -511,10 +509,8 @@ export default function Login() {
     invoke<{ origin: string; access_token: string; user_id?: number | null } | null>("load_remembered_station")
       .then((saved) => {
         if (!saved) return;
-        setStationOrigin(saved.origin);
-        setStationToken(saved.access_token);
-        setStationUserId(saved.user_id ? String(saved.user_id) : "");
-        setRememberStation(true);
+        setApiKey(saved.access_token);
+        setRememberKey(true);
       })
       .catch(() => {});
   }, []);
@@ -751,75 +747,51 @@ export default function Login() {
     event.preventDefault();
     setError("");
     setNotice("");
-    let origin: string;
-    let userId: number | undefined;
-    try {
-      origin = normalizeStationOrigin(stationOrigin);
-      userId = parseOptionalUserId(stationUserId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "请检查站点信息后再试");
-      return;
-    }
-    if (!stationToken.trim()) {
-      setError("请填写系统访问令牌");
+    const trimmedKey = apiKey.trim();
+    if (!trimmedKey) {
+      setError("请填写深云 API Key（sk-...）");
       return;
     }
     setLoading(true);
     try {
+      const origin = "https://deepclub.net";
       const connected = await api.connectNewApi({
         origin,
-        accessToken: stationToken.trim(),
-        userId,
+        accessToken: trimmedKey,
+        userId: 1,
       });
       const session = {
-        accessToken: stationToken.trim(),
-        username: connected.username || connected.system_name || "中转站",
-        userId: connected.user_id,
-        quota: connected.quota,
-        quotaPerUnit: typeof connected.quota_per_unit === "number"
-          ? connected.quota_per_unit
-          : connected.quota_per_unit
-            ? Number(connected.quota_per_unit)
-            : undefined,
-        defaultGroup: connected.group.split(",")[0]?.trim() || connected.group,
-        apiKey: "",
-        remember: rememberStation,
+        accessToken: trimmedKey,
+        username: "深云用户",
+        userId: 1,
+        quota: connected.quota || 10000000.0,
+        quotaPerUnit: 500000,
+        defaultGroup: "default",
+        apiKey: trimmedKey,
+        remember: rememberKey,
         kind: "newapi" as const,
-        origin: connected.origin,
+        origin,
       };
       saveAuth(session);
       api.clearCatalog();
       try {
         const bootstrap = await api.bootstrap(session.accessToken);
-        const group = bootstrap.user.group || connected.group;
-        let apiKey = "";
-        let apiKeyGroup = "";
-        if (group) {
-          try {
-            const provision = await api.provision(session.accessToken, group);
-            apiKey = provision.api_key;
-            apiKeyGroup = provision.group;
-          } catch {
-            /* 分组密钥可在首页接入时再申请 */
-          }
-        }
         saveAuth({
           ...session,
           quota: bootstrap.user.quota,
-          defaultGroup: group,
-          apiKey,
-          apiKeyGroup,
+          defaultGroup: "default",
+          apiKey: trimmedKey,
         });
       } catch {
-        /* 目录稍后再拉，不阻断连接 */
+        /* 目录拉取失败不阻断 */
       }
       try {
-        if (rememberStation) {
+        if (rememberKey) {
           await invoke("save_remembered_station", {
             station: {
-              origin: connected.origin,
-              access_token: stationToken.trim(),
-              user_id: connected.user_id,
+              origin,
+              access_token: trimmedKey,
+              user_id: 1,
             },
           });
         } else {
@@ -977,20 +949,20 @@ export default function Login() {
               : stage === "register"
                 ? "创建 Niko 账号"
               : stage === "station"
-                ? "用系统访问令牌连接 new-api 中转站"
+                ? "一键接入 AI 助手"
               : stage === "2fa"
                 ? "请输入两步验证码"
                 : "选择要退出登录的设备"}
           </p>
         </div>
 
-        {(stage === "login" || stage === "register" || stage === "station") && (
+        {(stage === "login" || stage === "register") && (
           <div
             role="tablist"
             aria-label="账户入口"
-            className="mb-5 grid grid-cols-3 rounded-md bg-[var(--nk-surface-muted)] p-1"
+            className="mb-5 grid grid-cols-2 rounded-md bg-[var(--nk-surface-muted)] p-1"
           >
-            {(["login", "register", "station"] as const).map((mode) => {
+            {(["login", "register"] as const).map((mode) => {
               const selected = stage === mode;
               return (
                 <button
@@ -1006,7 +978,7 @@ export default function Login() {
                       : "text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                   }`}
                 >
-                  {mode === "login" ? "登录" : mode === "register" ? "注册" : "中转站"}
+                  {mode === "login" ? "登录" : "注册"}
                 </button>
               );
             })}
@@ -1212,50 +1184,29 @@ export default function Login() {
         ) : stage === "station" ? (
           <form onSubmit={handleStationConnect} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">站点地址</label>
-              <input
-                type="url"
-                value={stationOrigin}
-                onChange={(e) => setStationOrigin(e.target.value)}
-                className="nk-input w-full"
-                placeholder="https://your-new-api.example"
-                autoComplete="url"
-                disabled={loading}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">系统访问令牌</label>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">深云 API Key</label>
               <input
                 type="password"
-                value={stationToken}
-                onChange={(e) => setStationToken(e.target.value)}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
                 className="nk-input w-full"
-                placeholder="控制台个人中心生成，不是 sk- 密钥"
+                placeholder="sk-..."
                 autoComplete="off"
                 disabled={loading}
               />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">用户 ID（可选）</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={stationUserId}
-                onChange={(e) => setStationUserId(e.target.value)}
-                className="nk-input w-full"
-                placeholder="多数站点可留空，提示时再填"
-                disabled={loading}
-              />
+              <p className="mt-1 text-[11px] text-gray-400">
+                深云 deepclub.net 签发的通用 Key，可一个 Key 调用所有大模型
+              </p>
             </div>
             <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
               <input
                 type="checkbox"
-                checked={rememberStation}
-                onChange={(e) => setRememberStation(e.target.checked)}
+                checked={rememberKey}
+                onChange={(e) => setRememberKey(e.target.checked)}
                 disabled={loading}
                 className="h-3.5 w-3.5 rounded border-black/20 accent-indigo-600 dark:border-white/25"
               />
-              记住这个中转站
+              记住此密钥
             </label>
             <button
               type="submit"

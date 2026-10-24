@@ -703,6 +703,53 @@ pub async fn connect(req: ConnectRequest) -> Result<ConnectResult, NewApiError> 
         .await
         .map_err(|_| NewApiError::network())?;
     let status_json = read_json(status).await.unwrap_or(Value::Null);
+
+    // 如果是以 sk- 开头的 API Key，通过 /v1/models 或 /v1/dashboard/billing/subscription 校验
+    if token.starts_with("sk-") {
+        let models_res = client
+            .get(format!("{}/models", format!("{origin}/v1").trim_end_matches('/')))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        match models_res {
+            Ok(res) if res.status().is_success() => {
+                // Key 有效，尝试获取额度
+                let sub_res = client
+                    .get(format!("{}/dashboard/billing/subscription", format!("{origin}/v1").trim_end_matches('/')))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .send()
+                    .await;
+                let mut quota = 10000000.0;
+                if let Ok(s) = sub_res {
+                    if let Ok(v) = read_json(s).await {
+                        if let Some(hard_limit) = v.get("hard_limit_usd").and_then(Value::as_f64) {
+                            quota = hard_limit * 500000.0;
+                        }
+                    }
+                }
+                return Ok(ConnectResult {
+                    origin,
+                    user_id: 1,
+                    username: "深云用户".to_string(),
+                    quota,
+                    group: "default".to_string(),
+                    quota_per_unit: status_json.get("quota_per_unit").cloned(),
+                    system_name: status_json
+                        .get("system_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("深云 DeepClub")
+                        .to_string(),
+                });
+            }
+            Ok(res) if res.status().as_u16() == 401 || res.status().as_u16() == 403 => {
+                return Err(NewApiError::auth());
+            }
+            _ => {}
+        }
+    }
+
     if !looks_like_status(&status_json) && status_json != Value::Null {
         // 某些部署把 status 包在 data 里已经解开；空对象仍允许继续，靠 /user/self 判定。
         if status_json.as_object().map(|o| o.is_empty()).unwrap_or(false) {
@@ -737,6 +784,86 @@ pub async fn bootstrap(req: AuthenticatedRequest) -> Result<Value, NewApiError> 
     }
     let client = http_client()?;
     let token = req.access_token.trim();
+
+    // 如果是以 sk- 开头的 API Key，从 /v1/models 和 /api/pricing 组装 bootstrap 数据
+    if token.starts_with("sk-") {
+        let status_url = api_url(&origin, "/status");
+        let pricing_url = api_url(&origin, "/pricing");
+        let v1_models_url = format!("{}/models", format!("{origin}/v1").trim_end_matches('/'));
+
+        let (status, v1_models, pricing) = tokio::join!(
+            async {
+                match client
+                    .get(&status_url)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => read_json(response).await.unwrap_or(Value::Null),
+                    Err(_) => Value::Null,
+                }
+            },
+            async {
+                match client
+                    .get(&v1_models_url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(res) if res.status().is_success() => {
+                        let bytes = res.bytes().await.unwrap_or_default();
+                        let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                        if let Some(list) = parsed.get("data").and_then(Value::as_array) {
+                            let names: Vec<Value> = list
+                                .iter()
+                                .filter_map(|m| m.get("id").and_then(Value::as_str))
+                                .map(|s| Value::String(s.to_string()))
+                                .collect();
+                            Value::Array(names)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    _ => Value::Null,
+                }
+            },
+            async {
+                match client
+                    .get(&pricing_url)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let bytes = response.bytes().await.unwrap_or_default();
+                        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+                    }
+                    Err(_) => Value::Null,
+                }
+            }
+        );
+
+        return Ok(json!({
+            "origin": origin,
+            "status": status,
+            "user": {
+                "id": req.user_id,
+                "username": "深云用户",
+                "quota": 10000000.0,
+                "group": "default",
+            },
+            "groups": {
+                "default": {
+                    "desc": "默认分组",
+                    "ratio": 1.0,
+                }
+            },
+            "models": v1_models,
+            "pricing": pricing,
+        }));
+    }
+
     let user_id = Some(req.user_id);
     let status_url = api_url(&origin, "/status");
     let user_url = api_url(&origin, "/user/self");

@@ -15,9 +15,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DSH_TARGET_ID: &str = "dsh";
-pub const DSH_PROVIDER: &str = "momotoken";
-pub const DSH_API_KEY_ENV: &str = "MOMOTOKEN_API_KEY";
-const DSH_DISPLAY_NAME: &str = "Niko / momotoken";
+pub const DSH_PROVIDER: &str = "deepclub";
+pub const DSH_API_KEY_ENV: &str = "DEEPCLUB_API_KEY";
+const DSH_DISPLAY_NAME: &str = "Niko / 深云 DeepClub";
 const DSH_WEB_PORT: u16 = 3080;
 const DSH_WEB_HOST: &str = "127.0.0.1";
 
@@ -292,13 +292,13 @@ fn dsh_effective_at(home: &Path) -> Result<EffectiveConfig, String> {
         .and_then(|value| mapping_get(value, "providers"))
         .and_then(|value| mapping_get(value, DSH_PROVIDER))
         .ok_or("DSH 配置里缺少 Niko 接入信息，请先点击接入")?;
-    let base_url = mapping_str(provider, "baseURL").ok_or("momotoken 缺少 baseURL")?;
+    let base_url = mapping_str(provider, "baseURL").ok_or("deepclub 缺少 baseURL")?;
     let credentials = fs::read_to_string(credentials_path(home))
         .map_err(|_| "未找到 DSH 密钥，请先点击接入".to_owned())?;
     let creds = yaml_mapping_or_err(&credentials, "~/.dsh/.credentials.yaml")?;
     let api_key = mapping_get(&creds, "refs")
         .and_then(|value| mapping_str(value, DSH_API_KEY_ENV))
-        .ok_or("DSH 密钥里缺少 MOMOTOKEN_API_KEY，请先点击接入")?;
+        .ok_or("DSH 密钥里缺少 DEEPCLUB_API_KEY，请先点击接入")?;
     let model = mapping_get(provider, "models")
         .and_then(serde_yaml::Value::as_sequence)
         .and_then(|models| models.first())

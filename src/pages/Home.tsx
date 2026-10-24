@@ -1012,11 +1012,14 @@ export default function Home() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {!newApi && (
-                    <button onClick={() => navigate("/topup")} className={PRIMARY_BTN}>
-                      充值
-                    </button>
-                  )}
+                  <a
+                    href="https://deepclub.net"
+                    target="_blank"
+                    rel="noreferrer"
+                    className={PRIMARY_BTN}
+                  >
+                    充值
+                  </a>
                   <button onClick={() => navigate("/usage")} className={GHOST_BTN}>
                     使用明细
                   </button>
@@ -1169,13 +1172,13 @@ export default function Home() {
                         : active.id === "claude-cli"
                           ? "写入 ~/.claude/settings.json，终端里的 claude 直接生效"
                           : active.id === "grok"
-                            ? "写入 ~/.grok/config.toml 的 model.momotoken 段"
+                            ? "写入 ~/.grok/config.toml 的 model.deepclub 段"
                             : active.id === "antigravity"
                               ? "仅支持 Gemini 系模型；环境变量写入后需重开终端生效"
                               : active.id === "dsh"
-                                ? "写入 DSH 自定义网关 momotoken，打开工作台即可使用"
+                                ? "写入 DSH 自定义网关 deepclub，打开工作台即可使用"
                                 : active.id === "zcode"
-                                  ? "写入自定义提供方，打开 ZCode 后请选择 Niko / momotoken"
+                                  ? "写入自定义提供方，打开 ZCode 后请选择 Niko / 深云 DeepClub"
                                   : "";
                     return (
                       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">

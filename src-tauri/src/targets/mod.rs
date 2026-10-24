@@ -1040,7 +1040,7 @@ impl Target for ClaudeCliTarget {
 }
 
 /// Grok Build CLI 的模型目录键与顶层默认键都是 Niko 独占写入的固定名
-const GROK_MODEL_KEY: &str = "momotoken";
+const GROK_MODEL_KEY: &str = "deepclub";
 const GROK_DEFAULT_PATH: &str = "models.default";
 
 /// Grok Build CLI（`grok`）。配置在 ~/.grok/config.toml 的 [model.<key>] 段：

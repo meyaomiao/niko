@@ -1,6 +1,7 @@
-export const MOMOTOKEN_ORIGIN = "https://momotoken.win";
+export const DEEPCLUB_ORIGIN = "https://deepclub.net";
+export const MOMOTOKEN_ORIGIN = DEEPCLUB_ORIGIN;
 
-export type StationKind = "momotoken" | "newapi";
+export type StationKind = "deepclub" | "momotoken" | "newapi";
 
 export interface StationAuth {
   kind?: StationKind | string;
@@ -13,7 +14,7 @@ export function isNewApiAuth(auth?: StationAuth | null): boolean {
 
 export function stationOrigin(auth?: StationAuth | null): string {
   if (isNewApiAuth(auth) && auth?.origin) return auth.origin;
-  return MOMOTOKEN_ORIGIN;
+  return DEEPCLUB_ORIGIN;
 }
 
 export function relayBaseUrl(auth?: StationAuth | null): string {
