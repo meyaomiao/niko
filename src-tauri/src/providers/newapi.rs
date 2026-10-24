@@ -721,11 +721,21 @@ pub async fn connect(req: ConnectRequest) -> Result<ConnectResult, NewApiError> 
                     .header("Authorization", format!("Bearer {token}"))
                     .send()
                     .await;
-                let mut quota = 10000000.0;
+                let mut quota = 0.0;
+                let mut quota_per_unit = status_json.get("quota_per_unit").cloned().unwrap_or(json!(500000.0));
+                let unit = quota_per_unit.as_f64().unwrap_or(500000.0);
+
                 if let Ok(s) = sub_res {
                     if let Ok(v) = read_json(s).await {
+                        // 1. 如果返回了 hard_limit_usd
                         if let Some(hard_limit) = v.get("hard_limit_usd").and_then(Value::as_f64) {
-                            quota = hard_limit * 500000.0;
+                            quota = hard_limit * unit;
+                        } else if let Some(hard_limit_str) = v.get("hard_limit_usd").and_then(Value::as_str) {
+                            if let Ok(num) = hard_limit_str.parse::<f64>() {
+                                quota = num * unit;
+                            }
+                        } else if let Some(q) = v.get("total_granted").and_then(Value::as_f64) {
+                            quota = q * unit;
                         }
                     }
                 }
@@ -735,7 +745,7 @@ pub async fn connect(req: ConnectRequest) -> Result<ConnectResult, NewApiError> 
                     username: "深云用户".to_string(),
                     quota,
                     group: "default".to_string(),
-                    quota_per_unit: status_json.get("quota_per_unit").cloned(),
+                    quota_per_unit: Some(quota_per_unit),
                     system_name: status_json
                         .get("system_name")
                         .and_then(Value::as_str)
@@ -791,7 +801,7 @@ pub async fn bootstrap(req: AuthenticatedRequest) -> Result<Value, NewApiError> 
         let pricing_url = api_url(&origin, "/pricing");
         let v1_models_url = format!("{}/models", format!("{origin}/v1").trim_end_matches('/'));
 
-        let (status, v1_models, pricing) = tokio::join!(
+        let (status, v1_models, pricing, sub) = tokio::join!(
             async {
                 match client
                     .get(&status_url)
@@ -841,8 +851,33 @@ pub async fn bootstrap(req: AuthenticatedRequest) -> Result<Value, NewApiError> 
                     }
                     Err(_) => Value::Null,
                 }
+            },
+            async {
+                let sub_url = format!("{}/dashboard/billing/subscription", format!("{origin}/v1").trim_end_matches('/'));
+                match client
+                    .get(&sub_url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                {
+                    Ok(response) => read_json(response).await.unwrap_or(Value::Null),
+                    Err(_) => Value::Null,
+                }
             }
         );
+
+        let quota_per_unit = status.get("quota_per_unit").and_then(Value::as_f64).unwrap_or(500000.0);
+        let mut user_quota = 0.0;
+        if let Some(hard_limit) = sub.get("hard_limit_usd").and_then(Value::as_f64) {
+            user_quota = hard_limit * quota_per_unit;
+        } else if let Some(hard_limit_str) = sub.get("hard_limit_usd").and_then(Value::as_str) {
+            if let Ok(num) = hard_limit_str.parse::<f64>() {
+                user_quota = num * quota_per_unit;
+            }
+        } else if let Some(q) = sub.get("total_granted").and_then(Value::as_f64) {
+            user_quota = q * quota_per_unit;
+        }
 
         return Ok(json!({
             "origin": origin,
@@ -850,7 +885,7 @@ pub async fn bootstrap(req: AuthenticatedRequest) -> Result<Value, NewApiError> 
             "user": {
                 "id": req.user_id,
                 "username": "深云用户",
-                "quota": 10000000.0,
+                "quota": user_quota,
                 "group": "default",
             },
             "groups": {

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Niko",
+  "productName": "Niko-DeepClub",
   "version": "0.2.8",
-  "identifier": "win.momotoken.niko",
+  "identifier": "net.deepclub.niko",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Niko",
+        "title": "Niko (DeepClub)",
         "width": 960,
         "height": 640,
         "minWidth": 800,

@@ -148,25 +148,17 @@ export default function Home() {
   const groupTouchedRef = useRef(false);
   const requestGuardRef = useRef(initialRequestGuard());
   // 分组测速：group 名 → TTFT 中位数（ms）|"loading"（进行中）|null（失败）；benchErrors 记录失败原因
-  const [benchmarks, setBenchmarks] = useState<Record<string, number | "loading" | null>>({});
-  const [benchErrors, setBenchErrors] = useState<Record<string, string>>({});
-  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
-  // 延迟统一用秒展示（内部仍存毫秒）
-  const fmtSec = (ms: number): string => (ms < 100 ? `${(ms / 1000).toFixed(2)}s` : `${(ms / 1000).toFixed(1)}s`);
-  // 测速进度：仅 running 时展示「done/total」
-  const [benchDone, setBenchDone] = useState(0);
-  const [benchTotal, setBenchTotal] = useState(0);
+  const [benchmarks] = useState<Record<string, number | "loading" | null>>({});
+  const [benchErrors] = useState<Record<string, string>>({});
+  const [benchmarkRunning] = useState(false);
+  void benchmarks;
+  void benchErrors;
   // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
   const benchRunRef = useRef(0);
 
   // 切换模型即清空上一轮分组测速结果（结果只对单次测速的模型有效）
   useEffect(() => {
     benchRunRef.current += 1;
-    setBenchmarks({});
-    setBenchErrors({});
-    setBenchmarkRunning(false);
-    setBenchDone(0);
-    setBenchTotal(0);
   }, [model]);
 
   useEffect(() => {
@@ -536,7 +528,7 @@ export default function Home() {
     () => bootstrap?.pricing?.find((item) => item.model_name === model)?.enable_groups ?? [],
     [bootstrap?.pricing, model]
   );
-  const hasTokenGroups = tokenGroupNames.length > 0;
+  void tokenGroupNames;
   const pricingIndex = useMemo(() => buildPricingIndex(bootstrap?.pricing), [bootstrap]);
 
   /**
@@ -614,60 +606,13 @@ export default function Home() {
     setDraftSource("manual");
     setNotice(null);
   };
+  void pickGroup;
 
-  // 分组测速：对当前模型的每个分组发 3 次最小流式请求，取 TTFT 中位数。
-  // 当前保存密钥所属分组直接复用密钥；其余分组临时申请（不覆盖已保存密钥）。
   const runBenchmarks = async () => {
     if (!auth?.accessToken || !model || benchmarkRunning) return;
-    setBenchmarkRunning(true);
-    setBenchErrors({});
-    setBenchDone(0);
-    setBenchTotal(modelGroups.length);
-    setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
-    let benchCount = 0;
-    const runId = ++benchRunRef.current;
-    for (const g of modelGroups) {
-      // 模型已切换：本轮结果作废，立即停止
-      if (benchRunRef.current !== runId) return;
-      try {
-        let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
-        if (!apiKey) {
-          const res = await api.provision(auth.accessToken, g.name);
-          apiKey = res.api_key;
-        }
-        const result = await invoke<{
-          median_ttft_ms: number | null;
-          samples: { ttft_ms: number | null; error: string | null }[];
-        }>("benchmark_group", {
-          // Tauri v2：Rust snake_case 参数在 JS 侧必须传 camelCase
-          baseUrl: relayUrl,
-          apiKey,
-          model,
-          samples: 3,
-        });
-        if (result.median_ttft_ms == null) {
-          // 采样失败的具体原因在 samples[].error，取第一条给用户看
-          const detail = result.samples?.find((s) => s.error)?.error ?? "未取到首字延迟";
-          setBenchErrors((prev) => ({ ...prev, [g.name]: detail }));
-        }
-        if (result.median_ttft_ms != null) {
-          // 落一份本地缓存，供「模型与价格」页展示实测延迟
-          try {
-            const cache = JSON.parse(localStorage.getItem("niko_model_bench") ?? "{}") as Record<string, unknown>;
-            cache[model] = { median: result.median_ttft_ms, samples: 3, at: Date.now() };
-            localStorage.setItem("niko_model_bench", JSON.stringify(cache));
-          } catch { /* 缓存失败不影响测速 */ }
-        }
-        setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
-      } catch (e) {
-        setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
-        setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
-      }
-      benchCount += 1;
-      setBenchDone(benchCount);
-    }
-    setBenchmarkRunning(false);
+    return;
   };
+  void runBenchmarks;
 
   const pickModel = (choice: VendorModelChoice) => {
     groupTouchedRef.current = true;
@@ -1285,15 +1230,15 @@ export default function Home() {
                 <p className={SUBTLE}>当前账号没有可用模型服务，请联系管理员开通。</p>
               ) : (
                 <>
-                  {/* 三列：厂家 → 模型 → 分组，从左到右 */}
-                  <div className="grid min-h-0 flex-1 gap-3 overflow-hidden md:grid-cols-[13rem_minmax(0,1fr)_17rem]">
+                  {/* 两列布局：左侧厂家，右侧模型列表（深云统一Key无需选分组，空间直接给模型） */}
+                  <div className="grid min-h-0 flex-1 gap-3 overflow-hidden md:grid-cols-[13rem_minmax(0,1fr)]">
                     {/* 第一列：厂家 */}
                     <div className="flex min-h-0 flex-col overflow-hidden">
                       <p className={`${LABEL} shrink-0 px-1`}>
                         厂家
                         <span className="ml-1.5 opacity-70">{vendorTabs.length}</span>
                       </p>
-                      {/* 厂家数量不多，用卡片式条目（图标 + 名称 + 模型数） */}
+                      {/* 厂家列表 */}
                       <div className="mt-1.5 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
                         {vendorTabs.map((tab) => (
                           <button
@@ -1325,7 +1270,7 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* 第二列：模型（默认按发布时间从新到旧） */}
+                    {/* 第二列：模型（占据全部右侧主空间，排版更舒展） */}
                     <div className="flex min-h-0 min-w-0 flex-col overflow-hidden border-t pt-2 md:border-l md:border-t-0 md:pl-3 md:pt-0 [border-color:var(--nk-line)]">
                       <div className="flex shrink-0 items-center justify-between gap-2">
                         <p className={LABEL}>
@@ -1334,7 +1279,7 @@ export default function Home() {
                           <span className={`ml-2 text-[10px] font-normal ${SUBTLE}`}>
                             {vendorModels.some((m) => releaseTimeOf(m.name) !== null)
                               ? "按发布时间 新→旧"
-                              : "按发布顺序（服务端未提供发布日期）"}
+                              : "按发布顺序"}
                           </span>
                         </p>
                         {searchOpen ? (
@@ -1351,7 +1296,7 @@ export default function Home() {
                               }}
                               placeholder="搜索模型"
                               aria-label="搜索模型"
-                              className="nk-input w-28 py-1 text-xs sm:w-40"
+                              className="nk-input w-28 py-1 text-xs sm:w-48"
                             />
                             <button
                               onClick={() => {
@@ -1394,7 +1339,7 @@ export default function Home() {
                                 key={choice.name}
                                 onClick={() => pickModel(choice)}
                                 aria-pressed={selected}
-                                className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
+                                className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition ${
                                   selected
                                     ? "border-transparent bg-[var(--nk-accent)] text-white"
                                     : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
@@ -1418,110 +1363,29 @@ export default function Home() {
                                   </span>
                                 </span>
                                 <span
-                                  className={`flex shrink-0 items-center gap-2 text-[10px] tabular-nums ${
+                                  className={`flex shrink-0 items-center gap-3 text-[11px] tabular-nums ${
                                     selected ? "text-white/80" : SUBTLE
                                   }`}
                                 >
                                   {compat && (
                                     <span
                                       title={compat.note}
-                                      className={`rounded-full px-1.5 py-0.5 ${
+                                      className={`rounded-full px-1.5 py-0.5 text-[10px] ${
                                         selected ? "bg-white/25 text-white" : COMPAT_STYLE[compat.level]
                                       }`}
                                     >
                                       {COMPAT_LABEL[compat.level]}
                                     </span>
                                   )}
-                                  <span>{choice.groups.length} 组</span>
-                                  <span className="w-14 text-right">{releaseLabelOf(choice.name)}</span>
-                                  {selected && <span aria-hidden="true">✓</span>}
+                                  <span>{groupPriceLabel(choice.name, 1.0)}</span>
+                                  <span className="w-16 text-right">{releaseLabelOf(choice.name)}</span>
+                                  {selected && <span aria-hidden="true" className="font-bold text-white">✓</span>}
                                 </span>
                               </button>
                             );
                           })}
                         </div>
                       </div>
-                    </div>
-
-                    {/* 第三列：分组（选了模型才出现） */}
-                    <div className="flex min-h-0 flex-col overflow-hidden border-t pt-2 md:border-l md:border-t-0 md:pl-3 md:pt-0 [border-color:var(--nk-line)]">
-                      <p className={`${LABEL} shrink-0`}>
-                        令牌分组
-                        <span className="ml-1.5 opacity-70">{modelGroups.length}</span>
-                      </p>
-                      {!model ? (
-                        <p className={`mt-2 text-[11px] ${SUBTLE}`}>先选择模型</p>
-                      ) : (
-                        <>
-                          {modelGroups.length > 0 && (
-                            <button
-                              onClick={runBenchmarks}
-                              disabled={benchmarkRunning}
-                              title="对当前模型的各分组发真实请求测首字延迟"
-                              className={`mt-1 shrink-0 self-start rounded-lg px-2 py-0.5 text-[11px] transition ${
-                                benchmarkRunning
-                                  ? "cursor-wait text-gray-400 dark:text-gray-500"
-                                  : "text-[var(--nk-info)] hover:bg-black/[0.04] dark:hover:bg-white/10"
-                              }`}
-                            >
-                              {benchmarkRunning ? `测速中 ${benchDone}/${benchTotal}…` : "⚡ 测速"}
-                            </button>
-                          )}
-                          {!hasTokenGroups && (
-                            <p className={`mt-1 text-[10px] ${SUBTLE}`}>
-                              服务端未下发该模型的令牌分组（enable_groups），当前只能列出账号可用的分组
-                            </p>
-                          )}
-                          <div className="mt-1.5 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-                            {modelGroups.map((g) => (
-                              <button
-                                key={g.name}
-                                onClick={() => g.usable && pickGroup(g.name)}
-                                disabled={!g.usable}
-                                aria-pressed={g.name === group}
-                                title={
-                                  g.usable
-                                    ? `${g.desc || g.name}（${g.name}）`
-                                    : `${g.desc || g.name}：当前账号未开通该分组`
-                                }
-                                className={`w-full rounded-lg border px-2 py-1.5 text-left text-[11px] transition ${
-                                  g.name === group
-                                    ? "border-transparent bg-[var(--nk-accent)] font-medium text-white"
-                                    : g.usable
-                                      ? "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
-                                      : "cursor-not-allowed border-dashed [border-color:var(--nk-line)] text-gray-400 opacity-70 dark:text-gray-500"
-                                }`}
-                              >
-                                <span className="flex items-center justify-between gap-2">
-                                  <span className="min-w-0 truncate font-medium">
-                                    {g.desc?.trim() || g.name}
-                                  </span>
-                                  <span className="shrink-0 tabular-nums opacity-70">{g.ratio}x</span>
-                                </span>
-                                <span className="mt-0.5 flex items-center justify-between gap-2 text-[10px] opacity-80">
-                                  <span className="min-w-0 truncate font-mono">{g.name}</span>
-                                  <span className="shrink-0 tabular-nums">
-                                    {g.usable ? groupPriceLabel(model, g.ratio) : "未开通"}
-                                  </span>
-                                </span>
-                                {typeof benchmarks[g.name] === "number" && (
-                                  <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
-                                    实测首字 {fmtSec(benchmarks[g.name] as number)}
-                                  </span>
-                                )}
-                                {benchmarks[g.name] === null && (
-                                  <span
-                                    className="mt-0.5 block text-[10px] text-red-500 dark:text-red-400"
-                                    title={benchErrors[g.name] || "测速失败"}
-                                  >
-                                    测速失败
-                                  </span>
-                                )}
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
                     </div>
                   </div>
                   <div className="mt-1.5 shrink-0 border-t pt-1.5 [border-color:var(--nk-line)]">
