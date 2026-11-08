@@ -31,6 +31,12 @@
   <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square&amp;logo=react&amp;logoColor=111827" alt="React 19">
 </p>
 
+## 🤝 合作伙伴：米云
+
+<a href="https://momotoken.win"><img src="docs/assets/miyun-banner.png" alt="米云 MIYUN · 多模型 AI API 聚合平台 momotoken.win" width="760"></a>
+
+**[米云 MIYUN](https://momotoken.win)** —— 多模型 AI API 聚合平台：稳定不降智，模型上线快又多；统一 API 接入、按量使用、余额集中管理。
+
 ## 产品截图
 
 ### 完整首页：选择、接入与验证
