@@ -6,7 +6,6 @@ import {
   type UsageLogItem,
   type UsageSummary,
   type GroupOption,
-  type BootstrapModel,
   type UsageDimension,
   type UsageDayBucket,
 } from "../api/client";
@@ -32,10 +31,6 @@ const RANGES = [
 ] as const;
 
 type RangeId = (typeof RANGES)[number]["id"] | "custom";
-
-function modelName(item: BootstrapModel): string {
-  return typeof item === "string" ? item : (item.name ?? item.model_name ?? item.id ?? "");
-}
 
 function num(n: number): string {
   return n.toLocaleString();
@@ -143,7 +138,6 @@ export default function Usage() {
   const stationKindNewApi = isNewApiAuth(auth);
 
   const [groups, setGroups] = useState<GroupOption[]>([]);
-  const [allModels, setAllModels] = useState<string[]>([]);
 
   const [range, setRange] = useState<RangeId>("7d");
   const [from, setFrom] = useState(toDateInput(dayStart(new Date()) - 6 * 86400));
@@ -160,6 +154,7 @@ export default function Usage() {
   const [pageLoading, setPageLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   // 金额单位：本地已有就直接用；缺失时向站点补拉一次，仍缺失就不展示金额，
   // 避免用错误单位把消费算少一半。
@@ -182,7 +177,6 @@ export default function Usage() {
       .bootstrap(token)
       .then((data) => {
         setGroups(data.groups ?? []);
-        setAllModels((data.models ?? []).map(modelName).filter(Boolean));
       })
       .catch(() => undefined);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -220,17 +214,10 @@ export default function Usage() {
   }, [range, from, to]);
   const { start: startTimestamp, end: endTimestamp } = rangeCalc;
 
-  // 厂商筛选转成模型名列表交给后端聚合；后端不支持时由本地完整账本兜底
-  const vendorModels = useMemo(
-    () => (vendor ? allModels.filter((m) => vendorOfModel(m) === vendor) : []),
-    [vendor, allModels]
-  );
-  const vendorEmpty = vendor !== "" && vendorModels.length === 0;
-
   const tzOffset = -new Date().getTimezoneOffset();
-  const queryKey = `${token ?? ""}|${startTimestamp}|${endTimestamp}|${group}|${vendor}|${vendorModels.join(",")}`;
+  const queryKey = `${token ?? ""}|${startTimestamp}|${endTimestamp}|${group}|${vendor}`;
   const versionRef = useRef(0);
-  const firstPageKeyRef = useRef<string>("");
+  const firstPageRef = useRef<{ key: string; items: UsageLogItem[] } | null>(null);
   // 当前筛选的账本是否已落地：翻页只能在账本就绪后进行，
   // 否则切换筛选瞬间会带着上一轮的分页模式多发请求、互相覆盖
   const ledgerKeyRef = useRef<string>("");
@@ -238,11 +225,12 @@ export default function Usage() {
   // 主加载：换筛选就整体作废上一轮结果，旧请求晚到也不允许覆盖新选择；
   // 失败时清空数据，绝不把上一个范围的数字当成当前范围展示。
   useEffect(() => {
-    if (!token || rangeCalc.error) return;
     const version = ++versionRef.current;
     const controller = new AbortController();
-    setLoading(true);
+    setLoading(Boolean(token) && !rangeCalc.error);
+    setPageLoading(false);
     setError(null);
+    setPageError(null);
     ledgerKeyRef.current = "";
     setSummary(null);
     setTableItems([]);
@@ -250,32 +238,24 @@ export default function Usage() {
     setTableMode(null);
     setTotal(0);
     setPage(1);
-    firstPageKeyRef.current = "";
+    firstPageRef.current = null;
 
-    if (vendorEmpty) {
-      setSummary(summarizeNewApiLogs([]));
-      setAllRecords([]);
-      setTableMode("local");
-      ledgerKeyRef.current = queryKey;
-      setLoading(false);
-      return;
-    }
-
+    if (!token || rangeCalc.error) return;
     const query = {
       startTimestamp: startTimestamp || undefined,
       endTimestamp: endTimestamp || undefined,
       group: group || undefined,
-      models: vendor ? vendorModels : undefined,
       tz: tzOffset,
     };
-    // 第三方没有服务端汇总；本站选了厂商时旧服务端不认 models，也走本地完整账本，
-    // 保证概览和明细永远来自同一批记录。
+    // 厂商筛选基于完整账本中的模型名，避免当前目录为空或模型下架时漏算历史消费。
+    // 第三方同样使用本地完整账本，保证概览和明细来自同一批记录。
     const useLocalLedger = stationKindNewApi || vendor !== "";
     (async () => {
       try {
         if (useLocalLedger) {
-          const records = await api.usageRecords(token, query, controller.signal);
-          if (versionRef.current !== version) return;
+          const ledger = await api.usageRecords(token, query, controller.signal);
+          if (versionRef.current !== version || controller.signal.aborted) return;
+          const records = vendor ? ledger.filter((item) => vendorOfModel(item.model_name) === vendor) : ledger;
           setSummary(summarizeNewApiLogs(records));
           setAllRecords(records);
           setTableMode("local");
@@ -285,13 +265,13 @@ export default function Usage() {
             api.usageSummary(token, query),
             api.usage(token, { ...query, page: 1, pageSize: PAGE_SIZE }),
           ]);
-          if (versionRef.current !== version) return;
+          if (versionRef.current !== version || controller.signal.aborted) return;
           setSummary(summaryData);
           setTableMode("server");
           const pageTotal = firstPage.total ?? firstPage.items?.length ?? 0;
           setTotal(pageTotal);
           setTableItems(firstPage.items ?? []);
-          firstPageKeyRef.current = queryKey;
+          firstPageRef.current = { key: queryKey, items: firstPage.items ?? [] };
         }
         ledgerKeyRef.current = queryKey;
       } catch (err) {
@@ -303,45 +283,52 @@ export default function Usage() {
         setTableMode(null);
         setTotal(0);
       } finally {
-        if (versionRef.current === version) setLoading(false);
+        if (versionRef.current === version && !controller.signal.aborted) setLoading(false);
       }
     })();
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryKey, rangeCalc.error, vendorEmpty]);
+  }, [queryKey, rangeCalc.error]);
 
   // 翻页：本地账本直接切片；服务端分页按页取，且同样不允许旧页覆盖新页。
   useEffect(() => {
     if (!token || rangeCalc.error || ledgerKeyRef.current !== queryKey || tableMode === null) return;
+    setPageError(null);
     if (tableMode === "local") {
       setTableItems(allRecords?.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) ?? []);
+      setPageLoading(false);
       return;
     }
-    if (page === 1 && firstPageKeyRef.current === queryKey) return;
+    if (page === 1 && firstPageRef.current?.key === queryKey) {
+      setTableItems(firstPageRef.current.items);
+      setPageLoading(false);
+      return;
+    }
     const version = versionRef.current;
+    let active = true;
     setPageLoading(true);
     api
       .usage(token, {
         startTimestamp: startTimestamp || undefined,
         endTimestamp: endTimestamp || undefined,
         group: group || undefined,
-        models: vendor ? vendorModels : undefined,
         tz: tzOffset,
         page,
         pageSize: PAGE_SIZE,
       })
       .then((result) => {
-        if (versionRef.current !== version) return;
+        if (!active || versionRef.current !== version) return;
         setTableItems(result.items ?? []);
       })
       .catch((err) => {
-        if (versionRef.current !== version) return;
+        if (!active || versionRef.current !== version) return;
         setTableItems([]);
-        setError(err instanceof UsageLoadError ? err.message : friendlyDesktopError(err));
+        setPageError(err instanceof UsageLoadError ? err.message : friendlyDesktopError(err));
       })
       .finally(() => {
-        if (versionRef.current === version) setPageLoading(false);
+        if (active && versionRef.current === version) setPageLoading(false);
       });
+    return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, queryKey, tableMode, allRecords]);
 
@@ -460,6 +447,7 @@ export default function Usage() {
 
           {rangeCalc.error && <p className="nk-alert-danger text-center text-sm">{rangeCalc.error}</p>}
           {error && <p className="nk-alert-danger text-center text-sm">{error}</p>}
+          {pageError && <p className="nk-alert-danger text-center text-sm">{pageError}</p>}
           {unitError && <p className="nk-alert-danger text-center text-sm">{unitError}</p>}
           {loading && (
             <div

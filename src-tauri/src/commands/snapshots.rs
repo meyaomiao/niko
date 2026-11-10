@@ -16,22 +16,66 @@ const SNAPSHOT_CREATE_ATTEMPTS: usize = 32;
 const SNAPSHOT_NONCE_HEX_LEN: usize = 8;
 const SNAPSHOT_FILENAME_MAX_LEN: usize = 255;
 
-fn backup_dir_for(target_id: &str) -> PathBuf {
-    #[cfg(target_os = "windows")]
-    let base = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("C:\\Users\\default\\AppData\\Roaming"));
-    #[cfg(not(target_os = "windows"))]
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"));
-
-    base.join(".niko").join("backups").join(target_id)
+fn canonical_snapshot_target(target_id: &str) -> Result<&str, SafeCommandError> {
+    match target_id {
+        "claude-code" => Ok("claude-cli"),
+        "codex" | "claude-desktop" | "claude-cli" | "grok" | "antigravity" | "dsh" | "zcode" => {
+            Ok(target_id)
+        }
+        _ => Err(SafeCommandError::invalid_request()),
+    }
 }
 
-/// 把 `src` 文件备份到对应目标的备份目录，文件名加上时间戳前缀。
+fn backup_dir_for(target_id: &str) -> io::Result<PathBuf> {
+    canonical_snapshot_target(target_id)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid backup target"))?;
+    // 保留旧 claude-code 目录名，恢复目标通过 canonical_snapshot_target 统一映射。
+    Ok(crate::targets::app_data_dir()
+        .join(".niko")
+        .join("backups")
+        .join(target_id))
+}
+
+fn snapshot_destination(
+    home: &Path,
+    target_id: &str,
+    original_name: &str,
+) -> Result<PathBuf, SafeCommandError> {
+    validate_snapshot_original_name(original_name)
+        .map_err(|_| SafeCommandError::invalid_request())?;
+    let canonical = canonical_snapshot_target(target_id)?;
+    let mut matches = crate::targets::transaction_paths_for_home(home, canonical)
+        .map_err(|_| SafeCommandError::invalid_request())?
+        .into_iter()
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some(original_name));
+    let destination = matches
+        .next()
+        .ok_or_else(SafeCommandError::invalid_request)?;
+    // 备份格式只保存 basename；未来若出现同名配置，必须升级格式，不能猜测恢复位置。
+    if matches.next().is_some() {
+        return Err(SafeCommandError::invalid_request());
+    }
+    Ok(destination)
+}
+
+/// 把已知目标配置备份到对应目标目录；与列表/恢复使用同一套文件允许列表。
 pub fn save_backup(target_id: &str, src: &Path) -> std::io::Result<()> {
-    let dir = backup_dir_for(target_id);
+    canonical_snapshot_target(target_id)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid backup target"))?;
+    let original_name = src
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid backup source"))?;
+    let destination =
+        snapshot_destination(&crate::targets::user_home_dir(), target_id, original_name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid backup source"))?;
+    if src != destination.as_path() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid backup source",
+        ));
+    }
+    let dir = backup_dir_for(target_id)?;
     save_backup_at(&dir, src).map(|_| ())
 }
 
@@ -142,6 +186,12 @@ fn save_backup_at_with_candidates(
     validate_snapshot_original_name(fname)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot filename"))?;
     fs::create_dir_all(dir)?;
+    if !fs::symlink_metadata(dir)?.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid backup directory",
+        ));
+    }
 
     for candidate in candidates.into_iter().take(SNAPSHOT_CREATE_ATTEMPTS) {
         let destination_path = dir.join(format_snapshot_name(seconds, candidate, fname)?);
@@ -256,7 +306,8 @@ fn validate_snapshot_original_name(name: &str) -> Result<(), ()> {
 }
 
 fn is_single_path_component(value: &str) -> bool {
-    Path::new(value).components().count() == 1
+    !value.contains(['/', '\\', ':'])
+        && Path::new(value).components().count() == 1
         && matches!(
             Path::new(value).components().next(),
             Some(Component::Normal(_))
@@ -286,11 +337,16 @@ pub struct SnapshotEntry {
 /// 列出某目标的所有备份（按时间倒序）
 #[tauri::command]
 pub async fn list_snapshots(target_id: String) -> Vec<SnapshotEntry> {
-    list_snapshots_at(&backup_dir_for(&target_id), &target_id)
+    let Ok(dir) = backup_dir_for(&target_id) else {
+        return vec![];
+    };
+    list_snapshots_at(&dir, &crate::targets::user_home_dir(), &target_id)
 }
 
-fn list_snapshots_at(dir: &Path, target_id: &str) -> Vec<SnapshotEntry> {
-    if !dir.exists() {
+fn list_snapshots_at(dir: &Path, home: &Path, target_id: &str) -> Vec<SnapshotEntry> {
+    if canonical_snapshot_target(target_id).is_err()
+        || !fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.file_type().is_dir())
+    {
         return vec![];
     }
     let mut entries: Vec<SnapshotEntry> = fs::read_dir(&dir)
@@ -299,8 +355,12 @@ fn list_snapshots_at(dir: &Path, target_id: &str) -> Vec<SnapshotEntry> {
         .flatten()
         .filter_map(|e| e.ok())
         .filter_map(|e| {
+            if !e.file_type().ok()?.is_file() {
+                return None;
+            }
             let fname = e.file_name().into_string().ok()?;
             let parsed = parse_snapshot_name(&fname)?;
+            snapshot_destination(home, target_id, parsed.original_name).ok()?;
             Some(SnapshotEntry {
                 target_id: target_id.to_owned(),
                 filename: fname.clone(),
@@ -321,10 +381,13 @@ fn list_snapshots_at(dir: &Path, target_id: &str) -> Vec<SnapshotEntry> {
 /// 从备份文件恢复到目标应用的实际配置路径
 #[tauri::command]
 pub async fn restore_snapshot(target_id: String, filename: String) -> Result<(), SafeCommandError> {
+    let backup_dir = backup_dir_for(&target_id).map_err(|_| SafeCommandError::invalid_request())?;
+    let home = crate::targets::user_home_dir();
+    snapshot_restore_paths(&backup_dir, &home, &target_id, &filename)?;
     let _guard = crate::commands::targets::lock_and_recover_provider_transaction()?;
     restore_snapshot_after_recovery_at(
-        &backup_dir_for(&target_id),
-        &crate::targets::user_home_dir(),
+        &backup_dir,
+        &home,
         &target_id,
         &filename,
         crate::commands::codex_sessions::recover_codex_session_storage,
@@ -338,8 +401,31 @@ fn restore_snapshot_after_recovery_at(
     filename: &str,
     recover: impl FnOnce() -> Result<(), SafeCommandError>,
 ) -> Result<(), SafeCommandError> {
+    snapshot_restore_paths(backup_dir, home, target_id, filename)?;
     recover()?;
     restore_snapshot_at(backup_dir, home, target_id, filename)
+}
+
+fn snapshot_restore_paths(
+    backup_dir: &Path,
+    home: &Path,
+    target_id: &str,
+    filename: &str,
+) -> Result<(PathBuf, PathBuf), SafeCommandError> {
+    let parsed = parse_snapshot_name(filename).ok_or_else(SafeCommandError::invalid_request)?;
+    let destination = snapshot_destination(home, target_id, parsed.original_name)?;
+    let directory =
+        fs::symlink_metadata(backup_dir).map_err(|_| SafeCommandError::change_failed(false))?;
+    if !directory.file_type().is_dir() {
+        return Err(SafeCommandError::invalid_request());
+    }
+    let source = backup_dir.join(filename);
+    let metadata =
+        fs::symlink_metadata(&source).map_err(|_| SafeCommandError::change_failed(false))?;
+    if !metadata.file_type().is_file() {
+        return Err(SafeCommandError::invalid_request());
+    }
+    Ok((source, destination))
 }
 
 fn restore_snapshot_at(
@@ -348,25 +434,7 @@ fn restore_snapshot_at(
     target_id: &str,
     filename: &str,
 ) -> Result<(), SafeCommandError> {
-    let parsed = parse_snapshot_name(filename).ok_or_else(SafeCommandError::invalid_request)?;
-
-    let destination = match (target_id, parsed.original_name) {
-        ("codex", "auth.json") => home.join(".codex").join("auth.json"),
-        ("codex", "config.toml") => home.join(".codex").join("config.toml"),
-        ("claude-desktop" | "claude-code", "settings.json") => {
-            home.join(".claude").join("settings.json")
-        }
-        ("dsh", "settings.yaml") => home.join(".dsh").join("settings.yaml"),
-        ("dsh", ".credentials.yaml") => home.join(".dsh").join(".credentials.yaml"),
-        ("zcode", "config.json") => home.join(".zcode").join("v2").join("config.json"),
-        _ => return Err(SafeCommandError::invalid_request()),
-    };
-    let source = backup_dir.join(filename);
-    let metadata =
-        fs::symlink_metadata(&source).map_err(|_| SafeCommandError::change_failed(false))?;
-    if !metadata.file_type().is_file() {
-        return Err(SafeCommandError::invalid_request());
-    }
+    let (source, destination) = snapshot_restore_paths(backup_dir, home, target_id, filename)?;
     crate::commands::targets::replace_from_backup(&source, &destination)
 }
 
@@ -379,6 +447,137 @@ mod tests {
     }
 
     #[test]
+    fn isolated_snapshot_roundtrip_covers_every_known_configuration_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let _home = crate::targets::set_test_home(&home);
+        let mut claude_files = vec!["settings.json"];
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            claude_files.extend(["6e696b6f-0000-4000-8000-000000000001.json", "_meta.json"]);
+        }
+        let targets = [
+            ("codex", vec!["auth.json", "config.toml"]),
+            ("claude-desktop", claude_files),
+            ("claude-cli", vec!["settings.json"]),
+            ("claude-code", vec!["settings.json"]),
+            ("grok", vec!["config.toml"]),
+            ("antigravity", vec!["settings.json"]),
+            ("dsh", vec!["settings.yaml", ".credentials.yaml"]),
+            ("zcode", vec!["config.json"]),
+        ];
+        for (target_id, expected_files) in targets {
+            let backups = backup_dir_for(target_id).unwrap();
+            assert_eq!(backups, home.join(".niko").join("backups").join(target_id));
+            assert!(backups.starts_with(temp.path()));
+            for original_name in &expected_files {
+                let destination = snapshot_destination(&home, target_id, original_name).unwrap();
+                assert!(destination.starts_with(&home));
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                let original = format!("original:{target_id}:{original_name}");
+                fs::write(&destination, original.as_bytes()).unwrap();
+                save_backup(target_id, &destination).unwrap();
+                let entries = list_snapshots_at(&backups, &home, target_id);
+                let snapshot = entries
+                    .iter()
+                    .find(|entry| entry.original_name == *original_name)
+                    .unwrap();
+                assert_eq!(snapshot.target_id, target_id);
+                fs::write(&destination, b"changed-fixture").unwrap();
+                // 直接调用纯路径 helper，不触发恢复 IPC、会话迁移或真实应用。
+                restore_snapshot_at(&backups, &home, target_id, &snapshot.filename).unwrap();
+                assert_eq!(fs::read(&destination).unwrap(), original.as_bytes());
+            }
+            assert_eq!(
+                list_snapshots_at(&backups, &home, target_id).len(),
+                expected_files.len()
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_snapshot_save_rejects_unknown_targets_and_unmapped_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let _home = crate::targets::set_test_home(&home);
+        let wrong_source = temp.path().join("auth.json");
+        fs::write(&wrong_source, b"fixture-auth").unwrap();
+        assert!(save_backup("codex", &wrong_source).is_err());
+        for target_id in ["", "unknown", "../codex", "codex/../dsh", "C:\\codex"] {
+            assert!(backup_dir_for(target_id).is_err());
+            assert!(save_backup(target_id, &wrong_source).is_err());
+        }
+        assert!(!home.join(".niko").exists());
+        assert_eq!(fs::read(&wrong_source).unwrap(), b"fixture-auth");
+    }
+
+    #[test]
+    fn isolated_snapshot_list_and_restore_reject_unknown_files_and_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let backups = temp.path().join("backups");
+        fs::create_dir_all(&backups).unwrap();
+        fs::write(backups.join("123_auth.json"), b"valid-fixture").unwrap();
+        fs::write(backups.join("124_unknown.json"), b"unknown-fixture").unwrap();
+        fs::create_dir(backups.join("125_config.toml")).unwrap();
+        let entries = list_snapshots_at(&backups, &home, "codex");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].filename, "123_auth.json");
+        assert!(list_snapshots_at(&backups, &home, "../codex").is_empty());
+        for filename in [
+            "124_unknown.json",
+            "125_config.toml",
+            "../123_auth.json",
+            "123_../auth.json",
+            "123_auth.json/",
+            "123_auth.json\\..",
+            "123_auth.json:secret",
+        ] {
+            let recovered = std::cell::Cell::new(false);
+            assert!(
+                restore_snapshot_after_recovery_at(&backups, &home, "codex", filename, || {
+                    recovered.set(true);
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(
+                !recovered.get(),
+                "invalid input must not start recovery: {filename}"
+            );
+        }
+        assert!(restore_snapshot_at(&backups, &home, "dsh", "123_auth.json").is_err());
+        assert!(restore_snapshot_at(&backups, &home, "../codex", "123_auth.json").is_err());
+        assert!(!home.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_snapshot_symlink_sources_and_backup_directories_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let backups = temp.path().join("backups");
+        let sentinel = temp.path().join("sentinel");
+        fs::create_dir_all(&backups).unwrap();
+        fs::write(&sentinel, b"unchanged-sentinel").unwrap();
+        symlink(&sentinel, backups.join("123_auth.json")).unwrap();
+        assert!(list_snapshots_at(&backups, &home, "codex").is_empty());
+        assert!(restore_snapshot_at(&backups, &home, "codex", "123_auth.json").is_err());
+
+        let directory_link = temp.path().join("linked-backups");
+        symlink(&backups, &directory_link).unwrap();
+        fs::write(backups.join("124_config.toml"), b"valid-fixture").unwrap();
+        assert!(list_snapshots_at(&directory_link, &home, "codex").is_empty());
+        assert!(restore_snapshot_at(&directory_link, &home, "codex", "124_config.toml").is_err());
+        let source = temp.path().join("config.toml");
+        fs::write(&source, b"backup-fixture").unwrap();
+        assert!(save_backup_at(&directory_link, &source).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged-sentinel");
+        assert!(!home.exists());
+    }
+
+    #[test]
     fn restore_snapshot_at_only_accepts_known_regular_backups() {
         let temp = tempfile::tempdir().unwrap();
         let backups = temp.path().join("backups");
@@ -386,7 +585,7 @@ mod tests {
         fs::create_dir_all(&backups).unwrap();
         fs::write(backups.join("123_auth.json"), b"{\"auth_mode\":\"apikey\"}").unwrap();
 
-        let listed = list_snapshots_at(&backups, "codex");
+        let listed = list_snapshots_at(&backups, &home, "codex");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].timestamp, 123);
         assert_eq!(listed[0].filename, "123_auth.json");
@@ -401,14 +600,14 @@ mod tests {
         assert!(restore_snapshot_at(&backups, &home, "codex", "123_unknown.json").is_err());
 
         let error = restore_snapshot_at(
-            Path::new("/Users/alice/.codex/journal"),
-            Path::new("/Users/alice"),
+            &temp.path().join("missing-journal"),
+            &home,
             "codex",
             "999_config.toml",
         )
         .unwrap_err();
         let serialized = serde_json::to_string(&error).unwrap();
-        assert!(!serialized.contains("/Users/alice"));
+        assert!(!serialized.contains(temp.path().to_string_lossy().as_ref()));
         assert!(!serialized.contains("config.toml"));
         assert!(!serialized.contains("journal"));
     }
@@ -527,7 +726,7 @@ mod tests {
         assert_eq!(fs::read(&first).unwrap(), b"first");
         assert_eq!(fs::read(&second).unwrap(), b"second");
 
-        let listed = list_snapshots_at(&backups, "claude-code");
+        let listed = list_snapshots_at(&backups, &home, "claude-code");
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().all(|entry| entry.timestamp == seconds));
         assert!(listed
@@ -564,6 +763,7 @@ mod tests {
     #[test]
     fn epoch_and_early_v2_timestamps_are_explicit_and_distinct_from_legacy() {
         let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
         let backups = temp.path().join("backups");
         let source = temp.path().join("auth.json");
         fs::write(&source, b"epoch").unwrap();
@@ -577,7 +777,7 @@ mod tests {
         .unwrap();
         fs::write(backups.join("1700000000_config.toml"), b"legacy").unwrap();
 
-        let listed = list_snapshots_at(&backups, "codex");
+        let listed = list_snapshots_at(&backups, &home, "codex");
         assert_eq!(listed.len(), 3);
         assert!(listed.iter().any(|entry| entry.filename
             == epoch.file_name().unwrap().to_str().unwrap()
@@ -658,7 +858,7 @@ mod tests {
             assert!(parse_snapshot_name(filename).is_none(), "{filename}");
             assert!(restore_snapshot_at(&backups, &home, "codex", filename).is_err());
         }
-        assert!(list_snapshots_at(&backups, "codex").is_empty());
+        assert!(list_snapshots_at(&backups, &home, "codex").is_empty());
     }
 
     #[test]

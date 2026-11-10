@@ -10,16 +10,7 @@ use std::path::PathBuf;
 const MAX_LOG_BYTES: u64 = 512 * 1024;
 
 pub fn base_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    let base = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("C:\\Users\\default\\AppData\\Roaming"));
-    #[cfg(not(target_os = "windows"))]
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"));
-
-    base.join(".niko")
+    crate::targets::app_data_dir().join(".niko")
 }
 
 pub fn session_log_path() -> PathBuf {

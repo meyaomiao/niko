@@ -50,12 +50,8 @@ fn niko_dir(home: &Path) -> PathBuf {
     home.join(".niko")
 }
 
-pub(crate) fn dsh_settings_path() -> PathBuf {
-    settings_path(&home_dir())
-}
-
-pub(crate) fn dsh_credentials_path() -> PathBuf {
-    credentials_path(&home_dir())
+pub(crate) fn dsh_config_paths(home: &Path) -> Vec<PathBuf> {
+    vec![settings_path(home), credentials_path(home)]
 }
 
 pub(crate) fn dsh_openai_base_url(base_url: &str) -> String {
