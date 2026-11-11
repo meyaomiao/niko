@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
+import { isCurrentAuthSession, loadAuth, refreshAuthMeta, saveAuth } from "../store/auth";
 import { api, type BootstrapData, type GroupOption, type DeviceItem, type PricingMeta, type UsageSummary } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { useTheme } from "../hooks/useTheme";
@@ -47,16 +47,7 @@ import {
 import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
 import { isNewApiAuth, relayBaseUrl, stationOrigin } from "../lib/station";
 import { peekCurrentCatalog } from "../lib/catalogCache";
-const DESKTOP_APPLY_TIMEOUT_MS = 30_000;
-
-function withDesktopApplyTimeout<T>(promise: Promise<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error("桌面应用配置写入超时，请重试；会话同步需要在会话管理页面单独执行"));
-    }, DESKTOP_APPLY_TIMEOUT_MS);
-    promise.then(resolve, reject).finally(() => clearTimeout(timeoutId));
-  });
-}
+import { RESTORE_CONFIRMATION_MS, restoreConfirmationMatches, runTargetActions, waitForDesktopAction, type RestoreConfirmation } from "../lib/homeActions";
 /// 记住上次配置的应用，多应用用户不必每次重选
 const TARGET_STORAGE_KEY = "niko_last_target";
 /// 应用选择里代表「全部已安装应用」的哨兵值
@@ -173,6 +164,7 @@ export default function Home() {
     requestGuardRef.current = mountRequests(requestGuardRef.current);
     return () => {
       requestGuardRef.current = unmountRequests(requestGuardRef.current);
+      benchRunRef.current += 1;
     };
   }, []);
   // Codex 专属：有 ChatGPT 订阅的用户走混用模式，保留官方登录态
@@ -184,9 +176,19 @@ export default function Home() {
   const [testing, setTesting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [restoreConfirmation, setRestoreConfirmation] = useState<RestoreConfirmation | null>(null);
+  const actionBusy = provisioning || testing || restoring || restarting;
+  const actionInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!restoreConfirmation) return;
+    const timer = window.setTimeout(() => setRestoreConfirmation(null),
+      Math.max(0, restoreConfirmation.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [restoreConfirmation]);
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
+  const [devicesError, setDevicesError] = useState("");
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [tokenTipOpen, setTokenTipOpen] = useState(false);
   const [revoking, setRevoking] = useState<number | "others" | null>(null);
@@ -197,8 +199,8 @@ export default function Home() {
       quotaPerUnit: snapshot.quotaPerUnit,
       balanceUpdatedAt: snapshot.updatedAt,
       defaultGroup: groupName,
-    });
-  }, []);
+    }, auth);
+  }, [auth?.accessToken, auth?.kind, auth?.origin]);
 
   const loadTargets = useCallback(async () => {
     setTargetsLoading(true);
@@ -221,16 +223,17 @@ export default function Home() {
     }
   }, []);
 
-  const refreshBalance = useCallback(async () => {
+  const refreshBalance = useCallback(async (force = false) => {
     if (!auth?.accessToken || balanceRequestRef.current) return balanceRequestRef.current;
     dispatchBalance({ type: "refresh-started" });
     const request = (async (): Promise<BootstrapData | null> => {
       let data: BootstrapData | null = null;
       try {
         const [catalogResult, statusResult] = await Promise.allSettled([
-          api.catalog(auth.accessToken),
+          api.catalog(auth.accessToken, { force }),
           api.status(),
         ]);
+        if (!requestGuardRef.current.mounted || !isCurrentAuthSession(auth)) return null;
         if (catalogResult.status === "rejected") throw catalogResult.reason;
 
         data = catalogResult.value.bootstrap;
@@ -239,13 +242,15 @@ export default function Home() {
         const quotaPerUnit =
           data.site.quota_per_unit ??
           (statusResult.status === "fulfilled" ? statusResult.value.quota_per_unit : undefined);
-        const snapshot = parseBalanceSnapshot(data.user.quota, quotaPerUnit);
+        const snapshot = parseBalanceSnapshot(data.user.quota, quotaPerUnit, catalogResult.value.at);
         if (!snapshot) throw new Error("余额单位暂时无法读取");
 
         dispatchBalance({ type: "refresh-succeeded", snapshot });
         persistBalance(snapshot, data.user.group);
       } catch {
-        dispatchBalance({ type: "refresh-failed", error: "余额刷新失败，请稍后重试" });
+        if (requestGuardRef.current.mounted && isCurrentAuthSession(auth)) {
+          dispatchBalance({ type: "refresh-failed", error: "余额刷新失败，请稍后重试" });
+        }
       }
       return data;
     })().finally(() => {
@@ -277,12 +282,16 @@ export default function Home() {
 
     // 先选应用：只装了一个就直接选中，装了多个则沿用上次
     void loadTargets();
-    api.listDevices(auth.accessToken).then(setDevices).catch(() => {});
+    api.listDevices(auth.accessToken).then((list) => {
+      if (isCurrentAuthSession(auth)) setDevices(list);
+    }).catch(() => {
+      if (isCurrentAuthSession(auth)) setDevicesError("登录设备暂时无法读取，请稍后重新打开设备管理。");
+    });
   }, [loadTargets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const refreshVisibleBalance = () => {
-      if (document.visibilityState === "visible") void refreshBalance();
+      if (document.visibilityState === "visible") void refreshBalance(true);
     };
     window.addEventListener("focus", refreshVisibleBalance);
     document.addEventListener("visibilitychange", refreshVisibleBalance);
@@ -635,6 +644,7 @@ export default function Home() {
           const res = await api.provision(auth.accessToken, g.name);
           apiKey = res.api_key;
         }
+        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
         const result = await invoke<{
           median_ttft_ms: number | null;
           samples: { ttft_ms: number | null; error: string | null }[];
@@ -645,6 +655,7 @@ export default function Home() {
           model,
           samples: 3,
         });
+        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
         if (result.median_ttft_ms == null) {
           // 采样失败的具体原因在 samples[].error，取第一条给用户看
           const detail = result.samples?.find((s) => s.error)?.error ?? "未取到首字延迟";
@@ -660,7 +671,8 @@ export default function Home() {
         }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
       } catch (e) {
-        setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
+        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
+        setBenchErrors((prev) => ({ ...prev, [g.name]: friendlyConnectivityDetail(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
       benchCount += 1;
@@ -689,6 +701,8 @@ export default function Home() {
   };
 
   const pickTarget = (id: string) => {
+    if (actionInFlightRef.current) return;
+    setRestoreConfirmation(null);
     groupTouchedRef.current = false;
     setTargetId(id);
     setResults({});
@@ -708,7 +722,13 @@ export default function Home() {
 
   // 申领/切换当前分组的 Key，再写入所选应用（或全部已安装应用）
   const enable = async () => {
-    if (!auth?.accessToken || !group || !targetId) return;
+    if (!auth?.accessToken || !model || !group || !targetId || actionInFlightRef.current) return;
+    if (!catalog.groupsOf(model).includes(group)) {
+      setNotice({ ok: false, text: "当前模型或分组已不可用，请刷新后重新选择。" });
+      return;
+    }
+    actionInFlightRef.current = true;
+    setRestoreConfirmation(null);
     setProvisioning(true);
     setNotice(null);
     setResults({});
@@ -718,18 +738,21 @@ export default function Home() {
       let reusedSavedApiKey = false;
       try {
         const res = await api.provision(auth.accessToken, group);
+        if (!requestGuardRef.current.mounted || !isCurrentAuthSession(auth)) return;
         apiKey = res.api_key;
-        saveAuth({ ...auth, apiKey, apiKeyGroup: res.group });
+        const currentAuth = loadAuth();
+        if (currentAuth) saveAuth({ ...currentAuth, apiKey, apiKeyGroup: res.group });
       } catch (error) {
         if (!apiKey || auth.apiKeyGroup !== group) throw error;
         reusedSavedApiKey = true;
         setNotice({ ok: true, text: "模型服务暂时无法刷新密钥，使用当前已保存密钥写入配置…" });
       }
+      if (!requestGuardRef.current.mounted || !isCurrentAuthSession(auth)) return;
       if (!apiKey) throw new Error("没有可用的模型密钥，请待模型服务恢复后重试");
       if (!reusedSavedApiKey) setNotice({ ok: true, text: "模型密钥已取得，正在写入桌面配置…" });
 
       if (targetId === ALL_TARGETS) {
-        const applied = await withDesktopApplyTimeout(invoke<
+        const applied = await waitForDesktopAction(invoke<
           Array<{ id: string; ok: boolean; changed?: string[]; error?: string; warning?: string }>
         >(
           "apply_all_targets",
@@ -740,7 +763,7 @@ export default function Home() {
             model: model || null,
             codexMixed: codexMixed,
           }
-        ));
+        ), () => setNotice({ ok: true, text: "配置仍在处理中，完成后会自动更新状态。" }));
         const map: Record<string, ApplyResult> = {};
         applied.forEach((r) => {
           map[r.id] = {
@@ -771,7 +794,7 @@ export default function Home() {
               }
         );
       } else {
-        const applied = await withDesktopApplyTimeout(invoke<{ changed: string[]; warning?: string }>("apply_target", {
+        const applied = await waitForDesktopAction(invoke<{ changed: string[]; warning?: string }>("apply_target", {
           req: {
             target_id: targetId,
             base_url: relayUrl,
@@ -780,7 +803,7 @@ export default function Home() {
             model: model || null,
             codex_mixed: codexMixed,
           },
-        }));
+        }), () => setNotice({ ok: true, text: "配置仍在处理中，完成后会自动更新状态。" }));
         setResults({ [targetId]: { ok: true, changed: applied.changed, warning: applied.warning } });
         setNotice({
           ok: true,
@@ -794,6 +817,7 @@ export default function Home() {
     } catch (e) {
       setNotice({ ok: false, text: friendlyDesktopError(e) });
     } finally {
+      actionInFlightRef.current = false;
       setProvisioning(false);
     }
   };
@@ -805,7 +829,9 @@ export default function Home() {
   // 目标应用只在启动时读一次配置，所以改完必须重启才生效
   const restartTargets = async () => {
     const ids = actionTargetIds();
-    if (ids.length === 0) return;
+    if (ids.length === 0 || actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setRestoreConfirmation(null);
     setRestarting(true);
     setNotice(null);
     try {
@@ -823,13 +849,16 @@ export default function Home() {
       }
       setNotice({ ok: okCount === ids.length, text: lines.join("；") });
     } finally {
+      actionInFlightRef.current = false;
       setRestarting(false);
     }
   };
 
   const testConnectivity = async () => {
     const ids = actionTargetIds();
-    if (ids.length === 0) return;
+    if (ids.length === 0 || actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setRestoreConfirmation(null);
     setTesting(true);
     setNotice(null);
     try {
@@ -847,38 +876,43 @@ export default function Home() {
       }
       setNotice({ ok: okCount === ids.length, text: lines.join("；") });
     } finally {
+      actionInFlightRef.current = false;
       setTesting(false);
     }
   };
 
+  const confirmRestore = restoreConfirmationMatches(restoreConfirmation, actionTargetIds());
   const restoreDefaults = async () => {
     const ids = actionTargetIds();
-    if (ids.length === 0) return;
-    // 二次确认：这会移除中转配置，用户可能只是误点
-    if (!confirmRestore) {
-      setConfirmRestore(true);
-      setNotice({ ok: false, text: "将移除 Niko 的设置并恢复官方账号登录，再点一次确认。" });
-      window.setTimeout(() => setConfirmRestore(false), 5000);
+    if (ids.length === 0 || actionInFlightRef.current) return;
+    // 确认只对当前目标集合有效，并在点击时再次检查有效期。
+    if (!restoreConfirmationMatches(restoreConfirmation, ids)) {
+      setRestoreConfirmation({ targetIds: ids, expiresAt: Date.now() + RESTORE_CONFIRMATION_MS });
+      setNotice({ ok: false, text: `将移除 ${targetLabel} 的 Niko 设置并恢复官方账号登录，再点一次确认。` });
       return;
     }
-    setConfirmRestore(false);
+    setRestoreConfirmation(null);
+    actionInFlightRef.current = true;
     setRestoring(true);
     setNotice(null);
     try {
-      let total = 0;
-      for (const id of ids) {
-        const changed = await invoke<string[]>("restore_target_defaults", { targetId: id });
-        total += changed.length;
-      }
-      setResults({});
+      const restored = await runTargetActions(ids, (id) =>
+        invoke<string[]>("restore_target_defaults", { targetId: id }));
+      const total = restored.reduce((count, item) => count + (item.ok ? item.value.length : 0), 0);
+      const failures = restored.filter((item) => !item.ok);
+      setResults(Object.fromEntries(restored.filter((item) => !item.ok).map((item) =>
+        [item.id, { ok: false, error: friendlyDesktopError(item.error) }])));
+      // 即使部分失败，也重新读取已经成功恢复的应用状态。
       setDetectNonce((value) => value + 1);
       setNotice({
-        ok: true,
-        text: total === 0 ? "本来就是官方登录方式，无需改动" : "已恢复官方登录方式，重启应用后用官方账号登录",
+        ok: failures.length === 0,
+        text: failures.length > 0
+          ? `已处理 ${restored.length - failures.length}/${restored.length} 个应用；${failures.map((item) =>
+              `${targets.find((target) => target.id === item.id)?.name ?? item.id}：${friendlyDesktopError(item.error)}`).join("；")}`
+          : total === 0 ? "本来就是官方登录方式，无需改动" : "已恢复官方登录方式，重启应用后用官方账号登录",
       });
-    } catch (e) {
-      setNotice({ ok: false, text: friendlyDesktopError(e) });
     } finally {
+      actionInFlightRef.current = false;
       setRestoring(false);
     }
   };
@@ -901,27 +935,41 @@ export default function Home() {
     handleSessionExpired();
   };
 
-  const revokeDevice = async (id: number) => {
+  const openDevices = async () => {
+    setDevicesOpen(true);
+    setDevicesError("");
     if (!auth?.accessToken) return;
+    try {
+      const list = await api.listDevices(auth.accessToken);
+      if (isCurrentAuthSession(auth)) setDevices(list);
+    } catch (error) {
+      if (isCurrentAuthSession(auth)) setDevicesError(friendlyDesktopError(error));
+    }
+  };
+
+  const revokeDevice = async (id: number) => {
+    if (!auth?.accessToken || revoking !== null) return;
     setRevoking(id);
+    setDevicesError("");
     try {
       await api.revokeDevice(auth.accessToken, id);
-      setDevices((d) => d.filter((x) => x.id !== id));
-    } catch {
-      /* ignore */
+      if (isCurrentAuthSession(auth)) setDevices((d) => d.filter((x) => x.id !== id));
+    } catch (error) {
+      if (isCurrentAuthSession(auth)) setDevicesError(friendlyDesktopError(error));
     } finally {
       setRevoking(null);
     }
   };
 
   const revokeOthers = async () => {
-    if (!auth?.accessToken) return;
+    if (!auth?.accessToken || revoking !== null) return;
     setRevoking("others");
+    setDevicesError("");
     try {
       await api.revokeOtherDevices(auth.accessToken);
-      setDevices((d) => d.filter((x) => x.is_current));
-    } catch {
-      /* ignore */
+      if (isCurrentAuthSession(auth)) setDevices((d) => d.filter((x) => x.is_current));
+    } catch (error) {
+      if (isCurrentAuthSession(auth)) setDevicesError(friendlyDesktopError(error));
     } finally {
       setRevoking(null);
     }
@@ -987,7 +1035,7 @@ export default function Home() {
                     </p>
                     <button
                       type="button"
-                      onClick={() => void refreshBalance()}
+                      onClick={() => void refreshBalance(true)}
                       disabled={balance.refreshing}
                       aria-label="刷新余额"
                       title="刷新余额"
@@ -1025,7 +1073,7 @@ export default function Home() {
               {!newApi && (
               <div className="mt-2 flex items-center justify-between gap-2 border-t pt-2 [border-color:var(--nk-line)]">
                 <button
-                  onClick={() => setDevicesOpen(true)}
+                  onClick={() => void openDevices()}
                   className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
                   aria-haspopup="dialog"
                 >
@@ -1078,7 +1126,7 @@ export default function Home() {
                         <button
                           key={t.id}
                           onClick={() => pickTarget(t.id)}
-                          disabled={!t.installed}
+                          disabled={actionBusy || !t.installed}
                           title={t.installed ? t.name : `${t.name}（未安装）`}
                           className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] transition ${
                             active
@@ -1097,6 +1145,7 @@ export default function Home() {
                     {installedTargets.length > 1 && (
                       <button
                         onClick={() => pickTarget(ALL_TARGETS)}
+                        disabled={actionBusy}
                         title="对所有已安装应用同时接入"
                         className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] transition ${
                           targetId === ALL_TARGETS
@@ -1132,6 +1181,7 @@ export default function Home() {
                             <button
                               key={String(opt.mixed)}
                               onClick={() => pickCodexMixed(opt.mixed)}
+                              disabled={actionBusy}
                               title={
                                 opt.mixed
                                   ? "保留 ChatGPT 登录态，官方额度照常，模型走 momo"
@@ -1296,6 +1346,7 @@ export default function Home() {
                           <button
                             key={tab.vendor}
                             onClick={() => pickVendor(tab)}
+                            disabled={actionBusy}
                             title={`${tab.vendor} · ${tab.models.length} 个模型`}
                             className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-xs transition ${
                               tab.vendor === activeVendor
@@ -1390,6 +1441,7 @@ export default function Home() {
                               <button
                                 key={choice.name}
                                 onClick={() => pickModel(choice)}
+                                disabled={actionBusy}
                                 aria-pressed={selected}
                                 className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
                                   selected
@@ -1474,7 +1526,7 @@ export default function Home() {
                               <button
                                 key={g.name}
                                 onClick={() => g.usable && pickGroup(g.name)}
-                                disabled={!g.usable}
+                                disabled={actionBusy || !g.usable}
                                 aria-pressed={g.name === group}
                                 title={
                                   g.usable
@@ -1525,7 +1577,7 @@ export default function Home() {
                   <div className="grid grid-cols-4 gap-1">
                     <button
                       onClick={enable}
-                      disabled={provisioning || !group || !model || !targetId}
+                      disabled={actionBusy || !group || !model || !targetId || !catalog.groupsOf(model).includes(group)}
                       title={targetLabel ? `接入到 ${targetLabel}` : "选择应用后接入"}
                       aria-label="接入到应用"
                       className="nk-btn-primary w-full min-w-0 px-1 text-center text-[11px]"
@@ -1534,7 +1586,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={restartTargets}
-                      disabled={provisioning || testing || restoring || restarting || !targetId}
+                      disabled={actionBusy || !targetId}
                       title={
                         targetId === "dsh" ||
                         (targetId === ALL_TARGETS && installedTargets.every((t) => t.id === "dsh"))
@@ -1560,7 +1612,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={testConnectivity}
-                      disabled={provisioning || testing || restoring || restarting || !targetId}
+                      disabled={actionBusy || !targetId}
                       title="检查当前设置是否能正常使用"
                       aria-label="检查连接"
                       className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px]`}
@@ -1569,7 +1621,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={restoreDefaults}
-                      disabled={provisioning || testing || restoring || restarting || !targetId}
+                      disabled={actionBusy || !targetId}
                       title="移除 Niko 的设置，恢复用官方账号登录"
                       aria-label="恢复到官方"
                       className={`${GHOST_BTN} w-full min-w-0 px-1 text-center text-[11px] ${confirmRestore ? "border-orange-400 text-orange-600 dark:text-orange-400" : ""}`}
@@ -1630,6 +1682,7 @@ export default function Home() {
               </button>
             </div>
 
+            {devicesError && <p className="nk-alert-danger mt-3" role="alert">{devicesError}</p>}
             <div className="mt-3 max-h-[60vh] space-y-2 overflow-y-auto pr-1">
               {deviceLimit > 0 && devices.length >= deviceLimit - 1 && (
                 <p className="nk-alert-warning">

@@ -63,6 +63,7 @@ const TARGET_LABELS: Record<string, string> = {
   "codex": "ChatGPT 桌面端",
   "claude-desktop": "Claude 桌面端",
   "claude-cli": "Claude Code CLI",
+  "claude-code": "Claude Code CLI（旧版备份）",
   "grok": "Grok Build CLI",
   "antigravity": "Antigravity CLI",
   dsh: "DSH",
@@ -75,6 +76,7 @@ const ALL_TARGET_IDS = [
   "dsh",
   "zcode",
   "claude-cli",
+  "claude-code",
   "grok",
   "antigravity",
 ];
@@ -532,7 +534,7 @@ export default function Settings() {
                           className="nk-row flex items-center justify-between gap-3"
                         >
                           <div>
-                            <p className="text-xs text-gray-800 dark:text-gray-200">可恢复的应用设置</p>
+                            <p className="break-all font-mono text-xs text-gray-800 dark:text-gray-200">{snap.original_name}</p>
                             <p className="text-xs text-gray-500 dark:text-gray-400">{formatTime(snap.timestamp)}</p>
                           </div>
                           <button
@@ -551,9 +553,12 @@ export default function Settings() {
             })}
           </section>
 
-          {/* 检查是否能正常使用 */}
+          {/* 仅检查服务地址的网络可达性 */}
           <section className={CARD}>
-            <h2 className={`mb-3 ${OVERLINE}`}>检查是否能正常使用</h2>
+            <h2 className={`mb-3 ${OVERLINE}`}>检查服务可达性</h2>
+            <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+              此检查仅验证网络可达性，不验证模型或连接密钥。模型密钥请在首页「检查」中验证。
+            </p>
             <div className="flex gap-2">
               <input
                 value={pingUrl}
@@ -571,8 +576,10 @@ export default function Settings() {
             </div>
             {pingResult && (
               pingResult.reachable ? (
-                <div className="nk-alert-success mt-3">
-                  ✓ 可达，延迟 {pingResult.latency_ms ?? "?"}ms
+                <div className={`${pingResult.error_kind === "requires_auth" ? "nk-alert-warning" : "nk-alert-success"} mt-3 space-y-1.5`}>
+                  <p>✓ 服务可达，延迟 {pingResult.latency_ms ?? "?"}ms</p>
+                  {pingResult.error_detail && <p>{pingResult.error_detail}</p>}
+                  {pingResult.suggestion && <p>{pingResult.suggestion}</p>}
                 </div>
               ) : (
                 <div className="nk-alert-danger mt-3 space-y-1.5">

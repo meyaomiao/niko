@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { loadAuth } from "../store/auth";
+import { isCurrentAuthSession, loadAuth } from "../store/auth";
 import { isNewApiAuth, relayBaseUrl } from "../lib/station";
 import { api, type BootstrapData, type ModelMetadata, type PricingMeta, type UsageSummary, type VendorMeta } from "../api/client";
 import { buildPricingIndex, fmtUSD, priceOf, type ModelPrice } from "../lib/pricing";
@@ -133,10 +133,13 @@ export default function Models() {
     benchRunRef.current += 1;
     setBenchmarks({});
     setBenchErrors({});
+    setBenchTimings({});
+    setBenchPhase("");
     setBenchmarkRunning(false);
     setBenchDone(0);
     setBenchTotal(0);
     setBench(loadBenchCache());
+    return () => { benchRunRef.current += 1; };
   }, [selectedModel]);
 
   const loadCatalog = useCallback(async (force = false) => {
@@ -302,15 +305,18 @@ export default function Models() {
     if (groupsToRun.length === 0) return;
     setBenchmarkRunning(true);
     setBenchErrors({});
+    setBenchTimings({});
+    setBenchPhase("");
     setBenchDone(0);
     setBenchTotal(groupsToRun.length);
     setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
     const RELAY_BASE_URL = relayBaseUrl(auth);
     let done = 0;
     const runId = ++benchRunRef.current;
+    const current = () => benchRunRef.current === runId && isCurrentAuthSession(auth);
     for (const g of groupsToRun) {
-      // 模型已切换：本轮结果作废，立即停止
-      if (benchRunRef.current !== runId) return;
+      // 每个异步阶段后都确认轮次，旧模型/旧账号的请求不能写回当前结果。
+      if (!current()) return;
       const t0 = performance.now();
       let provMs = 0;
       let benchMs = 0;
@@ -319,6 +325,7 @@ export default function Models() {
         if (!apiKey) {
           setBenchPhase(`${g.name} · 申请密钥中…`);
           const res = await api.provision(auth.accessToken, g.name);
+          if (!current()) return;
           apiKey = res.api_key;
           provMs = Math.round(performance.now() - t0);
         } else {
@@ -335,6 +342,7 @@ export default function Models() {
           model: selectedModel,
           samples: 3,
         });
+        if (!current()) return;
         benchMs = Math.round(performance.now() - t0 - provMs);
         setBenchTimings((prev) => ({
           ...prev,
@@ -355,12 +363,14 @@ export default function Models() {
         }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
       } catch (e) {
+        if (!current()) return;
         setBenchErrors((prev) => ({ ...prev, [g.name]: e instanceof Error ? e.message : String(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
       done += 1;
       setBenchDone(done);
     }
+    if (!current()) return;
     setBenchmarkRunning(false);
     // 刷新卡片上的「实测」缓存（首页同款 BENCH_KEY）
     setBench(loadBenchCache());
@@ -456,7 +466,10 @@ export default function Models() {
                             key={card.name}
                             card={card}
                             selected={card.name === selectedModel}
-                            onSelect={() => setSelectedModel(card.name === selectedModel ? "" : card.name)}
+                            onSelect={() => {
+                              benchRunRef.current += 1;
+                              setSelectedModel(card.name === selectedModel ? "" : card.name);
+                            }}
                           />
                         ))}
                       </div>

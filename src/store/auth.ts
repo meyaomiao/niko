@@ -67,11 +67,24 @@ export function clearAuth() {
   sessionStorage.removeItem(KEY);
 }
 
+/** Check the session that started an async operation before applying its result. */
+export function isCurrentAuthSession(expected: AuthState | null): boolean {
+  const current = loadAuth();
+  if (!expected || !current) return expected === current;
+  const kind = expected.kind ?? "momotoken";
+  return current.accessToken === expected.accessToken
+    && (current.kind ?? "momotoken") === kind
+    && (kind !== "newapi" || current.origin === expected.origin);
+}
+
 /** 以服务端数据刷新存储的余额/默认推荐分组，不改变目标应用状态 */
 export function refreshAuthMeta(
   patch: Partial<Pick<AuthState, "quota" | "quotaPerUnit" | "balanceUpdatedAt" | "defaultGroup">>,
-) {
+  expectedAuth?: AuthState | null,
+): boolean {
+  if (expectedAuth !== undefined && !isCurrentAuthSession(expectedAuth)) return false;
   const cur = loadAuth();
-  if (!cur) return;
+  if (!cur) return false;
   saveAuth({ ...cur, ...patch });
+  return true;
 }

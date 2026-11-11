@@ -1,11 +1,12 @@
 {
   "name": "niko",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:auth": "node --experimental-strip-types --test tests/auth.test.ts",
     "test:balance": "node --experimental-strip-types --test tests/balance.test.ts",
     "test:login": "node --experimental-strip-types --test tests/loginTargets.test.ts",

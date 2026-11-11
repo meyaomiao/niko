@@ -20,9 +20,9 @@ import {
 import { currentDeviceName, isNewApiAuth, MOMOTOKEN_ORIGIN } from "../lib/station";
 import { collectUsage } from "../lib/usageLedger";
 import { loadAuth } from "../store/auth";
+import { ApiRequestError, requestJson } from "../lib/apiRequest";
 
 const BASE_URL = MOMOTOKEN_ORIGIN;
-const API_REQUEST_TIMEOUT_MS = 10_000;
 
 function newApiSession() {
   const auth = loadAuth();
@@ -61,13 +61,11 @@ async function fetchPublicPricingMeta(): Promise<PricingMeta> {
     const json = await invoke<unknown>("newapi_pricing", { origin: newApiSession().origin });
     return assembleNewApiPricingMeta(json);
   }
-  const res = await fetch(`${BASE_URL}/api/pricing`);
-  if (!res.ok) throw new Error(`pricing ${res.status}`);
-  const json = (await res.json()) as {
+  const json = await requestJson<{
     vendors?: VendorMeta[];
     usable_group?: Record<string, string>;
     group_ratio?: Record<string, number>;
-  };
+  }>(`${BASE_URL}/api/pricing`);
   return {
     vendors: json.vendors ?? [],
     usableGroup: json.usable_group ?? {},
@@ -220,64 +218,70 @@ export interface BootstrapData {
   announcement?: { content?: string; publish?: string } | null;
 }
 
+interface ApiEnvelope<T> {
+  success: boolean;
+  message?: string;
+  code?: string;
+  data?: T;
+}
+
+function unwrapResponse<T>(json: ApiEnvelope<T>, fallback = "请求失败"): T {
+  if (!json?.success) {
+    throw new ApiRequestError(json?.message ?? fallback, { code: json?.code, payload: json });
+  }
+  return (json.data ?? json) as T;
+}
+
 async function post<T>(path: string, body: unknown, token?: string): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${BASE_URL}/api${path}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const json = await res.json() as { success: boolean; message?: string; data?: T };
-    if (!json.success) throw new Error(json.message ?? "请求失败");
-    return (json.data ?? json) as T;
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error("模型服务请求超时，请检查网络或服务状态后重试");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  return unwrapResponse(await requestJson<ApiEnvelope<T>>(`${BASE_URL}/api${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  }));
 }
 
 /** 登录请求：需要在失败分支识别 E_DEVICE_LIMIT 并取出回带的设备列表 */
 async function postLogin(path: string, body: unknown): Promise<LoginResult> {
-  const res = await fetch(`${BASE_URL}/api${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = (await res.json()) as {
-    success: boolean;
-    message?: string;
-    code?: string;
-    data?: RawLoginResponse & { device_limit?: number; active_devices?: DeviceItem[] | null };
-  };
-  if (!json.success) {
-    if (json.code === "E_DEVICE_LIMIT") {
-      throw new DeviceLimitError(
-        json.message ?? "设备数已达上限",
-        json.data?.device_limit ?? 0,
-        json.data?.active_devices ?? []
-      );
-    }
-    throw new Error(json.message ?? "登录失败");
+  type LoginEnvelope = ApiEnvelope<RawLoginResponse & {
+    device_limit?: number;
+    active_devices?: DeviceItem[] | null;
+  }>;
+  let json: LoginEnvelope;
+  try {
+    json = await requestJson<LoginEnvelope>(`${BASE_URL}/api${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    // Device-limit responses can use either HTTP 200 or an error status.
+    if (!(error instanceof ApiRequestError)
+      || (error.payload as LoginEnvelope | undefined)?.code !== "E_DEVICE_LIMIT") throw error;
+    json = error.payload as LoginEnvelope;
   }
-  return toLoginResult((json.data ?? {}) as RawLoginResponse);
+  if (json?.code === "E_DEVICE_LIMIT" && !json.success) {
+    throw new DeviceLimitError(
+      json.message ?? "设备数已达上限",
+      json.data?.device_limit ?? 0,
+      json.data?.active_devices ?? [],
+    );
+  }
+  const result = toLoginResult(unwrapResponse(json, "登录失败"));
+  if (result.require_2fa ? !result.pending_token : !result.access_token) {
+    throw new ApiRequestError("登录服务返回了无效数据，请重试", { code: "invalid_response" });
+  }
+  return result;
 }
 
 async function get<T>(path: string, token?: string): Promise<T> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${BASE_URL}/api${path}`, { headers, cache: "no-store" });
-  const json = await res.json() as { success: boolean; message?: string; data?: T };
-  if (!json.success) throw new Error(json.message ?? "请求失败");
-  return (json.data ?? json) as T;
+  return unwrapResponse(await requestJson<ApiEnvelope<T>>(`${BASE_URL}/api${path}`, {
+    headers,
+    cache: "no-store",
+  }));
 }
 
 export interface UsageQuery {
@@ -496,17 +500,16 @@ export const api = {
     );
   },
   async requestEpay(token: string, amount: number, paymentMethod: string): Promise<EpayOrder> {
-    const res = await fetch(`${BASE_URL}/api/client/pay`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ amount, payment_method: paymentMethod }),
-    });
-    const json = await res.json() as {
+    const json = await requestJson<{
       message?: string;
       data?: unknown;
       url?: string;
       success?: boolean;
-    };
+    }>(`${BASE_URL}/api/client/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ amount, payment_method: paymentMethod }),
+    });
     if (json.message !== "success") {
       throw new Error(typeof json.data === "string" ? json.data : json.message ?? "下单失败");
     }
@@ -515,25 +518,19 @@ export const api = {
       params: (json.data ?? {}) as Record<string, unknown>,
     };
   },
-  revokeDevice(token: string, id: number): Promise<void> {
+  async revokeDevice(token: string, id: number): Promise<void> {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    return fetch(`${BASE_URL}/api/client/devices/${id}`, {
+    unwrapResponse(await requestJson<ApiEnvelope<void>>(`${BASE_URL}/api/client/devices/${id}`, {
       method: "DELETE",
       headers,
-    }).then(async (r) => {
-      const json = await r.json() as { success: boolean; message?: string };
-      if (!json.success) throw new Error(json.message ?? "撤销失败");
-    });
+    }), "撤销失败");
   },
-  revokeOtherDevices(token: string): Promise<void> {
+  async revokeOtherDevices(token: string): Promise<void> {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    return fetch(`${BASE_URL}/api/client/devices`, {
+    unwrapResponse(await requestJson<ApiEnvelope<void>>(`${BASE_URL}/api/client/devices`, {
       method: "DELETE",
       headers,
-    }).then(async (r) => {
-      const json = await r.json() as { success: boolean; message?: string };
-      if (!json.success) throw new Error(json.message ?? "操作失败");
-    });
+    }), "操作失败");
   },
 };
 

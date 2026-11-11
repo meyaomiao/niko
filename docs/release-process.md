@@ -9,7 +9,7 @@
 | macOS universal 构建 | 发布者本机 Mac | 不使用 GitHub Actions Runner |
 | macOS Developer ID 签名 | 发布者本机钥匙串 | 不向 GitHub 上传 p12 证书 |
 | macOS Apple 公证与装订 | 发布者本机 | 使用本机保存的 Apple 凭证 |
-| Windows 安装包 | GitHub Actions `windows-latest` | 只生成 MSI、EXE、签名文件和 SHA256 |
+| Windows 安装包 | GitHub Actions `windows-latest` | 生成 NSIS EXE、updater 签名和 SHA256，并在独立运行环境验证安装与启动 |
 | `latest.json` 与 GitHub Release | 发布者本机 Mac | 两个平台产物齐全并验证后统一发布 |
 
 `.github/workflows/release.yml` **只允许构建 Windows 产物**。它不创建 GitHub Release，也不得加入 `macos-*` Runner、Apple 证书导入或公证步骤。
@@ -23,7 +23,7 @@
 发版前确认：
 
 1. `main` 已同步且工作区干净。
-2. `package.json` 与 `src-tauri/tauri.conf.json` 的版本号一致。
+2. [package.json](../package.json)、[tauri.conf.json](../src-tauri/tauri.conf.json)、[Cargo.toml](../src-tauri/Cargo.toml) 及对应锁文件中的项目版本号一致。
 3. 前端检查、Rust 测试和必要的桌面端实机验证已通过。
 4. 本机钥匙串中存在有效的 `Developer ID Application` 证书。
 5. 本机已配置 Apple 公证凭证和 Tauri updater 私钥；凭证不得写入仓库或命令历史。
@@ -59,7 +59,7 @@ mkdir -p release-artifacts/windows
 gh run download <run-id> -n windows-unsigned -D release-artifacts/windows
 ```
 
-该 Actions 产物只保留 7 天。不要把它当作正式 Release。
+该 Actions 产物只保留 7 天。不要把它当作正式 Release。工作流在 GitHub 提供的独立 Windows 运行环境中静默安装产物、核对版本并验证主窗口启动，不在用户日常使用的 Windows 主机上跑 Cargo 或安装测试。
 
 ## 2. 在本机完成 macOS 构建与认证
 
@@ -112,7 +112,7 @@ xcrun stapler validate \
 把以下文件集中到本机 `release-artifacts/`：
 
 - macOS：DMG、`.app.tar.gz`、`.app.tar.gz.sig`、`SHA256SUMS.txt`
-- Windows：MSI、MSI `.sig`、EXE、EXE `.sig`、`SHA256SUMS_win.txt`
+- Windows：NSIS EXE、EXE `.sig`、`SHA256SUMS_win.txt`（当前发布不生成 MSI）
 - updater：同时包含 `darwin-aarch64`、`darwin-x86_64` 与 `windows-x86_64` 的 `latest.json`
 
 ### updater 平台键

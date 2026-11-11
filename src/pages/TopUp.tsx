@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { loadAuth, saveAuth } from "../store/auth";
+import { isCurrentAuthSession, loadAuth, refreshAuthMeta } from "../store/auth";
 import { isNewApiAuth, stationOrigin } from "../lib/station";
 import { api, type PayMethod, type TopUpInfo, type TopUpRecord } from "../api/client";
 import { useSession } from "../hooks/useSession";
 import { ArrowLeftIcon } from "../components/Icons";
 import { formatBalanceUSD, parseBalanceSnapshot, type BalanceSnapshot } from "../lib/balance";
 import { classifyDesktopError, friendlyDesktopError } from "../lib/copy";
+import { epayTradeNo, isTopupPaid } from "../lib/topup";
 
 const CARD = "nk-card";
 const LABEL = "nk-label";
@@ -57,44 +58,60 @@ export default function TopUp() {
     parseBalanceSnapshot(auth?.quota, auth?.quotaPerUnit, auth?.balanceUpdatedAt),
   );
   const balanceRef = useRef(balance);
-  const quotaRef = useRef(auth?.quota);
+  const balanceRequestRef = useRef(0);
   const [records, setRecords] = useState<TopUpRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const pollRef = useRef<number | null>(null);
+  const pollVersionRef = useRef(0);
+  const pendingOrderRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
+  const pageGenerationRef = useRef(0);
 
   const token = auth?.accessToken ?? "";
+  const isCurrentPage = (generation: number) =>
+    mountedRef.current && pageGenerationRef.current === generation && isCurrentAuthSession(auth);
 
-  const updateBalance = (snapshot: BalanceSnapshot, groupName: string) => {
-    balanceRef.current = snapshot;
-    quotaRef.current = snapshot.quota;
-    setBalance(snapshot);
-    const cur = loadAuth();
-    if (cur) {
-      saveAuth({
-        ...cur,
-        quota: snapshot.quota,
-        quotaPerUnit: snapshot.quotaPerUnit,
-        balanceUpdatedAt: snapshot.updatedAt,
-        defaultGroup: groupName,
-      });
-    }
+  const stopPolling = () => {
+    pollVersionRef.current += 1;
+    if (pollRef.current !== null) window.clearTimeout(pollRef.current);
+    pollRef.current = null;
   };
 
   const loadBalance = async (refreshUnit = false) => {
-    const previousQuota = quotaRef.current;
+    const generation = pageGenerationRef.current;
+    const request = ++balanceRequestRef.current;
     const shouldLoadUnit = refreshUnit || !balanceRef.current?.quotaPerUnit;
     const [boot, status] = await Promise.all([
-      api.bootstrap(token),
+      api.bootstrap(token, { force: true }),
       shouldLoadUnit ? api.status() : Promise.resolve(null),
     ]);
+    if (!isCurrentPage(generation) || request !== balanceRequestRef.current) return;
     const snapshot = parseBalanceSnapshot(
       boot.user.quota,
       boot.site.quota_per_unit ?? status?.quota_per_unit ?? balanceRef.current?.quotaPerUnit,
     );
     if (!snapshot) throw new Error("余额单位暂时无法读取");
-    updateBalance(snapshot, boot.user.group);
-    return { snapshot, changed: previousQuota !== snapshot.quota };
+    if (!refreshAuthMeta({
+      quota: snapshot.quota,
+      quotaPerUnit: snapshot.quotaPerUnit,
+      balanceUpdatedAt: snapshot.updatedAt,
+      defaultGroup: boot.user.group,
+    }, auth)) return;
+    balanceRef.current = snapshot;
+    setBalance(snapshot);
+  };
+
+  const confirmPayment = async (items: TopUpRecord[] | null, generation: number, version: number) => {
+    const tradeNo = pendingOrderRef.current;
+    const current = () => isCurrentPage(generation) && pollVersionRef.current === version;
+    if (!current() || !isTopupPaid(tradeNo, items)) return;
+    await loadBalance();
+    if (!current() || pendingOrderRef.current !== tradeNo) return;
+    stopPolling();
+    pendingOrderRef.current = null;
+    setWaiting(false);
+    await invoke("close_cashier").catch(() => undefined);
   };
 
   // 客户端只实现了易支付收银台流程；支付宝官方（单笔≤50 元）与 PayPal 需要网页端的
@@ -113,53 +130,64 @@ export default function TopUp() {
 
   const loadHistory = async () => {
     if (!token) return;
+    const generation = pageGenerationRef.current;
+    const version = pollVersionRef.current;
     setHistoryLoading(true);
     setHistoryError("");
     try {
       const res = await api.topupHistory(token);
+      if (!isCurrentPage(generation)) return;
       setRecords(res.items ?? []);
+      await confirmPayment(res.items, generation, version);
     } catch (e) {
+      if (!isCurrentPage(generation)) return;
       if (classifyDesktopError(e) === "session") {
+        stopPolling();
         handleSessionExpired();
         return;
       }
       setHistoryError(friendlyDesktopError(e));
     } finally {
-      setHistoryLoading(false);
+      if (isCurrentPage(generation)) setHistoryLoading(false);
     }
   };
 
   useEffect(() => {
+    mountedRef.current = true;
+    const generation = ++pageGenerationRef.current;
     if (!token) {
       navigate("/login", { replace: true });
-      return;
-    }
-    if (isNewApiAuth(auth)) {
+    } else if (isNewApiAuth(auth)) {
       setLoading(false);
       setHistoryLoading(false);
-      return;
+    } else {
+      (async () => {
+        try {
+          const data = await api.topupInfo(token);
+          if (!isCurrentPage(generation)) return;
+          setInfo(data);
+          const first = (data.pay_methods ?? []).find(
+            (m) => !LAUNCHER_UNSUPPORTED_METHODS.has(m.type),
+          );
+          if (first) setMethod(first.type);
+          const opts = data.amount_options ?? [];
+          setAmount(opts.length ? opts[0] : data.min_topup);
+        } catch (e) {
+          if (!isCurrentPage(generation)) return;
+          if (classifyDesktopError(e) === "session") handleSessionExpired();
+          setError(friendlyDesktopError(e));
+        } finally {
+          if (isCurrentPage(generation)) setLoading(false);
+        }
+      })();
+      void loadBalance(true).catch(() => undefined);
+      void loadHistory();
     }
-    (async () => {
-      try {
-        const data = await api.topupInfo(token);
-        setInfo(data);
-        const first = (data.pay_methods ?? []).find(
-          (m) => !LAUNCHER_UNSUPPORTED_METHODS.has(m.type),
-        );
-        if (first) setMethod(first.type);
-        const opts = data.amount_options ?? [];
-        setAmount(opts.length ? opts[0] : data.min_topup);
-      } catch (e) {
-        if (classifyDesktopError(e) === "session") handleSessionExpired();
-        setError(friendlyDesktopError(e));
-      } finally {
-        setLoading(false);
-      }
-    })();
-    void loadBalance(true).catch(() => undefined);
-    loadHistory();
     return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
+      mountedRef.current = false;
+      pageGenerationRef.current += 1;
+      stopPolling();
+      pendingOrderRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -172,47 +200,69 @@ export default function TopUp() {
     ? (effectiveAmount * discountOf(effectiveAmount)).toFixed(2)
     : "—";
 
-  /** 支付在收银台窗口完成，入账靠服务端回调，因此这里轮询订单状态与余额 */
-  const startPolling = () => {
+  /** 串行轮询当前订单，确认到账后再强制读取余额。 */
+  const startPolling = (tradeNo: string) => {
+    stopPolling();
+    pendingOrderRef.current = tradeNo;
     setWaiting(true);
-    if (pollRef.current) window.clearInterval(pollRef.current);
+    const generation = pageGenerationRef.current;
+    const version = pollVersionRef.current;
+    const current = () => isCurrentPage(generation) && pollVersionRef.current === version;
     let ticks = 0;
-    pollRef.current = window.setInterval(async () => {
+    const poll = async () => {
+      if (!current()) return;
       ticks += 1;
-      if (ticks > 120) {
-        if (pollRef.current) window.clearInterval(pollRef.current);
+      try {
+        const history = await api.topupHistory(token);
+        if (!current()) return;
+        setRecords(history.items ?? []);
+        await confirmPayment(history.items, generation, version);
+      } catch (e) {
+        if (!current()) return;
+        if (classifyDesktopError(e) === "session") {
+          stopPolling();
+          setWaiting(false);
+          handleSessionExpired();
+          return;
+        }
+        /* 短暂失败在下一轮重试，手动读取仍可展示错误。 */
+      }
+      if (!current()) return;
+      if (ticks >= 120) {
+        stopPolling();
         setWaiting(false);
         return;
       }
-      try {
-        const [{ changed }, history] = await Promise.all([
-          loadBalance(),
-          api.topupHistory(token),
-        ]);
-        setRecords(history.items ?? []);
-        if (changed) {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          setWaiting(false);
-          await invoke("close_cashier").catch(() => undefined);
-        }
-      } catch {
-        /* 轮询失败静默重试 */
-      }
-    }, 5000);
+      pollRef.current = window.setTimeout(() => void poll(), 5000);
+    };
+    pollRef.current = window.setTimeout(() => void poll(), 5000);
   };
 
   const handlePay = async () => {
+    if (submitting || !amountValid || !method) return;
+    const generation = pageGenerationRef.current;
+    stopPolling();
+    pendingOrderRef.current = null;
+    setWaiting(false);
+    const version = pollVersionRef.current;
+    const current = () => isCurrentPage(generation) && pollVersionRef.current === version;
     setError("");
     setSubmitting(true);
     try {
       const order = await api.requestEpay(token, effectiveAmount, method);
+      if (!current()) return;
+      const tradeNo = epayTradeNo(order);
+      if (!tradeNo) throw new Error("暂时无法读取充值订单号，请重新下单。");
       await invoke("open_cashier", { url: order.url, params: order.params });
-      startPolling();
+      if (!current()) return;
+      setSubmitting(false);
+      startPolling(tradeNo);
     } catch (e) {
+      if (!current()) return;
       if (classifyDesktopError(e) === "session") handleSessionExpired();
       setError(friendlyDesktopError(e));
     } finally {
-      setSubmitting(false);
+      if (current()) setSubmitting(false);
     }
   };
 

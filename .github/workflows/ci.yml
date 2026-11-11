@@ -22,12 +22,12 @@ concurrency:
 
 jobs:
   rust-check:
-    name: Rust cargo check (self-hosted)
+    name: Rust checks (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [{ name: mac, runs-on: [self-hosted, macOS, niko-macos] }, { name: win, runs-on: [self-hosted, Windows, niko-windows] }]
-    runs-on: ${{ matrix.os.runs-on }}
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
       run:
@@ -38,18 +38,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - run: cargo check --all-targets
+      - run: cargo check --locked --all-targets
+      # Only explicit temporary-root fixtures; never exercise installed applications.
+      - run: cargo test --locked --lib isolated_ -- --test-threads=1
 
   ts-check:
-    name: TypeScript tsc check
-    runs-on: [self-hosted, Linux, niko-linux]
+    name: Frontend build and tests
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: package-lock.json
       - run: npm ci
-      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm test

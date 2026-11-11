@@ -14,12 +14,12 @@ mod yamlx;
 mod zcode;
 
 pub(crate) use dsh::{
-    dsh_credentials_path, dsh_drift, dsh_effective, dsh_port_open, dsh_restore, dsh_settings_path,
+    dsh_config_paths, dsh_drift, dsh_effective, dsh_port_open, dsh_restore,
     observe_dsh_config, open_dsh_in_browser, spawn_dsh_web, wait_for_dsh_port, DshTarget,
     DSH_TARGET_ID,
 };
 pub(crate) use zcode::{
-    observe_zcode_config, zcode_app_path, zcode_config_file, zcode_drift, zcode_effective,
+    observe_zcode_config, zcode_app_path, zcode_drift, zcode_effective,
     zcode_restore, ZcodeTarget, ZCODE_TARGET_ID,
 };
 
@@ -242,7 +242,7 @@ fn merge_toml_codex_provider(
 fn merge_json_keys(path: &Path, updates: &[(&str, Value)]) -> Result<Vec<String>, String> {
     let mut root: Value = if path.exists() {
         let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()))
+        serde_json::from_str(&raw).map_err(|_| "JSON 配置解析失败，未做任何修改".to_owned())?
     } else {
         Value::Object(Default::default())
     };
@@ -275,7 +275,7 @@ fn remove_json_keys(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let mut root: Value = serde_json::from_str(&raw).map_err(|_| "JSON 配置解析失败，未做任何修改".to_owned())?;
     let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
 
     let mut changed = Vec::new();
@@ -300,7 +300,7 @@ fn remove_codex_api_auth(path: &Path) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let mut root: Value = serde_json::from_str(&raw).map_err(|_| "JSON 配置解析失败，未做任何修改".to_owned())?;
     let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
     let mut changed = Vec::new();
 
@@ -327,7 +327,7 @@ fn remove_json_env(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut root: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
+    let mut root: Value = serde_json::from_str(&raw).map_err(|_| "JSON 配置解析失败，未做任何修改".to_owned())?;
     let obj = root.as_object_mut().ok_or("JSON root 不是 object")?;
     let Some(env) = obj.get_mut("env").and_then(Value::as_object_mut) else {
         return Ok(Vec::new());
@@ -353,7 +353,7 @@ fn remove_json_env(path: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
 fn merge_json_env(path: &Path, vars: &[(&str, String)]) -> Result<Vec<String>, String> {
     let mut root: Value = if path.exists() {
         let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()))
+        serde_json::from_str(&raw).map_err(|_| "JSON 配置解析失败，未做任何修改".to_owned())?
     } else {
         Value::Object(Default::default())
     };
@@ -418,13 +418,33 @@ impl Drop for TestHomeGuard {
 
 pub(crate) fn user_home_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(path) = TEST_HOME_OVERRIDE.with(|slot| slot.borrow().clone()) {
-        return path;
+    {
+        return TEST_HOME_OVERRIDE.with(|slot| {
+            slot.borrow().clone().expect("native tests must set an isolated temporary home")
+        });
     }
+    #[cfg(not(test))]
     dirs_home()
 }
 
+/// Niko 的持久化根目录。测试必须显式提供临时根，不能回落到真实 HOME/APPDATA。
+pub(crate) fn app_data_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        return user_home_dir();
+    }
+    #[cfg(all(not(test), target_os = "windows"))]
+    {
+        std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(r"C:\Users\default\AppData\Roaming"))
+    }
+    #[cfg(all(not(test), not(target_os = "windows")))]
+    user_home_dir()
+}
+
 /// 跨平台 home 目录（不依赖额外 crate，用环境变量）
+#[cfg(any(not(test), target_os = "windows"))]
 fn dirs_home() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -649,6 +669,7 @@ impl Target for CodexTarget {
     }
 
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplySummary, String> {
+        preflight_target_apply(self.id())?;
         let codex_dir = home_dir().join(".codex");
         let mut changed = Vec::new();
 
@@ -1374,21 +1395,27 @@ pub fn product_targets() -> Vec<Box<dyn Target>> {
 }
 
 pub fn transaction_paths(target_id: &str) -> Result<Vec<PathBuf>, String> {
+    transaction_paths_for_home(&home_dir(), target_id)
+}
+
+/// 写入事务与备份恢复共享同一组目标路径；显式 home 也供隔离测试使用。
+pub(crate) fn transaction_paths_for_home(home: &Path, target_id: &str) -> Result<Vec<PathBuf>, String> {
     match target_id {
+        "codex" => Ok(vec![home.join(".codex").join("auth.json"), home.join(".codex").join("config.toml")]),
         "claude-desktop" | "claude-cli" => {
-            let mut paths = vec![home_dir().join(".claude").join("settings.json")];
+            let mut paths = vec![home.join(".claude").join("settings.json")];
             if target_id == "claude-desktop" {
-                if let Some(dir) = claude_3p_config_dir() {
+                if let Some(dir) = claude_3p_config_dir_for(home) {
                     paths.push(dir.join(format!("{CLAUDE_3P_ENTRY_ID}.json")));
                     paths.push(dir.join("_meta.json"));
                 }
             }
             Ok(paths)
         }
-        "grok" => Ok(vec![grok_config_path()]),
-        "antigravity" => Ok(vec![agy_settings_path()]),
-        "dsh" => Ok(vec![dsh_settings_path(), dsh_credentials_path()]),
-        "zcode" => Ok(vec![zcode_config_file()]),
+        "grok" => Ok(vec![home.join(".grok").join("config.toml")]),
+        "antigravity" => Ok(vec![agy_settings_path_for(home)]),
+        "dsh" => Ok(dsh_config_paths(home)),
+        "zcode" => Ok(vec![home.join(".zcode").join("v2").join("config.json")]),
         other => Err(format!("unknown transaction target: {other}")),
     }
 }
@@ -1399,6 +1426,13 @@ pub fn preflight_target_apply(target_id: &str) -> Result<(), String> {
             continue;
         }
         let raw = fs::read_to_string(&path).map_err(|_| "target settings unreadable".to_owned())?;
+        if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+            let table: toml::Table = raw.parse().map_err(|_| "target settings malformed".to_owned())?;
+            if target_id == "codex" && table.get("model_providers").is_some_and(|value| !value.is_table()) {
+                return Err("target settings have an unsupported shape".to_owned());
+            }
+            continue;
+        }
         if path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -1906,9 +1940,8 @@ pub(crate) fn observe_active_config_at(
 }
 
 pub(crate) fn expected_config_digest(target_id: &str, plan: &ApplyPlan) -> Result<String, String> {
-    let home = user_home_dir();
     let source_is_managed = target_id == "claude-desktop"
-        && claude_3p_config_dir_for(&home).is_some();
+        && claude_3p_config_dir_for(&user_home_dir()).is_some();
     expected_config_digest_at(target_id, plan, source_is_managed)
 }
 
@@ -2272,7 +2305,7 @@ pub(crate) fn check_drift_at(
             mismatched.append(&mut claude_settings_drift(h, plan));
             if target_id == "claude-desktop" {
                 // 托管配置若仍指向别家网关，桌面端注入的环境变量会盖掉 settings.json
-                if let Some(dir) = claude_3p_config_dir() {
+                if let Some(dir) = claude_3p_config_dir_for(h) {
                     if dir.join("_meta.json").exists() {
                         match claude_managed_effective(&dir) {
                             Some((base_url, api_key)) => {
@@ -2327,6 +2360,66 @@ pub(crate) fn check_drift_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "native tests must set an isolated temporary home")]
+    fn isolated_tests_never_fall_back_to_real_user_paths() {
+        let _ = user_home_dir();
+    }
+
+    #[test]
+    fn isolated_target_paths_and_app_data_stay_inside_fixture() {
+        let fixture = tempfile::tempdir().unwrap();
+        let _guard = set_test_home(fixture.path());
+        assert_eq!(app_data_dir(), fixture.path());
+        assert!(crate::logx::session_log_path().starts_with(fixture.path()));
+        for target in ["codex", "claude-desktop", "claude-cli", "grok", "antigravity", "dsh", "zcode"] {
+            let paths = transaction_paths(target).unwrap();
+            assert!(!paths.is_empty());
+            assert!(paths.iter().all(|path| path.starts_with(fixture.path())));
+            assert_eq!(paths, transaction_paths_for_home(fixture.path(), target).unwrap());
+        }
+        assert!(transaction_paths_for_home(fixture.path(), "../codex").is_err());
+    }
+
+    #[test]
+    fn isolated_codex_preflight_rejects_bad_config_before_changing_auth() {
+        let fixture = tempfile::tempdir().unwrap();
+        let _guard = set_test_home(fixture.path());
+        let codex = fixture.path().join(".codex");
+        fs::create_dir(&codex).unwrap();
+        let auth = br#"{"auth_mode":"chatgpt","tokens":{"id_token":"fixture-only"}}"#;
+        fs::write(codex.join("auth.json"), auth).unwrap();
+        let plan = ApplyPlan {
+            base_url: "https://fixture.invalid/v1".to_owned(), api_key: "fixture-key".to_owned(),
+            model_group: Some("default".to_owned()), model: Some("fixture-model".to_owned()), codex_mixed: false,
+        };
+        for invalid in ["model = [", "model_providers = 'not-a-table'"] {
+            fs::write(codex.join("config.toml"), invalid).unwrap();
+            assert!(CodexTarget.apply(&plan).is_err());
+            assert_eq!(fs::read(codex.join("auth.json")).unwrap(), auth);
+            assert_eq!(fs::read_to_string(codex.join("config.toml")).unwrap(), invalid);
+            assert!(!fixture.path().join(".niko").exists());
+        }
+    }
+
+    #[test]
+    fn isolated_invalid_auth_is_preserved_and_grok_toml_is_supported() {
+        let fixture = tempfile::tempdir().unwrap();
+        let _guard = set_test_home(fixture.path());
+        let codex = fixture.path().join(".codex");
+        fs::create_dir(&codex).unwrap();
+        fs::write(codex.join("config.toml"), "model = 'original'\n").unwrap();
+        fs::write(codex.join("auth.json"), "broken json").unwrap();
+        assert!(preflight_target_apply("codex").is_err());
+        assert!(merge_json_keys(&codex.join("auth.json"), &[("auth_mode", Value::String("apikey".to_owned()))]).is_err());
+        assert!(remove_codex_api_auth(&codex.join("auth.json")).is_err());
+        assert_eq!(fs::read_to_string(codex.join("auth.json")).unwrap(), "broken json");
+        let grok = fixture.path().join(".grok");
+        fs::create_dir(&grok).unwrap();
+        fs::write(grok.join("config.toml"), "[models]\ndefault = 'custom'\n").unwrap();
+        preflight_target_apply("grok").unwrap();
+    }
 
     fn tmp_path(name: &str) -> PathBuf {
         // 并行测试下时间戳精度不足会撞到同一目录，用递增序号保证互不干扰
@@ -2652,6 +2745,14 @@ mod tests {
         p
     }
 
+    fn managed_fixture(name: &str) -> (tempfile::TempDir, TestHomeGuard, PathBuf) {
+        let temp = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+        let guard = set_test_home(temp.path());
+        let dir = claude_3p_config_dir_for(temp.path()).unwrap_or_else(|| temp.path().join("managed"));
+        fs::create_dir_all(&dir).unwrap();
+        (temp, guard, dir)
+    }
+
     fn claude_plan() -> ApplyPlan {
         ApplyPlan {
             base_url: "https://momotoken.win/v1".to_owned(),
@@ -2875,7 +2976,7 @@ mod tests {
     /// 所以启用必须改写 appliedId，且不能删掉别家工具留下的条目。
     #[test]
     fn claude_managed_apply_takes_over_applied_entry_and_keeps_others() {
-        let dir = tmp_dir("claude_3p_apply");
+        let (_temp, _home, dir) = managed_fixture("claude_3p_apply");
         fs::write(
             dir.join("_meta.json"),
             r#"{"appliedId":"cc-switch-id","entries":[{"id":"cc-switch-id","name":"CC Switch"}]}"#,
@@ -2911,7 +3012,7 @@ mod tests {
 
     #[test]
     fn claude_managed_apply_pins_selected_model_for_3p() {
-        let dir = tmp_dir("claude_3p_model");
+        let (_temp, _home, dir) = managed_fixture("claude_3p_model");
 
         let changed = claude_managed_apply(
             &dir,
@@ -2939,7 +3040,7 @@ mod tests {
     /// 恢复官方默认要摘掉我们的条目，别家条目与其配置文件必须留着
     #[test]
     fn claude_managed_restore_removes_only_our_entry() {
-        let dir = tmp_dir("claude_3p_restore");
+        let (_temp, _home, dir) = managed_fixture("claude_3p_restore");
         fs::write(
             dir.join("_meta.json"),
             r#"{"appliedId":"cc-switch-id","entries":[{"id":"cc-switch-id","name":"CC Switch"}]}"#,
@@ -2965,7 +3066,7 @@ mod tests {
     /// 生效值只认 appliedId 指向的条目：别家工具切回去后必须能被检测出来
     #[test]
     fn claude_managed_effective_follows_applied_id() {
-        let dir = tmp_dir("claude_3p_effective");
+        let (_temp, _home, dir) = managed_fixture("claude_3p_effective");
         claude_managed_apply(&dir, "https://momotoken.win", "sk-niko", None).unwrap();
         fs::write(
             dir.join("cc-switch-id.json"),
@@ -3399,6 +3500,7 @@ mod tests {
     #[test]
     fn managed_claude_source_must_match_the_record_digest() {
         let home = detection_home("managed_claude_detection");
+        let _home = set_test_home(&home);
         let Some(dir) = claude_3p_config_dir_for(&home) else {
             return;
         };

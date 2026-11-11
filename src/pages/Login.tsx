@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { api, DeviceLimitError, type DeviceItem } from "../api/client";
 import { parseBalanceSnapshot } from "../lib/balance";
-import { saveAuth, shouldPersistAuthSession } from "../store/auth";
+import { loadAuth, saveAuth, isCurrentAuthSession, shouldPersistAuthSession, type AuthState } from "../store/auth";
 import { normalizeStationOrigin, parseOptionalUserId } from "../lib/station";
 import { BRAND } from "../lib/brand";
 import {
@@ -46,6 +46,11 @@ type Stage = "login" | "register" | "station" | "2fa" | "device-limit";
 type LoginStage = "login" | "2fa";
 type CredentialSource = "login" | "registration";
 type VerificationState = "idle" | "opening" | "pending" | "verified";
+
+interface AuthAttempt {
+  id: number;
+  expectedAuth: AuthState | null;
+}
 
 interface ChallengeStart {
   nonce: string;
@@ -497,6 +502,32 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const mountedRef = useRef(false);
+  const authAttemptRef = useRef(0);
+  const verificationRequestRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      authAttemptRef.current += 1;
+      verificationRequestRef.current += 1;
+    };
+  }, []);
+
+  const beginAuthAttempt = (): AuthAttempt => ({
+    id: ++authAttemptRef.current,
+    expectedAuth: loadAuth(),
+  });
+  const isCurrentAttempt = (attempt: AuthAttempt) => mountedRef.current
+    && attempt.id === authAttemptRef.current
+    && isCurrentAuthSession(attempt.expectedAuth);
+  const commitAuth = (attempt: AuthAttempt, session: AuthState): boolean => {
+    if (!isCurrentAttempt(attempt)) return false;
+    saveAuth(session);
+    attempt.expectedAuth = loadAuth();
+    return true;
+  };
 
   // 回填「记住我」保存的凭证（存在系统钥匙串，不落明文文件）
   useEffect(() => {
@@ -595,7 +626,9 @@ export default function Login() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     if (!username.trim() || !password.trim()) { setError("请填写账号和密码"); return; }
+    const attempt = beginAuthAttempt();
     setCredentialSource("login");
     setError(""); setNotice(""); setLoading(true);
     try {
@@ -606,42 +639,49 @@ export default function Login() {
         deviceName: getDeviceName(),
         platform: getDeviceName(),
       });
+      if (!isCurrentAttempt(attempt)) return;
       if (result.require_2fa && result.pending_token) {
         setPendingToken(result.pending_token);
         setStage("2fa");
         return;
       }
-      await finishLogin(result.access_token!, result.username ?? username, true);
+      await finishLogin(result.access_token!, result.username ?? username, true, attempt);
     } catch (err) {
+      if (!isCurrentAttempt(attempt)) return;
       if (err instanceof DeviceLimitError) {
         enterDeviceLimit(err, "login");
         return;
       }
       setError(friendlyLoginError(err));
     } finally {
-      setLoading(false);
+      if (isCurrentAttempt(attempt)) setLoading(false);
     }
   };
 
   const handle2FA = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     if (!code.trim()) { setError("请输入验证码"); return; }
+    const attempt = beginAuthAttempt();
     setError(""); setLoading(true);
     try {
       const result = await api.login2fa(pendingToken, code.trim());
+      if (!isCurrentAttempt(attempt)) return;
       await finishLogin(
         result.access_token!,
         result.username ?? username,
         credentialSource === "login",
+        attempt,
       );
     } catch (err) {
+      if (!isCurrentAttempt(attempt)) return;
       if (err instanceof DeviceLimitError) {
         enterDeviceLimit(err, "2fa");
         return;
       }
       setError(friendlyLoginError(err));
     } finally {
-      setLoading(false);
+      if (isCurrentAttempt(attempt)) setLoading(false);
     }
   };
 
@@ -657,7 +697,9 @@ export default function Login() {
   // 释放勾选的旧设备后按原路重试：撤销与登录在同一请求内完成，
   // 不需要先拿到 token 才能调设备管理接口。
   const handleRevokeAndLogin = async () => {
+    if (loading) return;
     if (selectedDevices.length === 0) { setError("请至少选择一台要退出的设备"); return; }
+    const attempt = beginAuthAttempt();
     setError(""); setLoading(true);
     try {
       const result =
@@ -671,6 +713,7 @@ export default function Login() {
               platform: getDeviceName(),
               revokeSessionIds: selectedDevices,
             });
+      if (!isCurrentAttempt(attempt)) return;
       if (result.require_2fa && result.pending_token) {
         setPendingToken(result.pending_token);
         setStage("2fa");
@@ -680,20 +723,39 @@ export default function Login() {
         result.access_token!,
         result.username ?? username,
         credentialSource === "login",
+        attempt,
       );
     } catch (err) {
+      if (!isCurrentAttempt(attempt)) return;
       if (err instanceof DeviceLimitError) {
         enterDeviceLimit(err, limitFrom);
         return;
       }
       setError(friendlyLoginError(err));
     } finally {
-      setLoading(false);
+      if (isCurrentAttempt(attempt)) setLoading(false);
     }
   };
 
-  const finishLogin = async (token: string, uname: string, updateRememberedLogin: boolean) => {
-    const rememberSession = shouldPersistAuthSession(updateRememberedLogin, remember);
+  const finishLogin = async (
+    token: string,
+    uname: string,
+    updateRememberedLogin: boolean,
+    attempt: AuthAttempt,
+  ) => {
+    const session: AuthState = {
+      accessToken: token,
+      username: uname,
+      userId: 0,
+      quota: 0,
+      defaultGroup: "",
+      apiKey: "",
+      remember: shouldPersistAuthSession(updateRememberedLogin, remember),
+      kind: "momotoken",
+    };
+    // Establish the new provider before bootstrap/status consult stored auth.
+    if (!commitAuth(attempt, session)) return;
+    api.clearCatalog();
     // 记住我：凭证写入系统钥匙串；未勾选则清掉历史记录
     if (updateRememberedLogin) {
       try {
@@ -708,47 +770,42 @@ export default function Login() {
         // 钥匙串不可用时不阻断登录
       }
     }
-    api.clearCatalog();
+    if (!isCurrentAttempt(attempt)) return;
     try {
       const [bootstrap, status] = await Promise.all([
         api.bootstrap(token),
         api.status().catch(() => null),
       ]);
-      const provision = await api.provision(token, bootstrap.user.group);
+      if (!isCurrentAttempt(attempt)) return;
       const balance = parseBalanceSnapshot(
         bootstrap.user.quota,
         bootstrap.site.quota_per_unit ?? status?.quota_per_unit,
       );
-      saveAuth({
-        accessToken: token,
-        username: uname,
+      const enriched: AuthState = {
+        ...session,
         userId: bootstrap.user.id,
         quota: bootstrap.user.quota,
         quotaPerUnit: balance?.quotaPerUnit,
         balanceUpdatedAt: balance?.updatedAt,
         defaultGroup: bootstrap.user.group,
+      };
+      if (!commitAuth(attempt, enriched)) return;
+      // A failed key request must not discard the account data just loaded.
+      const provision = await api.provision(token, bootstrap.user.group);
+      if (!commitAuth(attempt, {
+        ...enriched,
         apiKey: provision.api_key,
         apiKeyGroup: provision.group,
-        remember: rememberSession,
-      });
-      navigate("/home");
+      })) return;
     } catch {
-      // bootstrap/provision 失败不阻断登录，仍跳首页
-      saveAuth({
-        accessToken: token,
-        username: uname,
-        userId: 0,
-        quota: 0,
-        defaultGroup: "",
-        apiKey: "",
-        remember: rememberSession,
-      });
-      navigate("/home");
+      // 目录或密钥稍后可重试，不恢复已经退出/切换的会话。
     }
+    if (isCurrentAttempt(attempt)) navigate("/home");
   };
 
   const handleStationConnect = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (loading) return;
     setError("");
     setNotice("");
     let origin: string;
@@ -764,6 +821,7 @@ export default function Login() {
       setError("请填写系统访问令牌");
       return;
     }
+    const attempt = beginAuthAttempt();
     setLoading(true);
     try {
       const connected = await api.connectNewApi({
@@ -771,6 +829,7 @@ export default function Login() {
         accessToken: stationToken.trim(),
         userId,
       });
+      if (!isCurrentAttempt(attempt)) return;
       const session = {
         accessToken: stationToken.trim(),
         username: connected.username || connected.system_name || "中转站",
@@ -787,10 +846,11 @@ export default function Login() {
         kind: "newapi" as const,
         origin: connected.origin,
       };
-      saveAuth(session);
+      if (!commitAuth(attempt, session)) return;
       api.clearCatalog();
       try {
         const bootstrap = await api.bootstrap(session.accessToken);
+        if (!isCurrentAttempt(attempt)) return;
         const group = bootstrap.user.group || connected.group;
         let apiKey = "";
         let apiKeyGroup = "";
@@ -803,16 +863,17 @@ export default function Login() {
             /* 分组密钥可在首页接入时再申请 */
           }
         }
-        saveAuth({
+        if (!commitAuth(attempt, {
           ...session,
           quota: bootstrap.user.quota,
           defaultGroup: group,
           apiKey,
           apiKeyGroup,
-        });
+        })) return;
       } catch {
         /* 目录稍后再拉，不阻断连接 */
       }
+      if (!isCurrentAttempt(attempt)) return;
       try {
         if (rememberStation) {
           await invoke("save_remembered_station", {
@@ -828,16 +889,18 @@ export default function Login() {
       } catch {
         /* 钥匙串不可用时不阻断连接 */
       }
-      navigate("/home");
+      if (isCurrentAttempt(attempt)) navigate("/home");
     } catch (err) {
-      setError(friendlyLoginError(err));
+      if (isCurrentAttempt(attempt)) setError(friendlyLoginError(err));
     } finally {
-      setLoading(false);
+      if (isCurrentAttempt(attempt)) setLoading(false);
     }
   };
 
   const selectAuthMode = (mode: "login" | "register" | "station") => {
-    if (mode === stage || !["login", "register", "station"].includes(stage)) return;
+    if (loading || mode === stage || !["login", "register", "station"].includes(stage)) return;
+    authAttemptRef.current += 1;
+    verificationRequestRef.current += 1;
     if (stage === "register") {
       const nonce = verificationNonce;
       if (nonce) void invoke("cancel_registration_challenge", { nonce });
@@ -853,14 +916,21 @@ export default function Login() {
 
   const beginRegistrationVerification = async () => {
     if (loading || verificationState === "opening") return;
+    const request = ++verificationRequestRef.current;
     setError("");
     setNotice("");
     setVerificationState("opening");
     try {
       const challenge = await invoke<ChallengeStart>("start_registration_challenge");
+      if (!mountedRef.current || request !== verificationRequestRef.current) {
+        void invoke("cancel_registration_challenge", { nonce: challenge.nonce }).catch(() => {});
+        return;
+      }
+      verificationNonceRef.current = challenge.nonce;
       setVerificationNonce(challenge.nonce);
       setVerificationState("pending");
     } catch (err) {
+      if (!mountedRef.current || request !== verificationRequestRef.current) return;
       setVerificationNonce("");
       setVerificationState("idle");
       setError(registrationErrorMessage(err));
@@ -869,6 +939,7 @@ export default function Login() {
 
   const handleRegistration = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (loading) return;
     const fields = {
       username: registrationUsername,
       password: registrationPassword,
@@ -883,9 +954,11 @@ export default function Login() {
 
     const registeredUsername = registrationUsername.trim();
     const registeredPassword = registrationPassword;
+    let attempt: AuthAttempt | undefined;
     let started = false;
     try {
       const submission = await registrationGate.run(async () => {
+        attempt = beginAuthAttempt();
         started = true;
         setError("");
         setNotice("");
@@ -899,16 +972,19 @@ export default function Login() {
               password: registeredPassword,
             },
           }),
-          () => api.login({
-            username: registeredUsername,
-            password: registeredPassword,
-            deviceId: getDeviceId(),
-            deviceName: getDeviceName(),
-            platform: getDeviceName(),
-          }),
+          () => {
+            if (!attempt || !isCurrentAttempt(attempt)) throw new Error("登录已取消");
+            return api.login({
+              username: registeredUsername,
+              password: registeredPassword,
+              deviceId: getDeviceId(),
+              deviceName: getDeviceName(),
+              platform: getDeviceName(),
+            });
+          },
         );
       });
-      if (!submission.started) return;
+      if (!submission.started || !attempt || !isCurrentAttempt(attempt)) return;
 
       setVerificationNonce("");
       setVerificationState("idle");
@@ -939,13 +1015,14 @@ export default function Login() {
         setStage("2fa");
         return;
       }
-      await finishLogin(result.access_token!, result.username ?? registeredUsername, false);
+      await finishLogin(result.access_token!, result.username ?? registeredUsername, false, attempt);
     } catch (err) {
+      if (!attempt || !isCurrentAttempt(attempt)) return;
       setVerificationNonce("");
       setVerificationState("idle");
       setError(registrationErrorMessage(err));
     } finally {
-      if (started) setLoading(false);
+      if (started && attempt && isCurrentAttempt(attempt)) setLoading(false);
     }
   };
 
@@ -1291,7 +1368,14 @@ export default function Login() {
             </button>
             <button
               type="button"
-              onClick={() => { setStage("login"); setCode(""); setError(""); }}
+              onClick={() => {
+                authAttemptRef.current += 1;
+                setLoading(false);
+                setStage("login");
+                setPendingToken("");
+                setCode("");
+                setError("");
+              }}
               className="nk-btn-ghost w-full text-sm"
             >
               ← 返回登录

@@ -23,10 +23,8 @@ WIN_FAIL=0
 run_mac() {
   echo "==> [mac] local verify"
   if ! npm run build; then MAC_FAIL=1; fi        # tsc --noEmit + vite build
-  for t in test:auth test:balance test:login test:model-selection test:tags test:order test:catalog test:component-order test:smoke test:registration test:sessions test:station test:update test:usage test:ledger; do
-    echo "-- mac test: $t"
-    npm run "$t" || MAC_FAIL=1
-  done
+  # 自动收集全部测试，新增回归无需再维护第二份清单。
+  if ! npm test; then MAC_FAIL=1; fi
   [ "$MAC_FAIL" = 0 ] && echo "==> [mac] PASS" || echo "==> [mac] FAIL"
 }
 
@@ -53,9 +51,7 @@ run_win() {
     "cd /d $remote && npm ci --no-audit --no-fund"
     "cd /d $remote && npm run build"
   )
-  for t in test:auth test:balance test:login test:model-selection test:tags test:order test:catalog test:component-order test:smoke test:registration test:sessions test:station test:update test:usage test:ledger; do
-    cmds+=("cd /d $remote && npm run $t")
-  done
+  cmds+=("cd /d $remote && npm test")
   # Rust 层不在此验证：Win 系统的 Smart App Control 会拦截 cargo 编译产物（os error 4551）。
   # Rust 编译由 CI rust-check 矩阵（macos-latest + windows-latest）在每次 push 时覆盖。
   local c

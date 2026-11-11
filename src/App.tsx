@@ -10,7 +10,7 @@ import ForceUpgrade from "./pages/ForceUpgrade";
 import InstallGuide from "./pages/InstallGuide";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CodexSessions from "./pages/CodexSessions";
-import { loadAuth, saveAuth } from "./store/auth";
+import { loadAuth, refreshAuthMeta, isCurrentAuthSession } from "./store/auth";
 import { api } from "./api/client";
 import { initTheme } from "./hooks/useTheme";
 import { APP_VERSION } from "./lib/version";
@@ -47,11 +47,16 @@ function VersionGate({ children }: { children: React.ReactNode }) {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    let stopped = false;
+    setUpgradeInfo(null);
     if (!auth?.accessToken) { setChecked(true); return; }
+    setChecked(false);
+    const isCurrent = () => !stopped && isCurrentAuthSession(auth);
     api.bootstrap(auth.accessToken)
       .then((data) => {
-        // persist latest quota/default recommendation without touching target state
-        saveAuth({ ...auth, quota: data.user.quota, defaultGroup: data.user.group });
+        if (!isCurrent()) return;
+        // Merge into the current session; never restore a captured token/key.
+        refreshAuthMeta({ quota: data.user.quota, defaultGroup: data.user.group }, auth);
         const minVer = data.min_supported_version ?? "0.0.0";
         if (semverLt(APP_VERSION, minVer)) {
           setUpgradeInfo({
@@ -62,8 +67,9 @@ function VersionGate({ children }: { children: React.ReactNode }) {
         }
       })
       .catch(() => { /* 网络失败时放行，不拦截 */ })
-      .finally(() => setChecked(true));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .finally(() => { if (isCurrent()) setChecked(true); });
+    return () => { stopped = true; };
+  }, [auth?.accessToken, auth?.kind, auth?.origin]);
 
   if (!checked) {
     return (
