@@ -4,6 +4,11 @@ use crate::commands::safe_error::SafeCommandError;
 use serde::Serialize;
 use sysinfo::System;
 
+// ChatGPT may need more than five seconds to flush its local databases on quit.
+// Keep waiting for graceful exit; never launch a second instance or force-kill it.
+const APP_EXIT_POLL_ATTEMPTS: usize = 120;
+const APP_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// 进程名关键词映射（部分匹配）
 fn process_keywords(target_id: &str) -> &'static [&'static str] {
     match target_id {
@@ -112,8 +117,8 @@ pub async fn restart_target(target_id: String) -> Result<RestartOutcome, SafeCom
         quit_app(&target_id, &path).map_err(|_| SafeCommandError::busy())?;
         if !wait_for_app_exit(
             || app_process_running(&path),
-            20,
-            std::time::Duration::from_millis(250),
+            APP_EXIT_POLL_ATTEMPTS,
+            APP_EXIT_POLL_INTERVAL,
         ) {
             return Err(SafeCommandError::busy());
         }
@@ -167,8 +172,8 @@ pub async fn close_target(target_id: String) -> Result<CloseOutcome, SafeCommand
     quit_app(&target_id, &path).map_err(|_| SafeCommandError::busy())?;
     if !wait_for_app_exit(
         || app_process_running(&path),
-        20,
-        std::time::Duration::from_millis(250),
+        APP_EXIT_POLL_ATTEMPTS,
+        APP_EXIT_POLL_INTERVAL,
     ) {
         return Err(SafeCommandError::busy());
     }
@@ -300,6 +305,44 @@ pub async fn check_all_processes() -> Vec<ProcessStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_slow_graceful_exit_allows_restart_after_the_old_five_second_limit() {
+        let polls = std::cell::Cell::new(0);
+        let launched = std::cell::Cell::new(false);
+        let result = restart_after_close(
+            || {
+                let exited = wait_for_app_exit(|| {
+                    polls.set(polls.get() + 1);
+                    polls.get() <= 25
+                }, APP_EXIT_POLL_ATTEMPTS, std::time::Duration::ZERO);
+                if exited { Ok(()) } else { Err(SafeCommandError::busy()) }
+            },
+            || { launched.set(true); Ok(()) },
+            true,
+        ).unwrap();
+        assert_eq!(polls.get(), 26);
+        assert!(launched.get());
+        assert_eq!(result.status, "applied");
+    }
+
+    #[test]
+    fn isolated_exit_deadline_never_launches_a_second_instance() {
+        let launched = std::cell::Cell::new(false);
+        let result = restart_after_close(
+            || {
+                if wait_for_app_exit(|| true, APP_EXIT_POLL_ATTEMPTS, std::time::Duration::ZERO) {
+                    Ok(())
+                } else {
+                    Err(SafeCommandError::busy())
+                }
+            },
+            || { launched.set(true); Ok(()) },
+            true,
+        );
+        assert!(result.is_err());
+        assert!(!launched.get());
+    }
 
     #[test]
     fn launch_failure_reports_committed_manual_open_state() {

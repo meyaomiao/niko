@@ -56,8 +56,8 @@ jobs:
   build-windows:
     name: Windows (unsigned + SHA256)
     needs: validate-release
-    # 自托管 Windows runner（xzb17-win-niko）：与 CI 的 cargo check 同一节点
-    runs-on: [self-hosted, Windows, niko-windows]
+    # Use an isolated GitHub-hosted machine; local Smart App Control blocks Cargo.
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -70,18 +70,54 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: package-lock.json
 
       - name: Install frontend deps
         run: npm ci
 
-      - name: Build Windows installers (NSIS only; WiX MSI 与服务账户会话不兼容)
+      - name: Run frontend regression tests
+        run: npm test
+
+      - name: Build Windows installer (NSIS EXE)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --bundles nsis
+
+      - name: Verify installer installation and application startup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expectedVersion = (Get-Content -LiteralPath "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $installers = @(Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer" }
+          $installDir = Join-Path $env:RUNNER_TEMP "niko-install-smoke"
+          $install = Start-Process -FilePath $installers[0].FullName -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          $clientPath = Join-Path $installDir "niko.exe"
+          $client = Get-Item -LiteralPath $clientPath -ErrorAction Stop
+          if ($client.VersionInfo.ProductVersion -notin @($expectedVersion, "$expectedVersion.0")) {
+            throw "Installed version does not match the release"
+          }
+          $smoke = Start-Process -FilePath $clientPath -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $smoke.Refresh()
+              if ($smoke.HasExited) { throw "Installed application exited before showing its window" }
+            } while ($smoke.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($smoke.MainWindowHandle -eq 0) { throw "Installed application window was not created" }
+            "Installer and application startup verified for $expectedVersion"
+          } finally {
+            $smoke.Refresh()
+            if (-not $smoke.HasExited) {
+              $null = $smoke.CloseMainWindow()
+              if (-not $smoke.WaitForExit(5000)) { Stop-Process -Id $smoke.Id -Force }
+            }
+          }
 
       - name: Compute SHA256 and validate updater signatures
         shell: powershell
