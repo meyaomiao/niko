@@ -23,6 +23,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalTimeout;
+  delete (globalThis as any).__catalogTestInvoke;
 });
 
 function stubFetch(callback: (...args: Parameters<typeof fetch>) => Promise<unknown>) {
@@ -41,7 +42,7 @@ const clientModule = build({
     setup(builder) {
       builder.onResolve({ filter: /^@tauri-apps\// }, (args) => ({ path: args.path, namespace: "mock-ipc" }));
       builder.onLoad({ filter: /.*/, namespace: "mock-ipc" }, () => ({
-        contents: "export function invoke() { throw new Error('Real IPC is forbidden in API tests'); }",
+        contents: "export function invoke(...args) { if (globalThis.__catalogTestInvoke) return globalThis.__catalogTestInvoke(...args); throw new Error('Real IPC is forbidden in API tests'); }",
       }));
     },
   }],
@@ -196,4 +197,101 @@ test("optional pricing timeout does not prevent bootstrap recovery", async () =>
   const catalog = await api.catalog("fixture-pricing", { force: true });
   assert.deepEqual(catalog.bootstrap, bootstrap);
   assert.deepEqual(catalog.pricingMeta, { vendors: [], usableGroup: {}, groupRatio: {} });
+  assert.equal(catalog.sync.source, "account");
+});
+
+function directoryFixture() {
+  return {
+    user: { id: 3, quota: 100, group: "allowed" }, site: { quota_per_unit: 500000 },
+    groups: [{ name: "allowed", ratio: 0.3, models: ["delisted"] }], models: ["delisted"],
+    pricing: [{ model_name: "delisted", model_ratio: 9, enable_groups: ["allowed"] }],
+  };
+}
+const currentPrice = (name = "current-model") => ({
+  model_name: name, model_ratio: 0.2, model_price: 0, completion_ratio: 2, quota_type: 0,
+  enable_groups: ["allowed"], vendor_id: 19, release_date: "2026-10-01",
+});
+
+test("official catalog consumes current pricing models, metadata and vendor icons without granting public groups", async () => {
+  const { api } = await clientModule; api.clearCatalog();
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  stubFetch(async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json(String(url).endsWith("/pricing") ? {
+      success: true, pricing_version: "current-version", vendors: [{ id: 19, name: "New Vendor", icon: "Qwen.Color" }],
+      usable_group: { allowed: "可用", admin: "仅管理员" }, group_ratio: { allowed: 9, admin: 1 },
+      data: [currentPrice(), { ...currentPrice("restricted"), enable_groups: ["admin"] }],
+    } : { success: true, data: directoryFixture() });
+  });
+  const result = await api.catalog("fixture-current-catalog", { force: true });
+  assert.deepEqual(result.bootstrap.models, ["current-model"]);
+  assert.deepEqual(result.bootstrap.groups.map((g: any) => g.name), ["allowed"]);
+  assert.equal(result.bootstrap.groups[0].ratio, 0.3);
+  assert.equal(result.bootstrap.pricing[0].model_ratio, 0.2);
+  assert.equal(result.bootstrap.model_metadata["current-model"].release_date, "2026-10-01");
+  assert.equal(result.pricingMeta.vendors[0].icon, "Qwen.Color");
+  assert.equal(result.sync.source, "public-pricing");
+  assert.equal(result.sync.version, "current-version");
+  const publicRequest = calls.find((call) => call.url.endsWith("/pricing"))!;
+  assert.equal(publicRequest.init?.cache, "no-store");
+  assert.equal(new Headers(publicRequest.init?.headers).has("Authorization"), false);
+});
+
+test("successful empty public catalog removes old models rather than reporting cached legacy membership", async () => {
+  const { api } = await clientModule; api.clearCatalog();
+  stubFetch(async (url) => Response.json(String(url).endsWith("/pricing") ? { success: true, data: [] } : { success: true, data: directoryFixture() }));
+  const result = await api.catalog("fixture-empty-public", { force: true });
+  assert.deepEqual(result.bootstrap.models, []);
+  assert.deepEqual(result.bootstrap.groups[0].models, []);
+  assert.equal(result.bootstrap.pricing_authoritative, true);
+  assert.equal(result.sync.source, "public-pricing");
+});
+
+test("failed or malformed public responses fall back explicitly without clearing valid account models", async () => {
+  const { api } = await clientModule;
+  for (const payload of [{ success: false, message: "fixture failure" }, { success: true, vendors: [] }, { success: true, data: [null] }]) {
+    api.clearCatalog();
+    stubFetch(async (url) => Response.json(String(url).endsWith("/pricing") ? payload : { success: true, data: directoryFixture() }));
+    const result = await api.catalog("fixture-invalid-public", { force: true });
+    assert.equal(result.sync.source, "account");
+    assert.deepEqual(result.bootstrap.models, ["delisted"]);
+    assert.notEqual(result.bootstrap.pricing_authoritative, true);
+  }
+});
+
+test("public outage keeps the last successful directory time while refreshing balance and restricting revoked groups", async () => {
+  const { api } = await clientModule; api.clearCatalog();
+  let outage = false;
+  stubFetch(async (url) => {
+    if (String(url).endsWith("/pricing")) return outage
+      ? Response.json({ success: false }, { status: 503 })
+      : Response.json({ success: true, pricing_version: "known-good", data: [currentPrice()], vendors: [{ id: 19, name: "New Vendor", icon: "Qwen.Color" }] });
+    return Response.json({ success: true, data: outage ? { ...directoryFixture(), user: { quota: 300, group: "allowed" }, groups: [] } : directoryFixture() });
+  });
+  const first = await api.catalog("fixture-public-outage", { force: true });
+  outage = true;
+  const fallback = await api.catalog("fixture-public-outage", { force: true });
+  assert.equal(fallback.bootstrap.user.quota, 300);
+  assert.equal(fallback.bootstrap.pricing[0].model_name, "current-model");
+  assert.deepEqual(fallback.bootstrap.models, []);
+  assert.equal(fallback.pricingMeta.vendors[0].icon, "Qwen.Color");
+  assert.equal(fallback.sync.source, "account");
+  assert.equal(fallback.sync.at, first.sync.at);
+  assert.equal(fallback.sync.version, "known-good");
+});
+
+test("third-party catalog never requests MomoToken public prices or changes custom account rates", async () => {
+  const { api } = await clientModule; api.clearCatalog();
+  sessionStorage.setItem("niko_auth", JSON.stringify({ kind: "newapi", origin: "https://custom.example", accessToken: "fixture-station" }));
+  stubFetch(async () => { throw new Error("Official network requests are forbidden for a custom station"); });
+  (globalThis as any).__catalogTestInvoke = async (command: string) => {
+    assert.equal(command, "newapi_bootstrap");
+    return { origin: "https://custom.example", status: { quota_per_unit: 1000 }, user: { id: 1, quota: 1, group: "custom" },
+      groups: { custom: { ratio: 0.3 } }, models: ["custom-model"], pricing: { data: [{ model_name: "custom-model", model_ratio: 0.123 }] } };
+  };
+  const result = await api.catalog("fixture-station", { force: true });
+  assert.equal(result.bootstrap.pricing[0].model_ratio, 0.123);
+  assert.equal(result.bootstrap.pricing[0].enable_groups, undefined);
+  assert.equal(result.bootstrap.groups[0].ratio, 0.3);
+  assert.equal(result.sync.source, "station");
 });

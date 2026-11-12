@@ -36,6 +36,11 @@ export function vendorNameOf(index: Map<string, VendorInfo>, model: string): str
   return index.get(model)?.name ?? vendorOfModel(model);
 }
 
+/** Keep the server's product/company icon choice when rendering a vendor. */
+export function vendorIconOf(vendors: VendorMeta[] | undefined, vendor: string): string | undefined {
+  return vendors?.find((item) => item.name === vendor)?.icon;
+}
+
 /** 该模型的官方端点能力（服务端下发），用于识别生图/生视频模型 */
 export function endpointTypesOf(
   pricing: PricingItem[] | undefined,

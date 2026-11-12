@@ -80,7 +80,9 @@ export function pricingFromSnapshot(pricing: unknown): {
       create_cache_ratio: record.create_cache_ratio == null && record.createCacheRatio == null
         ? undefined
         : asNumber(record.create_cache_ratio ?? record.createCacheRatio),
-      enable_groups: stringList(record.enable_groups ?? record.enableGroups),
+      enable_groups: record.enable_groups == null && record.enableGroups == null
+        ? undefined
+        : stringList(record.enable_groups ?? record.enableGroups),
       release_date: asString(record.release_date ?? record.releaseDate) || undefined,
       release_source: asString(record.release_source ?? record.releaseSource) || undefined,
       vendor_id: record.vendor_id == null && record.vendorId == null

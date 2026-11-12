@@ -30,7 +30,9 @@ run_mac() {
 
 sync_to_win() {
   echo "==> [win] packing source snapshot"
-  tar czf "$TARBALL" \
+  # Do not emit macOS AppleDouble sidecars when extracting sources on Windows.
+  COPYFILE_DISABLE=1 tar czf "$TARBALL" \
+    --exclude='._*' \
     --exclude=node_modules --exclude=dist --exclude=.git \
     --exclude='src-tauri/target' --exclude='src-tauri/gen' \
     --exclude='src-tauri/WixTools' --exclude=release-artifacts \

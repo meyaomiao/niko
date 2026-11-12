@@ -5,6 +5,7 @@ import { APP_VERSION } from "../lib/version";
 import {
   assembleNewApiCatalog,
   assembleNewApiPricingMeta,
+  pricingFromSnapshot,
   mapNewApiLogs,
   summarizeNewApiLogs,
   type NewApiSnapshot,
@@ -15,12 +16,14 @@ import {
   EMPTY_PRICING_META,
   loadCatalogCached,
   peekCatalogCache,
+  peekCatalogSnapshot,
   type CatalogSnapshot,
 } from "../lib/catalogCache";
 import { currentDeviceName, isNewApiAuth, MOMOTOKEN_ORIGIN } from "../lib/station";
 import { collectUsage } from "../lib/usageLedger";
 import { loadAuth } from "../store/auth";
 import { ApiRequestError, requestJson } from "../lib/apiRequest";
+import { mergeOfficialCatalog } from "../lib/catalogSync";
 
 const BASE_URL = MOMOTOKEN_ORIGIN;
 
@@ -47,13 +50,41 @@ async function fetchCatalogSnapshot(token: string): Promise<Omit<CatalogSnapshot
   const auth = loadAuth();
   if (isNewApiAuth(auth)) {
     const snapshot = await invoke<NewApiSnapshot>("newapi_bootstrap", { req: newApiSession() });
-    return assembleNewApiCatalog(snapshot);
+    return { ...assembleNewApiCatalog(snapshot), sync: { source: "station", at: Date.now() } };
   }
-  const [bootstrap, pricingMeta] = await Promise.all([
+  const previous = peekCatalogSnapshot(catalogCacheKey(MOMOTOKEN_ORIGIN, token));
+  const [bootstrap, publicCatalog] = await Promise.all([
     get<BootstrapData>("/client/bootstrap", token),
-    fetchPublicPricingMeta().catch(() => EMPTY_PRICING_META),
+    fetchOfficialPricing().catch(() => null),
   ]);
-  return { bootstrap, pricingMeta };
+  if (!publicCatalog) {
+    const hasPreviousPublic = previous?.bootstrap.pricing_authoritative === true;
+    return {
+      bootstrap: hasPreviousPublic ? mergeOfficialCatalog(bootstrap, previous.bootstrap.pricing) : bootstrap,
+      pricingMeta: previous?.pricingMeta ?? EMPTY_PRICING_META,
+      sync: { source: "account", version: previous?.sync?.version, at: previous?.sync?.at },
+    };
+  }
+  return {
+    bootstrap: mergeOfficialCatalog(bootstrap, publicCatalog.items),
+    pricingMeta: publicCatalog.meta,
+    sync: { source: "public-pricing", version: publicCatalog.version, at: Date.now() },
+  };
+}
+
+async function fetchOfficialPricing() {
+  const json = await requestJson<ApiEnvelope<PricingItem[]> & { pricing_version?: unknown }>(
+    `${BASE_URL}/api/pricing`, { cache: "no-store" },
+  );
+  const rows = unwrapResponse(json);
+  if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.model_name !== "string" || !row.model_name.trim())) {
+    throw new ApiRequestError("模型目录格式无效，请稍后刷新", { code: "invalid_response" });
+  }
+  const parsed = pricingFromSnapshot(json);
+  return {
+    ...parsed,
+    version: typeof json.pricing_version === "string" ? json.pricing_version : undefined,
+  };
 }
 
 async function fetchPublicPricingMeta(): Promise<PricingMeta> {
@@ -61,16 +92,7 @@ async function fetchPublicPricingMeta(): Promise<PricingMeta> {
     const json = await invoke<unknown>("newapi_pricing", { origin: newApiSession().origin });
     return assembleNewApiPricingMeta(json);
   }
-  const json = await requestJson<{
-    vendors?: VendorMeta[];
-    usable_group?: Record<string, string>;
-    group_ratio?: Record<string, number>;
-  }>(`${BASE_URL}/api/pricing`);
-  return {
-    vendors: json.vendors ?? [],
-    usableGroup: json.usable_group ?? {},
-    groupRatio: json.group_ratio ?? {},
-  };
+  return (await fetchOfficialPricing()).meta;
 }
 
 export interface SiteConfig {
@@ -208,6 +230,8 @@ export interface BootstrapData {
   model_order?: string[];
   groups?: GroupOption[];
   pricing: PricingItem[];
+  /** Client-derived: a successful complete catalog must not fall back to old group model lists. */
+  pricing_authoritative?: boolean;
   /** 全站模型用量排行（服务端跨用户聚合，最近 30 天） */
   model_usage?: ModelUsageStat[];
   /** 允许的最大登录设备数，用于首页展示 已用/上限 */
