@@ -3,10 +3,19 @@ import type { BootstrapData, PricingMeta } from "../api/client.ts";
 import { loadAuth } from "../store/auth.ts";
 import { isNewApiAuth, MOMOTOKEN_ORIGIN } from "./station.ts";
 
+export interface CatalogSync {
+  source: "public-pricing" | "account" | "station";
+  version?: string;
+  /** Last successful directory fetch, independent of the account/balance snapshot timestamp. */
+  at?: number;
+}
+
 export interface CatalogSnapshot {
   bootstrap: BootstrapData;
   pricingMeta: PricingMeta;
   at: number;
+  /** An account-only fallback is usable, but must not be presented as a fresh public catalog. */
+  sync?: CatalogSync;
 }
 
 export const EMPTY_PRICING_META: PricingMeta = {
@@ -40,11 +49,14 @@ export function peekCatalogCache(key: string): CatalogSnapshot | null {
   return cached;
 }
 
+export function peekCatalogSnapshot(key: string): CatalogSnapshot | null {
+  return cached && cachedKey === key ? cached : null;
+}
+
 export function peekCurrentCatalog(): CatalogSnapshot | null {
   const key = currentCatalogKey();
-  if (!key || !cached || cachedKey !== key) return null;
   // 过期也先画出上一份目录，后台再刷新，避免模型页空白卡死。
-  return cached;
+  return key ? peekCatalogSnapshot(key) : null;
 }
 
 export function clearCatalogCache(): void {

@@ -5,6 +5,7 @@ import {
   clearCatalogCache,
   loadCatalogCached,
   peekCatalogCache,
+  peekCatalogSnapshot,
   type CatalogSnapshot,
 } from "../src/lib/catalogCache.ts";
 import type { BootstrapData, PricingMeta } from "../src/api/client.ts";
@@ -71,4 +72,22 @@ test("force refresh bypasses the warm snapshot", async () => {
   await loadCatalogCached(key, loader);
   await loadCatalogCached(key, loader, true);
   assert.equal(loads, 2);
+});
+
+test("a newer forced catalog cannot be replaced by an older pending response", async () => {
+  const key = catalogCacheKey("https://relay.example.com", "fixture-race");
+  let finishOld!: (value: Omit<CatalogSnapshot, "at">) => void;
+  const old = loadCatalogCached(key, () => new Promise((resolve) => { finishOld = resolve; }));
+  const freshBootstrap = { ...bootstrap, models: ["new-model"] };
+  await loadCatalogCached(key, async () => ({ bootstrap: freshBootstrap, pricingMeta }), true);
+  finishOld({ bootstrap, pricingMeta }); await old;
+  assert.deepEqual(peekCatalogSnapshot(key)?.bootstrap.models, ["new-model"]);
+});
+
+test("clearing an account cache invalidates an outstanding directory fetch", async () => {
+  const key = catalogCacheKey("https://relay.example.com", "fixture-logout");
+  let finish!: (value: Omit<CatalogSnapshot, "at">) => void;
+  const request = loadCatalogCached(key, () => new Promise((resolve) => { finish = resolve; }));
+  clearCatalogCache(); finish({ bootstrap, pricingMeta }); await request;
+  assert.equal(peekCatalogSnapshot(key), null);
 });

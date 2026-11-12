@@ -23,19 +23,26 @@ export interface ModelCatalog {
 
 export function buildModelCatalog(
   pricing: PricingItem[] | undefined,
-  accountGroups: GroupOption[]
+  accountGroups: GroupOption[],
+  options: { authoritative?: boolean } = {},
 ): ModelCatalog {
   const accountNames = new Set(accountGroups.map((g) => g.name));
-  const usable: CatalogModel[] = [];
+  const usableByName = new Map<string, Set<string>>();
+  const hasGroupMetadata = (pricing ?? []).some((item) => Array.isArray(item.enable_groups));
 
   for (const item of pricing ?? []) {
     const enableGroups = item.enable_groups ?? [];
     if (!item.model_name || enableGroups.length === 0) continue;
     const groupNames = enableGroups.filter((name) => accountNames.has(name));
-    if (groupNames.length > 0) usable.push({ name: item.model_name, groupNames });
+    if (groupNames.length === 0) continue;
+    const merged = usableByName.get(item.model_name) ?? new Set<string>();
+    groupNames.forEach((name) => merged.add(name));
+    usableByName.set(item.model_name, merged);
   }
+  const usable = [...usableByName].map(([name, groupNames]) => ({ name, groupNames: [...groupNames] }));
 
-  if (usable.length > 0) {
+  // A complete/explicitly empty or unauthorized catalog is a real result, not a legacy response.
+  if (usable.length > 0 || hasGroupMetadata || options.authoritative) {
     const index = new Map(usable.map((m) => [m.name, m.groupNames]));
     return {
       models: usable,

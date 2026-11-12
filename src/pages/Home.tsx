@@ -9,14 +9,16 @@ import { baselineFor, COMPAT_LABEL, COMPAT_STYLE, NATIVE_VENDOR } from "../lib/c
 import { type VendorModelChoice } from "../lib/modelSelection";
 import { buildPricingIndex, priceOf, fmtUSD } from "../lib/pricing";
 import { computeTags, vendorPriceLevels, vendorUsageRanks } from "../lib/modelTags";
-import { buildVendorIndex, vendorNameOf } from "../lib/vendorCatalog";
+import { buildVendorIndex, vendorNameOf, vendorIconOf } from "../lib/vendorCatalog";
+import { catalogSyncLabel, modelReleaseDate } from "../lib/catalogSync";
+import { useCatalogRefresh } from "../hooks/useCatalogRefresh";
 import { compareModelsByRelease } from "../lib/modelOrder";
 import { buildModelCatalog, bucketByVendor } from "../lib/catalog";
 import { buildGroupCatalog } from "../lib/groupCatalog";
 import { vendorOfGroup, VENDORS, type Vendor } from "../lib/vendor";
 import Logo from "../components/Logo";
 import { VendorIcon } from "../components/VendorIcon";
-import { BookOpenIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from "../components/Icons";
+import { BookOpenIcon, LogOutIcon, MoonIcon, RefreshCwIcon, SettingsIcon, SunIcon } from "../components/Icons";
 import TargetAppIcon from "../components/TargetAppIcon";
 import {
   balanceReducer,
@@ -46,7 +48,7 @@ import {
 } from "../lib/copy";
 import { loadDraftSelection, saveDraftSelection } from "../lib/selectionState";
 import { isNewApiAuth, relayBaseUrl, stationOrigin } from "../lib/station";
-import { peekCurrentCatalog } from "../lib/catalogCache";
+import { peekCurrentCatalog, type CatalogSnapshot } from "../lib/catalogCache";
 import { RESTORE_CONFIRMATION_MS, restoreConfirmationMatches, runTargetActions, waitForDesktopAction, type RestoreConfirmation } from "../lib/homeActions";
 /// 记住上次配置的应用，多应用用户不必每次重选
 const TARGET_STORAGE_KEY = "niko_last_target";
@@ -108,6 +110,7 @@ export default function Home() {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   // 服务端厂商目录 + 分组说明（公开接口）
   const [pricingMeta, setPricingMeta] = useState<PricingMeta | null>(cachedCatalog?.pricingMeta ?? null);
+  const [catalogStatus, setCatalogStatus] = useState<Pick<CatalogSnapshot, "at" | "sync"> | null>(cachedCatalog);
   const initialBalance = parseBalanceSnapshot(
     auth?.quota,
     auth?.quotaPerUnit,
@@ -149,16 +152,6 @@ export default function Home() {
   const [benchTotal, setBenchTotal] = useState(0);
   // 测速轮次号：切模型时 +1 使旧循环自行中止，避免旧模型的分组结果写回
   const benchRunRef = useRef(0);
-
-  // 切换模型即清空上一轮分组测速结果（结果只对单次测速的模型有效）
-  useEffect(() => {
-    benchRunRef.current += 1;
-    setBenchmarks({});
-    setBenchErrors({});
-    setBenchmarkRunning(false);
-    setBenchDone(0);
-    setBenchTotal(0);
-  }, [model]);
 
   useEffect(() => {
     requestGuardRef.current = mountRequests(requestGuardRef.current);
@@ -239,6 +232,7 @@ export default function Home() {
         data = catalogResult.value.bootstrap;
         setBootstrap(data);
         setPricingMeta(catalogResult.value.pricingMeta);
+        setCatalogStatus(catalogResult.value);
         const quotaPerUnit =
           data.site.quota_per_unit ??
           (statusResult.status === "fulfilled" ? statusResult.value.quota_per_unit : undefined);
@@ -289,17 +283,7 @@ export default function Home() {
     });
   }, [loadTargets]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    const refreshVisibleBalance = () => {
-      if (document.visibilityState === "visible") void refreshBalance(true);
-    };
-    window.addEventListener("focus", refreshVisibleBalance);
-    document.addEventListener("visibilitychange", refreshVisibleBalance);
-    return () => {
-      window.removeEventListener("focus", refreshVisibleBalance);
-      document.removeEventListener("visibilitychange", refreshVisibleBalance);
-    };
-  }, [refreshBalance]);
+  useCatalogRefresh(() => refreshBalance(true), Boolean(auth?.accessToken) && !actionBusy);
 
   const groups: GroupOption[] = useMemo(() => bootstrap?.groups ?? [], [bootstrap]);
   const deviceLimit = bootstrap?.device_limit ?? 0;
@@ -335,20 +319,17 @@ export default function Home() {
    * 真正可用的模型要用 pricing 的 enable_groups 与账号分组反查（见 lib/catalog.ts）。
    */
   const catalog = useMemo(
-    () => buildModelCatalog(bootstrap?.pricing, groups),
-    [bootstrap?.pricing, groups]
+    () => buildModelCatalog(bootstrap?.pricing, groups, { authoritative: bootstrap?.pricing_authoritative }),
+    [bootstrap?.pricing, bootstrap?.pricing_authoritative, groups]
   );
+  const catalogRef = useRef(catalog);
+  catalogRef.current = catalog;
 
   /** 模型卡片右侧的发布日期（YYYY-MM-DD，缺失则留空） */
   const releaseLabelOf = (name: string) => {
-    const m = bootstrap?.model_metadata?.[name];
-    return (
-      m?.release_date ??
-      m?.released_at ??
-      m?.official_release_date ??
-      m?.version_date ??
-      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date ??
-      ""
+    return modelReleaseDate(
+      bootstrap?.model_metadata?.[name],
+      bootstrap?.pricing?.find((item) => item.model_name === name)?.release_date,
     );
   };
 
@@ -491,7 +472,7 @@ export default function Home() {
   }), [activeStatuses, detectionTargetIds, targets]);
 
   useEffect(() => {
-    if (!group || !model || draftSource === "recommendation") return;
+    if (!group || !model || draftSource === "recommendation" || !catalog.groupsOf(model).includes(group)) return;
     const storageTargetId = targetId === ALL_TARGETS ? installedTargets[0]?.id : targetId;
     if (!storageTargetId) return;
     saveDraftSelection(storageTargetId, {
@@ -499,7 +480,7 @@ export default function Home() {
       model,
       group,
     });
-  }, [draftSource, group, installedTargets, model, targetId]);
+  }, [catalog, draftSource, group, installedTargets, model, targetId]);
 
   const selectedTarget = targets.find((t) => t.id === targetId) ?? null;
   const targetLabel =
@@ -540,6 +521,17 @@ export default function Home() {
       })
       .sort((a, b) => Number(b.usable) - Number(a.usable) || a.ratio - b.ratio || a.name.localeCompare(b.name));
   }, [catalog, groupCatalog, groups, model]);
+  const benchmarkScope = modelGroups.filter((item) => item.usable).map((item) => item.name).sort().join("\0");
+  const benchmarkScopeRef = useRef(benchmarkScope);
+  benchmarkScopeRef.current = benchmarkScope;
+  useEffect(() => {
+    benchRunRef.current += 1;
+    setBenchmarks({});
+    setBenchErrors({});
+    setBenchmarkRunning(false);
+    setBenchDone(0);
+    setBenchTotal(0);
+  }, [model, benchmarkScope]);
   // 服务端是否真的下发了该模型的令牌分组（enable_groups）
   const tokenGroupNames = useMemo(
     () => bootstrap?.pricing?.find((item) => item.model_name === model)?.enable_groups ?? [],
@@ -567,19 +559,16 @@ export default function Home() {
   }, [activeVendorTab, vendorTabs, modelFilter, catalogOrder, bootstrap?.model_metadata, bootstrap?.pricing]);
 
   useEffect(() => {
-    // 只在用户已选中某厂家页签时才需要联动；未选厂家/模型时保持空态，不自动挑模型
-    if (!activeVendorTab || groups.length === 0 || !model) return;
-    const selected = activeVendorTab.models.find((choice) => choice.name === model) ?? activeVendorTab.models[0];
-    if (!selected) return;
-    if (selected.name !== model) {
-      setModel(selected.name);
-      return;
+    if (!bootstrap || !model) return;
+    if (catalog.groupsOf(model).length === 0) {
+      setModel("");
+      setGroup("");
+      setNotice({ ok: false, text: "所选模型已不在当前可用目录中，请重新选择。" });
+    } else if (group && !catalog.groupsOf(model).includes(group)) {
+      setGroup("");
+      setNotice({ ok: false, text: "所选分组已不可用，请重新选择分组。" });
     }
-    // 分组必须是账号可用的：模型列出的令牌分组里挑第一个可用项
-    const usable = modelGroups.filter((g) => g.usable);
-    if (usable.length === 0) return;
-    if (!usable.some((g) => g.name === group)) setGroup(usable[0].name);
-  }, [activeVendorTab, groups.length, group, model, modelGroups]);
+  }, [bootstrap, catalog, group, model]);
 
   const groupPriceLabel = (name: string, ratio: number) => {
     const p = priceOf(pricingIndex.get(name), ratio);
@@ -605,9 +594,7 @@ export default function Home() {
   );
 
   const modelTags = (name: string) => {
-    const m = bootstrap?.model_metadata?.[name];
-    const release =
-      m?.release_date ?? m?.released_at ?? m?.official_release_date ?? m?.version_date;
+    const release = releaseLabelOf(name);
     return computeTags({
       name,
       release,
@@ -631,20 +618,22 @@ export default function Home() {
     setBenchmarkRunning(true);
     setBenchErrors({});
     setBenchDone(0);
-    setBenchTotal(modelGroups.length);
-    setBenchmarks(Object.fromEntries(modelGroups.map((g) => [g.name, "loading" as const])));
+    const groupsToRun = modelGroups.filter((item) => item.usable);
+    setBenchTotal(groupsToRun.length);
+    setBenchmarks(Object.fromEntries(groupsToRun.map((g) => [g.name, "loading" as const])));
     let benchCount = 0;
     const runId = ++benchRunRef.current;
-    for (const g of modelGroups) {
-      // 模型已切换：本轮结果作废，立即停止
-      if (benchRunRef.current !== runId) return;
+    const current = () => benchRunRef.current === runId
+      && benchmarkScopeRef.current === benchmarkScope && isCurrentAuthSession(auth);
+    for (const g of groupsToRun) {
+      if (!current()) return;
       try {
         let apiKey = auth.apiKey && auth.apiKeyGroup === g.name ? auth.apiKey : null;
         if (!apiKey) {
           const res = await api.provision(auth.accessToken, g.name);
           apiKey = res.api_key;
         }
-        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
+        if (!current()) return;
         const result = await invoke<{
           median_ttft_ms: number | null;
           samples: { ttft_ms: number | null; error: string | null }[];
@@ -655,7 +644,7 @@ export default function Home() {
           model,
           samples: 3,
         });
-        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
+        if (!current()) return;
         if (result.median_ttft_ms == null) {
           // 采样失败的具体原因在 samples[].error，取第一条给用户看
           const detail = result.samples?.find((s) => s.error)?.error ?? "未取到首字延迟";
@@ -671,7 +660,7 @@ export default function Home() {
         }
         setBenchmarks((prev) => ({ ...prev, [g.name]: result.median_ttft_ms }));
       } catch (e) {
-        if (benchRunRef.current !== runId || !isCurrentAuthSession(auth)) return;
+        if (!current()) return;
         setBenchErrors((prev) => ({ ...prev, [g.name]: friendlyConnectivityDetail(e) }));
         setBenchmarks((prev) => ({ ...prev, [g.name]: null }));
       }
@@ -748,6 +737,10 @@ export default function Home() {
         setNotice({ ok: true, text: "模型服务暂时无法刷新密钥，使用当前已保存密钥写入配置…" });
       }
       if (!requestGuardRef.current.mounted || !isCurrentAuthSession(auth)) return;
+      if (!catalogRef.current.groupsOf(model).includes(group)) {
+        setNotice({ ok: false, text: "模型目录已更新，请重新选择模型和分组。" });
+        return;
+      }
       if (!apiKey) throw new Error("没有可用的模型密钥，请待模型服务恢复后重试");
       if (!reusedSavedApiKey) setNotice({ ok: true, text: "模型密钥已取得，正在写入桌面配置…" });
 
@@ -1287,6 +1280,20 @@ export default function Home() {
                   </span>
                 )}
               </div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <p role="status" className={`text-[11px] ${catalogStatus?.sync?.source === "account" ? "text-amber-700 dark:text-amber-400" : SUBTLE}`}>
+                  {balance.refreshing ? "正在同步模型目录…" : catalogSyncLabel(catalogStatus)} · 可用 {catalog.models.length} 个模型
+                </p>
+                <button
+                  onClick={() => void refreshBalance(true)}
+                  disabled={balance.refreshing || actionBusy}
+                  aria-label="刷新模型目录"
+                  className="nk-btn-ghost gap-1 px-2 py-1 text-[11px]"
+                >
+                  <RefreshCwIcon className={balance.refreshing ? "animate-spin motion-reduce:animate-none" : ""} />
+                  刷新目录
+                </button>
+              </div>
               {targetId && (
                 <div
                   role="status"
@@ -1354,7 +1361,7 @@ export default function Home() {
                                 : "[border-color:var(--nk-line)] text-gray-600 hover:bg-black/[0.04] dark:text-gray-300 dark:hover:bg-white/10"
                             }`}
                           >
-                            <VendorIcon vendor={tab.vendor} />
+                            <VendorIcon vendor={tab.vendor} icon={vendorIconOf(pricingMeta?.vendors, tab.vendor)} />
                             <span className="min-w-0 flex-1 truncate">{tab.vendor}</span>
                             <span className="shrink-0 tabular-nums opacity-70">{tab.models.length}</span>
                             {recommendVendor === tab.vendor && (
@@ -1382,7 +1389,7 @@ export default function Home() {
                           <span className={`ml-2 text-[10px] font-normal ${SUBTLE}`}>
                             {vendorModels.some((m) => releaseTimeOf(m.name) !== null)
                               ? "按发布时间 新→旧"
-                              : "按发布顺序（服务端未提供发布日期）"}
+                              : "按目录顺序（未提供发布日期）"}
                           </span>
                         </p>
                         {searchOpen ? (

@@ -22,7 +22,7 @@ function bundle(page: string): Promise<string> {
       plugins: [{
         name: "page-fixtures",
         setup(builder) {
-          builder.onResolve({ filter: /(?:api\/client|store\/auth|hooks\/useSession|lib\/catalogCache)(?:\.ts)?$/ }, (args) => ({
+          builder.onResolve({ filter: /(?:api\/client|store\/auth|hooks\/useSession|hooks\/useTheme|lib\/catalogCache)(?:\.ts)?$/ }, (args) => ({
             path: `fixture:${args.path.replace(/.*\//, "").replace(/\.ts$/, "")}`,
             external: true,
           }));
@@ -62,6 +62,13 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
   let auth: any = authFixture();
   let timerId = 0;
   const timers = new Map<number, () => void>();
+  const windowListeners = new Map<string, Set<() => void>>();
+  const documentListeners = new Map<string, Set<() => void>>();
+  let visibility = "visible";
+  const listen = (target: Map<string, Set<() => void>>, event: string, callback: () => void) => {
+    const callbacks = target.get(event) ?? new Set(); callbacks.add(callback); target.set(event, callbacks);
+  };
+  const navigate = () => {};
   const storage = new Map<string, string>();
   const calls: { name: string; args: any }[] = [];
   const authWrites: any[] = [];
@@ -75,6 +82,10 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
         const next = typeof value === "function" ? value(slots[id].value) : value;
         if (!Object.is(next, slots[id].value)) { slots[id].value = next; dirty = true; }
       }];
+    },
+    useReducer(reducer: (state: any, action: any) => any, initial: any) {
+      const [state, setState] = hooks.useState(initial);
+      return [state, (action: any) => setState((previous: any) => reducer(previous, action))];
     },
     useRef(value: any) {
       const id = cursor++;
@@ -104,6 +115,7 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
     status: async () => ({ quota_per_unit: 500000 }),
     catalog: async () => ({ bootstrap: catalogFixture(), pricingMeta: { vendors: [], usableGroup: {}, groupRatio: {} }, at: Date.now() }),
     provision: async () => ({ api_key: "fixture-key" }),
+    listDevices: async () => [],
     topupInfo: async () => ({ enable_online_topup: true, min_topup: 1, amount_options: [10], pay_methods: [{ name: "支付宝", type: "alipay" }] }),
     topupHistory: async () => ({ items: [] }),
     requestEpay: async () => ({ url: "https://cashier.invalid", params: { out_trade_no: "order-current" } }),
@@ -112,11 +124,12 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
   const modules: Record<string, any> = {
     react: hooks,
     "react/jsx-runtime": { jsx: (type: unknown, props: any) => ({ type, props }), jsxs: (type: unknown, props: any) => ({ type, props }), Fragment: Symbol("Fragment") },
-    "react-router-dom": { useNavigate: () => () => {} },
+    "react-router-dom": { useNavigate: () => navigate },
     "@tauri-apps/api/core": { invoke: async (name: string, args: any) => { calls.push({ name, args }); return invokeOverride?.(name, args); } },
     "fixture:client": { api },
     "fixture:auth": {
       loadAuth: () => auth,
+      saveAuth: (value: any) => { auth = value; },
       isCurrentAuthSession,
       refreshAuthMeta: (patch: any, expected: any) => {
         if (!isCurrentAuthSession(expected)) return false;
@@ -125,6 +138,7 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
     },
     "fixture:catalogCache": { peekCurrentCatalog: () => null },
     "fixture:useSession": { useSession: () => ({ handleSessionExpired: () => calls.push({ name: "expired", args: undefined }) }) },
+    "fixture:useTheme": { useTheme: () => ({ theme: "light", toggle: () => {} }) },
   };
   const module = { exports: {} as any };
   vm.runInNewContext(await bundle(page), {
@@ -136,6 +150,13 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
     window: {
       setTimeout: (fn: () => void) => { const id = ++timerId; timers.set(id, fn); return id; },
       clearTimeout: (id: number) => timers.delete(id),
+      addEventListener: (event: string, callback: () => void) => listen(windowListeners, event, callback),
+      removeEventListener: (event: string, callback: () => void) => windowListeners.get(event)?.delete(callback),
+    },
+    document: {
+      get visibilityState() { return visibility; },
+      addEventListener: (event: string, callback: () => void) => listen(documentListeners, event, callback),
+      removeEventListener: (event: string, callback: () => void) => documentListeners.get(event)?.delete(callback),
     },
   });
   const render = () => {
@@ -180,7 +201,17 @@ async function mount(page: string, apiOverrides: Record<string, any> = {}, invok
   return {
     api, calls, storage, authWrites, flush, button, selectModel,
     text: () => textOf(tree),
+    textOf,
     nodes,
+    ariaButton(label: string) {
+      const found = nodes().find((node) => node.type === "button" && node.props["aria-label"] === label);
+      assert.ok(found, `Missing button: ${label}`); return found;
+    },
+    async focus() { windowListeners.get("focus")?.forEach((callback) => callback()); await flush(); },
+    async visible(value: boolean) {
+      visibility = value ? "visible" : "hidden";
+      documentListeners.get("visibilitychange")?.forEach((callback) => callback()); await flush();
+    },
     setAuth(value: any) { auth = value; },
     get updatesAfterUnmount() { return updatesAfterUnmount; },
     get timerCount() { return timers.size; },
@@ -321,6 +352,131 @@ test("Models discards a benchmark rejection after leaving the page", async () =>
   view.unmount(); request.reject(new Error("fixture network failure")); await run;
   assert.equal(view.updatesAfterUnmount, 0);
   assert.equal(view.storage.size, 0);
+});
+
+function snapshotFixture(bootstrap: any = catalogFixture(), vendors: any[] = []) {
+  return { bootstrap, pricingMeta: { vendors, usableGroup: {}, groupRatio: {} }, at: Date.now(), sync: { source: "public-pricing", at: Date.now() } };
+}
+const cardNames = (view: Awaited<ReturnType<typeof mount>>) => view.nodes().flatMap((node) => node.props?.card ? [node.props.card.name] : []);
+
+function twoGroupCatalog() {
+  return { ...catalogFixture(), groups: ["g1", "g2"].map((name) => ({ name, ratio: 1, models: ["gpt-fixture-a", "gpt-fixture-b"] })),
+    pricing: catalogFixture().pricing.map((item) => ({ ...item, enable_groups: ["g1", "g2"] })) };
+}
+function groupButton(view: Awaited<ReturnType<typeof mount>>, name: string) {
+  const result = view.nodes().find((node) => node.type === "button" && view.textOf(node).startsWith(name));
+  assert.ok(result, `Missing group: ${name}`); return result;
+}
+
+test("Models coalesces focus and periodic updates, skips hidden windows and displays newly synchronized models", async () => {
+  const pending = deferred(); const requests: any[] = [];
+  const view = await mount("Models", { catalog: (_token: string, options: any) => {
+    requests.push(options); return requests.length === 1 ? Promise.resolve(snapshotFixture()) : pending.promise;
+  } });
+  await view.focus(); await view.visible(true); await view.tick();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].force, true);
+  const fresh = catalogFixture(); fresh.pricing.push({ ...fresh.pricing[0], model_name: "gpt-newly-added" });
+  pending.resolve(snapshotFixture(fresh)); await view.flush();
+  assert.ok(cardNames(view).includes("gpt-newly-added"));
+  await view.visible(false); await view.tick(); assert.equal(requests.length, 2);
+  await view.visible(true); assert.equal(requests.length, 3);
+  view.unmount(); assert.equal(view.timerCount, 0);
+});
+
+test("Models preserves the selected authorized group across routine catalog refreshes", async () => {
+  const view = await mount("Models", { catalog: async () => snapshotFixture(twoGroupCatalog()) });
+  view.selectModel("gpt-fixture-a"); await view.flush();
+  groupButton(view, "g2").props.onClick(); await view.flush();
+  assert.equal(groupButton(view, "g2").props["aria-pressed"], true);
+  await view.ariaButton("刷新模型目录").props.onClick(); await view.flush();
+  assert.equal(groupButton(view, "g2").props["aria-pressed"], true);
+  view.unmount();
+});
+
+test("Models displays a newly supplied vendor and passes its server icon identifier to the icon component", async () => {
+  const bootstrap = catalogFixture(); bootstrap.pricing = [{ ...bootstrap.pricing[0], vendor_id: 99 } as any];
+  const view = await mount("Models", { catalog: async () => snapshotFixture(bootstrap, [{ id: 99, name: "New Provider", icon: "Qwen.Color" }]) });
+  assert.deepEqual(cardNames(view), ["gpt-fixture-a"]);
+  const icons = view.nodes().filter((node) => node.props.vendor === "New Provider");
+  assert.ok(icons.length >= 1); assert.ok(icons.every((node) => node.props.icon === "Qwen.Color"));
+  view.unmount();
+});
+
+test("Models clears a delisted selection and vendor filter instead of hiding all remaining models", async () => {
+  let fresh = catalogFixture(); fresh.pricing = [{ ...fresh.pricing[0], model_name: "claude-fixture" }, fresh.pricing[1]];
+  const view = await mount("Models", { catalog: async () => snapshotFixture(fresh) });
+  view.selectModel("claude-fixture"); await view.flush();
+  view.button("Anthropic1").props.onClick(); await view.flush();
+  fresh = { ...fresh, pricing: [fresh.pricing[1]] };
+  await view.ariaButton("刷新模型目录").props.onClick(); await view.flush();
+  assert.deepEqual(cardNames(view), ["gpt-fixture-b"]);
+  assert.match(view.text(), /在中间选择一个模型后/);
+  view.unmount();
+});
+
+test("Models ignores a catalog completion after leaving the page", async () => {
+  const request = deferred();
+  const view = await mount("Models", { catalog: () => request.promise });
+  view.unmount(); request.resolve(snapshotFixture()); await view.flush();
+  assert.equal(view.updatesAfterUnmount, 0); assert.equal(view.timerCount, 0);
+});
+
+test("Models cancels pending benchmarks when catalog refresh revokes a group", async () => {
+  const provision = deferred(); let fresh = twoGroupCatalog();
+  const view = await mount("Models", { catalog: async () => snapshotFixture(fresh), provision: () => provision.promise });
+  view.selectModel("gpt-fixture-a"); await view.flush();
+  const benchmark = view.button("⚡ 测速").props.onClick(); await view.flush();
+  fresh = { ...fresh, groups: fresh.groups.filter((group) => group.name === "g2"), pricing: fresh.pricing.map((item) => ({ ...item, enable_groups: ["g2"] })) };
+  await view.ariaButton("刷新模型目录").props.onClick(); await view.flush();
+  provision.resolve({ api_key: "fixture-revoked-key" }); await benchmark; await view.flush();
+  assert.equal(view.calls.filter((call) => call.name === "benchmark_group").length, 0);
+  assert.equal(view.storage.size, 0);
+  view.unmount();
+});
+
+test("Home clears a delisted draft on automatic sync without silently selecting or applying another model", async () => {
+  let fresh = catalogFixture();
+  const view = await mount("Home", { catalog: async () => snapshotFixture(fresh) }, async (command) => {
+    if (command === "list_targets") return [{ id: "codex", name: "ChatGPT", installed: true }];
+    if (command === "detect_effective_selections") return {};
+    throw new Error(`Unexpected desktop action: ${command}`);
+  });
+  const modelButton = view.nodes().find((node) => node.type === "button" && view.textOf(node).startsWith("gpt-fixture-a"));
+  assert.ok(modelButton); modelButton.props.onClick(); await view.flush();
+  const saved = [...view.storage.values()].find((value) => value.includes("gpt-fixture-a"));
+  assert.ok(saved);
+  fresh = { ...fresh, pricing: [fresh.pricing[1]] };
+  await view.focus();
+  assert.match(view.text(), /所选模型已不在当前可用目录/);
+  assert.match(view.text(), /先选择模型/);
+  const other = view.nodes().find((node) => node.type === "button" && view.textOf(node).startsWith("gpt-fixture-b"));
+  assert.ok(other); assert.equal(other.props["aria-pressed"], false);
+  assert.equal(view.calls.some((call) => call.name.startsWith("apply_")), false);
+  assert.ok([...view.storage.values()].includes(saved));
+  view.unmount(); assert.equal(view.timerCount, 0);
+});
+
+test("Home rechecks catalog permissions after provisioning before writing any desktop configuration", async () => {
+  const refresh = deferred(); const provision = deferred(); let reads = 0;
+  const view = await mount("Home", {
+    catalog: () => ++reads === 1 ? Promise.resolve(snapshotFixture()) : refresh.promise,
+    provision: () => provision.promise,
+  }, async (command) => {
+    if (command === "list_targets") return [{ id: "codex", name: "ChatGPT", installed: true }];
+    if (command === "detect_effective_selections") return {};
+    throw new Error(`Unexpected desktop action: ${command}`);
+  });
+  const model = view.nodes().find((node) => node.type === "button" && view.textOf(node).startsWith("gpt-fixture-a"));
+  assert.ok(model); model.props.onClick(); await view.flush();
+  const refreshing = view.ariaButton("刷新模型目录").props.onClick(); await view.flush();
+  const applying = view.ariaButton("接入到应用").props.onClick(); await view.flush();
+  const changed = catalogFixture(); changed.pricing = [changed.pricing[1]];
+  refresh.resolve(snapshotFixture(changed)); await refreshing; await view.flush();
+  provision.resolve({ api_key: "fixture-obsolete-key", group: "fast" }); await applying; await view.flush();
+  assert.equal(view.calls.some((call) => call.name.startsWith("apply_")), false);
+  assert.match(view.text(), /模型目录已更新，请重新选择/);
+  view.unmount();
 });
 
 test("TopUp waits for its order, then forces balance refresh and closes exactly once", async () => {
